@@ -25,22 +25,27 @@ Pick the directory that matches where you want to run Broch. Each has its own RE
 ghcr.io/broch-io/broch:<version>
 ```
 
-Pull it directly — no authentication required:
+> **The image is currently a private GHCR package.** To pull, you need a
+> GitHub Personal Access Token with the `read:packages` scope, then
+> `docker login ghcr.io -u <github-user>` once. This repo and the image
+> will both become public in a future release; until then, treat both as
+> internal/customer-shared artifacts.
 
 ```sh
-docker pull ghcr.io/broch-io/broch:latest
+echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
+docker pull ghcr.io/broch-io/broch:1.5.0
 ```
 
 Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we recommend pinning to a specific version (`ghcr.io/broch-io/broch:1.5.0`) rather than `:latest`.
 
 ## Picking an example
 
-| Goal | Use |
-|---|---|
-| Try Broch locally on a laptop | [`docker-compose/single-host/`](docker-compose/single-host/) |
+| Goal                                       | Use                                                            |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| Try Broch locally on a laptop              | [`docker-compose/single-host/`](docker-compose/single-host/)   |
 | Small production deployment on a single VM | [`docker-compose/with-postgres/`](docker-compose/with-postgres/) |
-| AWS production deployment | [`terraform/aws-ecs/`](terraform/aws-ecs/) |
-| Azure production deployment | [`terraform/azure-container-apps/`](terraform/azure-container-apps/) |
+| AWS production deployment                  | [`terraform/aws-ecs/`](terraform/aws-ecs/)                     |
+| Azure production deployment                | [`terraform/azure-container-apps/`](terraform/azure-container-apps/) |
 
 For other platforms (GCP, on-prem Kubernetes, Hetzner) the docker-compose examples translate cleanly — `with-postgres` is a complete production-shape stack that you can `scp` to any Linux VM.
 

@@ -16,9 +16,9 @@ git checkout broch-v1.2.x   # or whichever tag matches your server version
 
 ## Matrix
 
-| Examples ref | Supported Broch server versions | Notes |
-|---|---|---|
-| `main` | Latest stable | Tracks the current release. |
+| Examples ref | Supported Broch server versions | Notes                         |
+| ------------ | ------------------------------- | ----------------------------- |
+| `main`       | Latest stable                   | Tracks the current release.   |
 
 This matrix grows as we cut tags. Until then, `main` is the only ref you need.
 
