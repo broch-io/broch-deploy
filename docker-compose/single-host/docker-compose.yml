@@ -1,0 +1,69 @@
+# Broch — single-host docker-compose
+#
+# What this deploys
+#   - broch:     the Broch tunnel server
+#   - postgres:  bundled Postgres 17 for broch's persistent state
+#
+# What it deliberately does NOT include
+#   - TLS termination     (see ../with-postgres for a Caddy-based variant)
+#   - Reverse proxy       (server is exposed directly on host port 8080)
+#   - Automated backups   (postgres_data volume is durable but not snapshotted)
+#
+# Use this when: testing Broch locally on a laptop, or running on a private
+# network where TLS at the broch port isn't required.
+#
+# Do NOT use this directly on the public internet — your tunnel credentials
+# and tunnel traffic would be cleartext over HTTP. Use the with-postgres
+# example for anything internet-facing.
+
+services:
+  broch:
+    image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
+    container_name: broch
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      BROCH_LICENSE: ${BROCH_LICENSE}
+      DATABASE__PROVIDER: PostgreSQL
+      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+    ports:
+      - "${BROCH_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: broch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-brochdb}
+      POSTGRES_USER: ${POSTGRES_USER:-broch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-broch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: broch
