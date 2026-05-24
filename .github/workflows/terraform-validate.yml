@@ -1,0 +1,62 @@
+# Tier-1 static checks for the Terraform examples.
+#
+# Goal: catch typos, bad references, missing required variables, and format
+# drift before a PR gets merged. Does NOT talk to any cloud provider — no
+# AWS/Azure credentials needed, no resources created, no billable activity.
+#
+# Why no `terraform plan` or `apply`: this repo is public and we don't want
+# workflow logs leaking account state, resource ARNs, or IPs. Real apply
+# testing happens out-of-CI via scripts/test-terraform.sh, run manually
+# before tagging a release.
+
+name: Terraform Validate
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate (${{ matrix.module }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - aws-ecs
+          - azure-container-apps
+
+    defaults:
+      run:
+        working-directory: terraform/${{ matrix.module }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Match the version broch's deploy-do.yml uses for consistency.
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      # -backend=false skips backend initialisation (which would require cloud
+      # credentials). Provider plugins are still downloaded and validated.
+      - name: terraform init
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate

@@ -1,0 +1,9 @@
+# Every PR needs review from a listed owner before it can merge into main
+# (when paired with the "Require review from Code Owners" branch protection rule).
+#
+# This is the practical answer to "only named devs can land changes" in a
+# public repo — anyone can fork and open a PR, but nothing merges without a
+# maintainer's approval.
+#
+# Catch-all: every file requires review from the broch-io engineering team.
+* @broch-io/engineering
