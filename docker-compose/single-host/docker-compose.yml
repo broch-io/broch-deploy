@@ -19,7 +19,6 @@
 services:
   broch:
     image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
-    container_name: broch
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,7 +46,6 @@ services:
 
   postgres:
     image: postgres:17-alpine
-    container_name: broch-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-brochdb}
@@ -64,6 +62,6 @@ services:
 volumes:
   postgres_data:
 
-networks:
-  default:
-    name: broch
+# `networks:` block intentionally omitted — compose creates a default network
+# per project (named `<project>-default`), which auto-namespaces against any
+# other stack you might run on the same host.
