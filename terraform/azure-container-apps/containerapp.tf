@@ -42,14 +42,14 @@ resource "azurerm_container_app" "broch" {
   registry {
     server               = "ghcr.io"
     username             = var.github_username
-    password_secret_name = "ghcr-pat"
+    password_secret_name = "ghcr-registry-credentials"
   }
 
   # Each Key Vault secret the container needs has to be re-declared here as
   # a Container Apps secret that points at the Key Vault entry by URI. The
   # `identity` field names the managed identity Container Apps uses to read.
   secret {
-    name                = "ghcr-pat"
+    name                = "ghcr-registry-credentials"
     key_vault_secret_id = azurerm_key_vault_secret.github_pat.id
     identity            = azurerm_user_assigned_identity.broch.id
   }
