@@ -1,0 +1,123 @@
+# AWS ECS Fargate Terraform module
+
+Production-shape Broch on AWS: ECS Fargate behind an Application Load Balancer, RDS Postgres in private subnets, secrets in Secrets Manager, TLS via an ACM cert covering both the apex and wildcard hostname.
+
+## What this provisions
+
+```
+                                    ┌─────────────────────────────┐
+internet  ─── HTTPS:443  ─────▶     │ Application Load Balancer   │
+                                    │   - ACM cert (apex + wild)  │
+                                    │   - HTTP→HTTPS redirect     │
+                                    └──────────────┬──────────────┘
+                                                   │ HTTP:8080
+                                    ┌──────────────▼──────────────┐
+                                    │ ECS Fargate service         │
+                                    │   - broch image (GHCR)      │
+                                    │   - awsvpc / private subnet │
+                                    │   - 1 task, configurable    │
+                                    └──────────────┬──────────────┘
+                                                   │ TCP:5432
+                                    ┌──────────────▼──────────────┐
+                                    │ RDS Postgres 17             │
+                                    │   - db.t4g.micro (default)  │
+                                    │   - single-AZ               │
+                                    │   - encrypted at rest       │
+                                    └─────────────────────────────┘
+```
+
+Tightly-scoped IAM lets the task pull from GHCR (with a stored PAT) and read its own secrets — nothing more.
+
+## What it costs
+
+Rough monthly numbers in `us-east-1`, on-demand pricing as of 2026:
+
+| Resource                          | ~Monthly cost (USD) |
+| --------------------------------- | ------------------- |
+| ALB (always-on)                   | $16-20              |
+| ECS Fargate (0.5 vCPU / 1 GB)     | $12-15              |
+| RDS db.t4g.micro single-AZ + 20GB | $14-18              |
+| NAT Gateway + data transfer       | $32 + traffic       |
+| Route 53 zone + queries           | $0.50               |
+| Secrets Manager (4 secrets)       | $1.60               |
+| **Total baseline**                | **~$75-90/month**   |
+
+The NAT gateway is the biggest individual line item. For a cost-optimized deployment, see "Tradeoffs" below.
+
+## Prerequisites
+
+- Terraform 1.6+
+- AWS credentials with permissions to create everything in this module (VPC, ECS, RDS, ALB, Route 53, ACM, IAM, Secrets Manager). Easiest: an admin role for the initial apply, then restrict ongoing.
+- A Route 53 hosted zone for your wildcard hostname's parent domain. You provide the zone ID; this module adds records to it.
+- A Broch license key.
+- A GitHub PAT with `read:packages` (while the broch image is private).
+
+## Setup
+
+```sh
+# 1. Copy + fill the tfvars template
+cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars
+
+# 2. Initialise providers
+terraform init
+
+# 3. Review the plan (lots of resources first time — 30+)
+terraform plan
+
+# 4. Apply (5-10 min on first run; RDS provisioning is the long pole)
+terraform apply
+
+# 5. Get the URL and verify
+echo "Broch is at: $(terraform output -raw broch_url)"
+curl -fsS "$(terraform output -raw broch_url)/healthz"
+```
+
+## How the secrets flow at runtime
+
+1. You hand `broch_license` + `github_pat` + `github_username` to Terraform as variables.
+2. Terraform writes them to Secrets Manager.
+3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`BROCH_LICENSE`, `ConnectionStrings__DefaultConnection`) or as docker pull credentials.
+4. The container never sees the raw secret on disk — it only gets the resolved values via env.
+
+Rotating any secret = edit the secret value (via console or `aws secretsmanager update-secret`) + force a new ECS deployment (`aws ecs update-service --force-new-deployment`).
+
+## Tradeoffs / what's deliberately not here
+
+| Decision                       | Why                                                                                  | When to change                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| Single NAT gateway             | Cheaper than per-AZ NATs (~$32/mo each)                                              | When you can't tolerate one AZ outage taking down image pulls   |
+| Single-AZ RDS                  | Cheaper, simpler                                                                     | When you need failover (set `multi_az = true` on the resource)  |
+| `desired_count = 1`            | Broch state is in Postgres; one task is sufficient for low/medium traffic            | When you need zero-downtime deploys or higher throughput        |
+| No auto-scaling                | Avoid surprise bill from runaway scale-out; broch's workload is usually steady-state | When tunnel volume becomes spiky                                |
+| `skip_final_snapshot = true`   | Faster destroy during initial iteration                                              | **Before** going to real production — set to `false`            |
+| `deletion_protection = false`  | Same as above                                                                        | **Before** going to real production — set to `true`             |
+| No WAF                         | Adds complexity + cost                                                               | When you're exposed to abuse and need rate limiting / geo-block |
+| No CloudFront                  | Direct ALB is faster for tunnel WebSockets                                           | When you want global edge caching for the API (rarely useful)   |
+
+## Pulling a new broch image
+
+The task definition references the image by tag (default: `:latest`). To deploy a new version:
+
+```sh
+# Option A: change the tag in tfvars + re-apply
+$EDITOR terraform.tfvars       # set broch_image = "ghcr.io/broch-io/broch:1.6.0"
+terraform apply
+
+# Option B: keep the tag, force a fresh pull
+aws ecs update-service \
+  --cluster broch-cluster \
+  --service broch-service \
+  --force-new-deployment \
+  --region us-east-1
+```
+
+For production, pin to a specific version (`:1.6.0`) rather than `:latest` so deploys are reproducible.
+
+## Teardown
+
+```sh
+terraform destroy
+```
+
+Note: `skip_final_snapshot = true` means the Postgres data is deleted permanently. If you want to keep it, set that to `false` first and re-apply before destroying.

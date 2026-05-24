@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+
+wildcard_hostname = "tunnels.example.com"
+route53_zone_id   = "Z0123456789ABCDEFGHIJ"     # Route 53 hosted zone ID
+broch_license     = "<your-license-key>"
+github_pat        = "<github-pat-with-read-packages>"
+github_username   = "<your-github-username>"
+
+# ── Optional (defaults shown) ────────────────────────────────────────────────
+
+# broch_image        = "ghcr.io/broch-io/broch:1.5.0"
+# aws_region         = "us-east-1"
+# vpc_cidr           = "10.42.0.0/16"
+# task_cpu           = 512
+# task_memory        = 1024
+# rds_instance_class = "db.t4g.micro"
+# name_prefix        = "broch"

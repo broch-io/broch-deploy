@@ -1,0 +1,102 @@
+# Broch — production docker-compose with bundled Postgres + Caddy auto-TLS
+#
+# What this deploys
+#   - broch:     the Broch tunnel server (HTTP only, behind the proxy)
+#   - postgres:  bundled Postgres 17 for broch's persistent state
+#   - caddy:     reverse proxy that handles TLS termination and HTTPS
+#                redirects. Uses DNS-01 challenge with Cloudflare to mint
+#                BOTH the apex cert and the wildcard cert for tunnel
+#                subdomains — broch needs both to serve its full URL space.
+#
+# Use this when: running Broch on a public-facing host (a VM with a real
+# DNS name) and you want managed TLS without configuring certs by hand.
+#
+# DNS provider: this example uses Cloudflare's DNS-01 API. If you use a
+# different provider (Route53, Google Cloud DNS, etc.), see the Caddyfile
+# and the README — Caddy supports most providers via build-time modules.
+
+services:
+  broch:
+    image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
+    container_name: broch
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      BROCH_LICENSE: ${BROCH_LICENSE}
+      DATABASE__PROVIDER: PostgreSQL
+      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+    # No host port mapping — only Caddy is reachable from outside the docker
+    # network. broch is reachable internally as `http://broch:8080`.
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: broch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-brochdb}
+      POSTGRES_USER: ${POSTGRES_USER:-broch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-broch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    # Built from Caddy.Dockerfile — the stock caddy:2 image lacks DNS provider
+    # modules, and broch needs DNS-01 for wildcard tunnel certs. The Dockerfile
+    # uses xcaddy to compile in the Cloudflare module by default; swap providers
+    # there if your DNS isn't on Cloudflare.
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
+    image: broch-deploy/caddy:dns-cloudflare
+    container_name: broch-caddy
+    restart: unless-stopped
+    depends_on:
+      broch:
+        condition: service_healthy
+    environment:
+      # Caddyfile reads these via env.* — see Caddyfile.
+      BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data            # persists issued certs across restarts
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  default:
+    name: broch

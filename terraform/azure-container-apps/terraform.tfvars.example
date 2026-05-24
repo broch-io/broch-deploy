@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+
+wildcard_hostname = "tunnels.example.com"
+broch_license     = "<your-license-key>"
+github_pat        = "<github-pat-with-read-packages>"
+github_username   = "<your-github-username>"
+
+# ── Optional (defaults shown) ────────────────────────────────────────────────
+
+# broch_image         = "ghcr.io/broch-io/broch:1.5.0"
+# location            = "eastus"
+# name_prefix         = "broch"
+# container_cpu       = 0.5
+# container_memory    = "1Gi"
+# postgres_sku        = "B_Standard_B1ms"
+# postgres_storage_mb = 32768
