@@ -1,0 +1,46 @@
+# Broch production Caddyfile
+#
+# Caddy handles TLS termination for both the API endpoint and the wildcard
+# tunnel subdomains. We use ACME DNS-01 with Cloudflare so a single config
+# can mint BOTH:
+#   - the apex cert  (e.g. tunnels.example.com)
+#   - the wildcard   (*.tunnels.example.com)  used by every tunnel
+#
+# DNS-01 is required because HTTP-01 can't issue wildcard certs. If your
+# DNS isn't on Cloudflare, swap the `dns cloudflare ...` line for your
+# provider (Caddy supports route53, googleclouddns, gandi, etc. — each
+# needs its own module compiled into the Caddy binary; see Caddy.Dockerfile).
+
+{
+	email {env.CADDY_ACME_EMAIL}
+
+	# Default issuer: ACME (Let's Encrypt prod) with DNS-01 via Cloudflare.
+	# Applied to every site below unless overridden.
+}
+
+# Apex: the API endpoint customers and the CLI talk to.
+{env.BROCH_WILDCARD_HOSTNAME} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	# Forward absolutely everything to broch. The server handles its own
+	# routing — REST API, WebSocket tunnel upgrades, healthchecks, etc.
+	reverse_proxy broch:8080 {
+		# Preserve the original Host header so broch sees the public
+		# hostname rather than the docker service name.
+		header_up Host {host}
+	}
+}
+
+# Wildcard: every tunnel subdomain (one per tunnel). Broch maps these to
+# the right tunnel based on the subdomain, so Caddy just passes through.
+*.{env.BROCH_WILDCARD_HOSTNAME} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	reverse_proxy broch:8080 {
+		header_up Host {host}
+	}
+}
