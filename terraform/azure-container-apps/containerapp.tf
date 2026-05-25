@@ -69,7 +69,7 @@ resource "azurerm_container_app" "broch" {
   ingress {
     external_enabled = true
     target_port      = 8080
-    transport        = "auto"  # picks HTTP/2 + WebSocket support automatically
+    transport        = "auto" # picks HTTP/2 + WebSocket support automatically
 
     traffic_weight {
       latest_revision = true
@@ -79,7 +79,7 @@ resource "azurerm_container_app" "broch" {
 
   template {
     min_replicas = 1
-    max_replicas = 1   # no autoscaling for the example
+    max_replicas = 1 # no autoscaling for the example
 
     container {
       name   = "broch"

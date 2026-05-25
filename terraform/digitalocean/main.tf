@@ -41,25 +41,25 @@ resource "digitalocean_droplet" "broch" {
   ssh_keys = [var.ssh_key_fingerprint]
 
   user_data = templatefile("${path.module}/cloud-init.yaml", {
-    deployment_name   = var.deployment_name
+    deployment_name    = var.deployment_name
     license_key        = var.license_key
     central_server_url = var.central_server_url
     wildcard_hostname  = var.wildcard_hostname
-    auth_provider     = var.auth_provider
+    auth_provider      = var.auth_provider
     auth_client_id     = var.auth_client_id
     auth_client_secret = var.auth_client_secret
     auth_tenant_id     = var.auth_tenant_id
-    auth_instance     = var.auth_instance
-    auth_domain       = var.auth_domain
-    admin_email       = var.admin_email
-    admin_roles       = var.admin_roles
-    postgres_password = var.postgres_password
-    image             = var.image
-    image_tag         = var.image_tag
-    ghcr_token        = var.ghcr_token
-    dns_provider      = var.dns_provider
-    dns_api_token     = var.dns_api_token
-    auth_audience     = var.auth_audience
+    auth_instance      = var.auth_instance
+    auth_domain        = var.auth_domain
+    admin_email        = var.admin_email
+    admin_roles        = var.admin_roles
+    postgres_password  = var.postgres_password
+    image              = var.image
+    image_tag          = var.image_tag
+    ghcr_token         = var.ghcr_token
+    dns_provider       = var.dns_provider
+    dns_api_token      = var.dns_api_token
+    auth_audience      = var.auth_audience
   })
 }
 

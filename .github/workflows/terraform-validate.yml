@@ -36,6 +36,7 @@ jobs:
         module:
           - aws-ecs
           - azure-container-apps
+          - digitalocean
 
     defaults:
       run:

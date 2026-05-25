@@ -83,13 +83,13 @@ If you go down this path, also consider moving Caddy to a separate node (or a ma
 
 ```text
 DigitalOcean Managed:
-  Host=broch-db-do-user-1234.b.db.ondigitalocean.com;Port=25060;Database=brochdb;Username=broch;Password=xxx;SSL Mode=Require
+  Host=broch-db-do-user-1234.b.db.ondigitalocean.com;Port=25060;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
 
 AWS RDS:
-  Host=broch.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=xxx;SSL Mode=Require
+  Host=broch.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
 
 Azure Database for PostgreSQL Flexible Server:
-  Host=broch.postgres.database.azure.com;Port=5432;Database=brochdb;Username=broch;Password=xxx;SSL Mode=Require
+  Host=broch.postgres.database.azure.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
 
 Neon / Supabase / CloudSQL / RDS Proxy:
   Standard Npgsql format — copy from your provider's "Connection details" panel.

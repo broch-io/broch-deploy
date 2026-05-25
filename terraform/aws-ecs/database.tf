@@ -4,7 +4,7 @@
 
 resource "random_password" "postgres" {
   length  = 32
-  special = false  # avoid characters that need URL-encoding in the connection string
+  special = false # avoid characters that need URL-encoding in the connection string
 }
 
 resource "aws_db_subnet_group" "main" {
@@ -26,8 +26,8 @@ resource "aws_db_instance" "broch" {
   db_subnet_group_name    = aws_db_subnet_group.main.name
   vpc_security_group_ids  = [aws_security_group.rds.id]
   publicly_accessible     = false
-  skip_final_snapshot     = true   # set to false for production; pair with final_snapshot_identifier
-  deletion_protection     = false  # set to true once you've moved past initial provisioning
+  skip_final_snapshot     = true  # set to false for production; pair with final_snapshot_identifier
+  deletion_protection     = false # set to true once you've moved past initial provisioning
   backup_retention_period = 7
   backup_window           = "03:00-04:00"
   maintenance_window      = "Mon:04:00-Mon:05:00"
@@ -40,7 +40,7 @@ resource "aws_db_instance" "broch" {
 resource "aws_secretsmanager_secret" "broch_license" {
   name                    = "${var.name_prefix}/broch-license"
   description             = "Broch license key used by the server container at startup."
-  recovery_window_in_days = 0  # immediate delete on terraform destroy
+  recovery_window_in_days = 0 # immediate delete on terraform destroy
 }
 
 resource "aws_secretsmanager_secret_version" "broch_license" {

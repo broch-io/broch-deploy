@@ -45,9 +45,9 @@ resource "azurerm_key_vault" "broch" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   soft_delete_retention_days = 7
-  purge_protection_enabled   = false   # set true in production
+  purge_protection_enabled   = false # set true in production
 
-  rbac_authorization_enabled = true  # use RBAC instead of access policies
+  rbac_authorization_enabled = true # use RBAC instead of access policies
 }
 
 # Caller (whoever runs `terraform apply`) needs to be able to write the
