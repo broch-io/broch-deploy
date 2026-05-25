@@ -1,0 +1,5 @@
+# Drop your wildcard cert files here:
+#   fullchain.pem   (PEM, mode 0644)
+#   privkey.pem     (PEM, mode 0600)
+#
+# Both are .gitignored at the repo root (see *.pem rule in .gitignore).

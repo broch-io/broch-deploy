@@ -18,6 +18,12 @@ override.tf.json
 .env.local
 docker-compose.override.yml
 
+# BYO certificate material — never commit private keys or cert chains
+*.pem
+*.key
+*.crt
+!docker-compose/with-postgres-byo-cert/certs/.gitkeep
+
 # Editor / OS
 .DS_Store
 Thumbs.db

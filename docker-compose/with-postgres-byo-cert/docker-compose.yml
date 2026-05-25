@@ -1,0 +1,87 @@
+# Broch — production docker-compose with BUNDLED Postgres + Caddy
+# using a BYO (bring-your-own) wildcard cert.
+#
+# Variant of ../with-postgres/ that uses a static cert+key pair instead of
+# Caddy's automatic ACME issuance. Use this when:
+#   - Your DNS provider isn't on the Caddy-DNS list (so DNS-01 isn't an
+#     option without a custom build)
+#   - You manage certs centrally with your own renewal automation
+#     (certbot, your security team's PKI, a wildcard purchased from a CA)
+#   - You're in an air-gapped or restricted-egress network where Caddy
+#     can't reach Let's Encrypt during issuance
+#
+# Caddy here is the stock caddy:2 image — no custom xcaddy build needed,
+# since we're not using any DNS provider modules.
+
+services:
+  broch:
+    image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      BROCH_LICENSE: ${BROCH_LICENSE}
+      DATABASE__PROVIDER: PostgreSQL
+      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-brochdb}
+      POSTGRES_USER: ${POSTGRES_USER:-broch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-broch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    # Stock caddy:2 — no DNS modules needed since we're not doing ACME.
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      broch:
+        condition: service_healthy
+    environment:
+      BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Your cert + key. PEM format — the same files certbot or a commercial
+      # CA gives you. Read-only mounts; rotate by replacing the files on disk
+      # and `docker compose exec caddy caddy reload`.
+      - ./certs/fullchain.pem:/etc/caddy/certs/fullchain.pem:ro
+      - ./certs/privkey.pem:/etc/caddy/certs/privkey.pem:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

@@ -9,12 +9,15 @@ If you're looking for **the application** itself, the public docs at <https://br
 ```text
 broch-deploy/
 ├── docker-compose/
-│   ├── single-host/         # broch + Postgres on one host, no TLS. Private-network use.
-│   └── with-postgres/       # broch + Postgres + Caddy (auto-TLS via Let's Encrypt). Public-internet use.
+│   ├── single-host/                  # broch + Postgres, no TLS. Private-network use.
+│   ├── with-postgres/                # broch + Postgres + Caddy auto-TLS. Public-internet use.
+│   ├── with-postgres-external/       # broch + Caddy + external managed Postgres.
+│   └── with-postgres-byo-cert/       # broch + Postgres + Caddy serving a cert YOU provide.
 ├── terraform/
-│   ├── aws-ecs/             # AWS Fargate + ALB + RDS Postgres + Secrets Manager.
-│   └── azure-container-apps/# Azure Container Apps + Postgres Flexible Server + Key Vault.
-└── COMPATIBILITY.md         # Which examples support which Broch server versions.
+│   ├── digitalocean/                 # Droplet + Docker Compose + Caddy + block storage.
+│   ├── aws-ecs/                      # AWS Fargate + ALB + RDS Postgres + Secrets Manager.
+│   └── azure-container-apps/         # Azure Container Apps + Postgres Flexible + Key Vault.
+└── COMPATIBILITY.md                  # Which examples support which Broch server versions.
 ```
 
 Pick the directory that matches where you want to run Broch. Each has its own README with `make`-style commands and the env vars you'll need to fill in.
@@ -40,14 +43,21 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 
 ## Picking an example
 
-| Goal                                                       | Use                                                            |
-| ---------------------------------------------------------- | -------------------------------------------------------------- |
-| Single-VM Broch on a private network (no public TLS)       | [`docker-compose/single-host/`](docker-compose/single-host/)   |
-| Single-VM Broch on the public internet (Caddy auto-TLS)    | [`docker-compose/with-postgres/`](docker-compose/with-postgres/) |
-| Production on AWS (Fargate + ALB + RDS)                    | [`terraform/aws-ecs/`](terraform/aws-ecs/)                     |
-| Production on Azure (Container Apps + Postgres Flexible)   | [`terraform/azure-container-apps/`](terraform/azure-container-apps/) |
+| Goal                                                          | Use                                                                          |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Single-VM Broch on a private network (no public TLS)          | [`docker-compose/single-host/`](docker-compose/single-host/)                 |
+| Single-VM Broch on the public internet (Caddy auto-TLS)       | [`docker-compose/with-postgres/`](docker-compose/with-postgres/)             |
+| Same as above but Broch points at a managed/external Postgres | [`docker-compose/with-postgres-external/`](docker-compose/with-postgres-external/) |
+| Same as above but with a wildcard cert YOU provide            | [`docker-compose/with-postgres-byo-cert/`](docker-compose/with-postgres-byo-cert/) |
+| Production on DigitalOcean (Droplet + Docker Compose + Caddy) | [`terraform/digitalocean/`](terraform/digitalocean/)                         |
+| Production on AWS (Fargate + ALB + RDS)                       | [`terraform/aws-ecs/`](terraform/aws-ecs/)                                   |
+| Production on Azure (Container Apps + Postgres Flexible)      | [`terraform/azure-container-apps/`](terraform/azure-container-apps/)         |
 
-Every example uses the same dependency footprint — broch needs Postgres (the only supported database), a Broch license, and a wildcard hostname. The examples differ in **TLS exposure** (public-facing vs. private-network) and **infrastructure layer** (single VM vs. managed cloud services), not in commitment level.
+Every example uses the same dependency footprint — broch needs Postgres (the only supported database), a Broch license, and a wildcard hostname. The examples differ along three axes:
+
+- **TLS exposure**: private-network (single-host) vs. public-facing
+- **TLS source**: Caddy ACME (auto), BYO cert (manual rotation), or cloud-managed cert (AWS ACM / Azure managed)
+- **Infrastructure layer**: single VM (docker-compose, DigitalOcean Droplet) vs. managed cloud services (ECS Fargate, Azure Container Apps)
 
 For other platforms (GCP, on-prem Kubernetes, Hetzner) the docker-compose examples translate cleanly — `with-postgres` is a complete production-shape stack that you can `scp` to any Linux VM.
 
