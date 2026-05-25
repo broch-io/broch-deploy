@@ -1,0 +1,42 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+
+do_token            = "dop_v1_<your-digitalocean-api-token>"
+ssh_key_fingerprint = "aa:bb:cc:dd:ee:ff:..."   # `doctl compute ssh-key list`
+license_key         = "<your-broch-license-key>"
+wildcard_hostname   = "tunnels.example.com"
+
+# DNS provider for Caddy's wildcard cert (DNS-01 challenge).
+# Cloudflare is the default; godaddy and route53 are also compiled in.
+dns_api_token       = "<your-dns-provider-api-token>"
+
+# Identity provider config — see /docs/identity-providers for what to fill in.
+# Defaults to AzureAd; set auth_provider to switch.
+auth_client_id      = "<idp-application-id>"
+auth_client_secret  = "<idp-client-secret>"
+auth_tenant_id      = "<azure-tenant-id>"       # required for AzureAd / EntraExternalId
+
+# Admin email — receives notifications and licensing-related mail.
+admin_email         = "admin@example.com"
+
+# Postgres password for the bundled DB. Generate with `openssl rand -base64 32`.
+postgres_password   = "<strong-random-password>"
+
+# ── Optional (defaults shown) ────────────────────────────────────────────────
+
+# region              = "nyc3"
+# droplet_size        = "s-1vcpu-1gb"
+# deployment_name     = "broch-server"
+# volume_size         = 10
+# image               = "ghcr.io/broch-io/broch"
+# image_tag           = "latest"
+# dns_provider        = "cloudflare"
+# auth_provider       = "AzureAd"
+# auth_instance       = "https://login.microsoftonline.com/"
+
+# ── While the broch image is private ─────────────────────────────────────────
+
+# GHCR PAT (read:packages) so the droplet can pull the image at boot.
+# Drop this once ghcr.io/broch-io/broch goes public.
+# ghcr_token = "<github-pat-with-read-packages>"

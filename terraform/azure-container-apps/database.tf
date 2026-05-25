@@ -7,14 +7,14 @@
 
 resource "random_password" "postgres" {
   length  = 32
-  special = false  # avoid URL-encoding pain in the connection string
+  special = false # avoid URL-encoding pain in the connection string
 }
 
 resource "azurerm_postgresql_flexible_server" "broch" {
   name                = "${var.name_prefix}-postgres-${local.suffix}"
   resource_group_name = azurerm_resource_group.broch.name
   location            = azurerm_resource_group.broch.location
-  version             = "16"  # Azure's Flexible Server doesn't support 17 yet (as of provider 4.10)
+  version             = "16" # Azure's Flexible Server doesn't support 17 yet (as of provider 4.10)
 
   administrator_login    = var.postgres_user
   administrator_password = random_password.postgres.result

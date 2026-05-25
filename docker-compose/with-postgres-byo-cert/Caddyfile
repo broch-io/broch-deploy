@@ -1,0 +1,40 @@
+# Broch production Caddyfile — BYO wildcard cert
+#
+# Caddy uses a static cert+key pair you provide (mounted at /etc/caddy/certs/).
+# No ACME, no DNS-01. Use this when:
+#   - Your cert comes from a commercial CA
+#   - Your team has internal PKI / a centralised cert renewal pipeline
+#   - You're using certbot externally and copying the cert into ./certs/
+#
+# Renewal is YOUR responsibility — Caddy won't refresh these certs. Replace
+# the files on disk and run `docker compose exec caddy caddy reload`.
+
+{
+	# Disable Caddy's automatic HTTPS — we're providing the cert ourselves.
+	auto_https off
+
+	# Default email retained for completeness; not used since auto_https is off.
+}
+
+# Apex: the API endpoint customers and the CLI talk to.
+{env.BROCH_WILDCARD_HOSTNAME}:443 {
+	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+
+	reverse_proxy broch:8080 {
+		header_up Host {host}
+	}
+}
+
+# Wildcard: every tunnel subdomain.
+*.{env.BROCH_WILDCARD_HOSTNAME}:443 {
+	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+
+	reverse_proxy broch:8080 {
+		header_up Host {host}
+	}
+}
+
+# HTTP → HTTPS redirect (Caddy won't do this automatically with auto_https off).
+:80 {
+	redir https://{host}{uri} permanent
+}

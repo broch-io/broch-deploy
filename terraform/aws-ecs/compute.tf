@@ -50,7 +50,7 @@ resource "aws_lb_target_group" "broch" {
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
-  target_type = "ip"  # required for Fargate
+  target_type = "ip" # required for Fargate
 
   health_check {
     enabled             = true
@@ -204,9 +204,9 @@ resource "aws_ecs_task_definition" "broch" {
 
     environment = [
       { name = "ASPNETCORE_ENVIRONMENT", value = "Production" },
-      { name = "ASPNETCORE_URLS",        value = "http://0.0.0.0:8080" },
-      { name = "API__WILDCARDHOSTNAME",  value = var.wildcard_hostname },
-      { name = "DATABASE__PROVIDER",     value = "PostgreSQL" },
+      { name = "ASPNETCORE_URLS", value = "http://0.0.0.0:8080" },
+      { name = "API__WILDCARDHOSTNAME", value = var.wildcard_hostname },
+      { name = "DATABASE__PROVIDER", value = "PostgreSQL" },
     ]
 
     secrets = [

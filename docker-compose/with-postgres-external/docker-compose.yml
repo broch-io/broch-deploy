@@ -1,0 +1,69 @@
+# Broch — production docker-compose with EXTERNAL Postgres + Caddy auto-TLS
+#
+# Variant of ../with-postgres/ that drops the bundled postgres service.
+# Use this when:
+#   - Your DB is a managed service (DO Managed Databases, RDS, Azure Flex,
+#     CloudSQL, Neon, Supabase, …) and you point Broch at a connection string
+#   - You need encryption-at-rest, point-in-time recovery, automated backups,
+#     or a maintenance/upgrade flow you don't want to operate yourself
+#   - You need horizontal scaling — multi-replica Broch requires a shared
+#     external DB
+#
+# Caddy still handles TLS exactly the same way as ../with-postgres/ —
+# wildcard certs via ACME DNS-01 with Cloudflare by default.
+
+services:
+  broch:
+    image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      BROCH_LICENSE: ${BROCH_LICENSE}
+      DATABASE__PROVIDER: PostgreSQL
+      # Connection string points at your external DB. SSL Mode=Require is
+      # standard for managed services; relax to Prefer or Disable if your
+      # provider doesn't support TLS to the server.
+      ConnectionStrings__DefaultConnection: ${BROCH_DB_CONNECTION_STRING}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  caddy:
+    # Built from Caddy.Dockerfile (shared with ../with-postgres/) — stock
+    # caddy:2 lacks DNS modules and broch needs DNS-01 for wildcard certs.
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
+    image: broch-deploy/caddy:dns-cloudflare
+    restart: unless-stopped
+    depends_on:
+      broch:
+        condition: service_healthy
+    environment:
+      BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

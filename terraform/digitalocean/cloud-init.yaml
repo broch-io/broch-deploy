@@ -1,0 +1,206 @@
+#cloud-config
+# Broch -- Cloud-Init for DigitalOcean Droplet
+# Copyright (c) 2026 Broch, LLC. All rights reserved.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+
+write_files:
+  # Docker Compose configuration
+  - path: /opt/broch/docker-compose.yml
+    permissions: "0644"
+    content: |
+      # Broch -- Docker Compose (DigitalOcean Droplet)
+      # Copyright (c) 2026 Broch, LLC. All rights reserved.
+      services:
+        broch-server:
+          image: ${image}:${image_tag}
+          container_name: broch-server
+          restart: unless-stopped
+          env_file:
+            - .env
+          environment:
+            - ASPNETCORE_ENVIRONMENT=Production
+            - ASPNETCORE_URLS=http://+:8080
+            - DATABASE__PROVIDER=PostgreSQL
+            - ConnectionStrings__DefaultConnection=Host=postgres;Database=brochdb;Username=broch;Password=${postgres_password}
+          depends_on:
+            postgres:
+              condition: service_healthy
+          volumes:
+            - ssh_keys:/app/ssh_keys
+            - dataprotection_keys:/root/.aspnet/DataProtection-Keys
+          # No healthcheck -- aspnet image has no curl/wget/nc.
+          # Restart policy handles crashes; Caddy retries upstream.
+          logging:
+            driver: "json-file"
+            options:
+              max-size: "10m"
+              max-file: "3"
+
+        caddy:
+          build:
+            context: .
+            dockerfile: Dockerfile.caddy
+          container_name: broch-caddy
+          restart: unless-stopped
+          depends_on:
+            - broch-server
+          ports:
+            - "443:443"
+          environment:
+            - WILDCARD_HOSTNAME=${wildcard_hostname}
+            - DNS_API_TOKEN=${dns_api_token}
+          volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+            - caddy_config:/config
+          logging:
+            driver: "json-file"
+            options:
+              max-size: "5m"
+              max-file: "3"
+
+        postgres:
+          image: postgres:16-alpine
+          container_name: broch-postgres
+          restart: unless-stopped
+          environment:
+            - POSTGRES_DB=brochdb
+            - POSTGRES_USER=broch
+            - POSTGRES_PASSWORD=${postgres_password}
+          volumes:
+            - /mnt/broch-data/postgresql:/var/lib/postgresql/data
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U broch"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+          logging:
+            driver: "json-file"
+            options:
+              max-size: "5m"
+              max-file: "3"
+
+      volumes:
+        caddy_data:
+        caddy_config:
+        dataprotection_keys:
+        ssh_keys:
+
+      networks:
+        default:
+          name: broch-network
+
+  # Caddy reverse proxy configuration
+  - path: /opt/broch/Caddyfile
+    permissions: "0644"
+    content: |
+      # Broch -- Caddy Reverse Proxy
+      # Copyright (c) 2026 Broch, LLC. All rights reserved.
+      #
+      # Automatic wildcard TLS via Let's Encrypt DNS-01 challenge.
+      # Caddy generates and renews the certificate automatically --
+      # no manual cert management required.
+      #
+      # DNS_PROVIDER must match a compiled plugin (see Dockerfile.caddy).
+      # Supported: cloudflare, godaddy, route53
+
+      {$WILDCARD_HOSTNAME}, *.{$WILDCARD_HOSTNAME} {
+      	tls {
+      		dns ${dns_provider} {$DNS_API_TOKEN}
+      	}
+
+      	reverse_proxy broch-server:8080
+      }
+
+  # Custom Caddy build with DNS provider plugins
+  - path: /opt/broch/Dockerfile.caddy
+    permissions: "0644"
+    content: |
+      FROM caddy:2-builder AS builder
+
+      RUN xcaddy build \
+          --with github.com/caddy-dns/godaddy \
+          --with github.com/caddy-dns/cloudflare \
+          --with github.com/caddy-dns/route53
+
+      FROM caddy:2-alpine
+
+      COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+  # Environment variables
+  - path: /opt/broch/.env
+    permissions: "0600"
+    content: |
+      BROCH_LICENSE=${license_key}
+      CentralServer__ApiUrl=${central_server_url}
+      API__WILDCARDHOSTNAME=${wildcard_hostname}
+      AUTHENTICATION__PROVIDER=${auth_provider}
+      AUTHENTICATION__CLIENTID=${auth_client_id}
+      AUTHENTICATION__CLIENTSECRET=${auth_client_secret}
+      AUTHENTICATION__TENANTID=${auth_tenant_id}
+      AUTHENTICATION__INSTANCE=${auth_instance}
+      AUTHENTICATION__DOMAIN=${auth_domain}
+      AUTHENTICATION__AUDIENCE=${auth_audience}
+      Broch__AdminEmail=${admin_email}
+      AUTHENTICATION__ADMINROLES=${admin_roles}
+
+  # Systemd service for auto-start on reboot
+  - path: /etc/systemd/system/broch.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Broch (Docker Compose)
+      Requires=docker.service
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/broch
+      ExecStart=/usr/bin/docker compose up -d
+      ExecStop=/usr/bin/docker compose down
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Install Docker Engine
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Format and mount block storage volume
+  - mkdir -p /mnt/broch-data
+  - |
+    DEVICE=$(ls /dev/disk/by-id/scsi-0DO_Volume_${deployment_name}-data 2>/dev/null || echo "")
+    if [ -n "$DEVICE" ]; then
+      # Only format if not already formatted
+      if ! blkid "$DEVICE" | grep -q ext4; then
+        mkfs.ext4 -F "$DEVICE"
+      fi
+      mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
+      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+    fi
+  - mkdir -p /mnt/broch-data/postgresql
+  - chown -R 999:999 /mnt/broch-data/postgresql
+
+  # Log in to private registry if a token was provided
+  - |
+    %{ if ghcr_token != "" ~}
+    echo "${ghcr_token}" | docker login ghcr.io -u x-access-token --password-stdin
+    %{ endif ~}
+
+  # Start Broch
+  - systemctl daemon-reload
+  - systemctl enable broch.service
+  - cd /opt/broch && docker compose up -d
