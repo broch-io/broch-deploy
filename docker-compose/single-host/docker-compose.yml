@@ -9,10 +9,16 @@
 #   - Reverse proxy       (server is exposed directly on host port 8080)
 #   - Automated backups   (postgres_data volume is durable but not snapshotted)
 #
-# Use this when: testing Broch locally on a laptop, or running on a private
-# network where TLS at the broch port isn't required.
+# Use this when: running on a private network, internal staging environment,
+# or developer-laptop testing against a hosts-file entry. The broch port is
+# in the clear on :8080 — no TLS.
 #
-# Do NOT use this directly on the public internet — your tunnel credentials
+# Same dependency footprint as the with-postgres example (broch needs
+# Postgres, a license, a wildcard hostname, and the GHCR PAT). The
+# difference is TLS exposure, not lightness — broch only supports
+# PostgreSQL, so there's no "sqlite mode" alternative.
+#
+# Do NOT use this directly on the public internet — tunnel credentials
 # and tunnel traffic would be cleartext over HTTP. Use the with-postgres
 # example for anything internet-facing.
 

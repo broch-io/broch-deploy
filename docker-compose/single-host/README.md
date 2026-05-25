@@ -1,15 +1,17 @@
 # Single-host docker-compose
 
-The smallest working Broch deployment: the server + a bundled Postgres on one machine, no TLS, exposed on host port 8080. Best for kicking the tires locally, or running on a private network where TLS at the broch port isn't required.
+Single-VM Broch deployment with no TLS at the broch port — broch + a bundled Postgres on one host, broch exposed directly on `:8080`. Intended for **private networks, internal staging, or developer-laptop use against a hosts-file entry**.
 
-For anything internet-facing or production-grade, use [`../with-postgres/`](../with-postgres/) instead — it adds Caddy for automatic Let's Encrypt TLS.
+Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch needs Postgres — it's the only supported database; you also need a Broch license, a wildcard hostname, and the GHCR PAT while the image is private). The difference is purely TLS exposure: this example has none, with-postgres adds Caddy + Let's Encrypt for public-internet deployments.
+
+**Don't use this on the public internet.** Tunnel credentials and tunnel traffic would flow over cleartext HTTP. Use [`../with-postgres/`](../with-postgres/) for anything internet-facing.
 
 ## What you get
 
 - One `broch` container, image pinned by the `BROCH_VERSION` env var
 - One `postgres:17-alpine` container with a durable named volume for state
 - Broch's HTTP listener exposed on host `:8080`
-- Both containers on a private `broch` network so they can talk by service name
+- Both containers on a docker-compose default network so they can talk by service name
 
 ## Prerequisites
 

@@ -9,8 +9,8 @@ If you're looking for **the application** itself, the public docs at <https://br
 ```text
 broch-deploy/
 ├── docker-compose/
-│   ├── single-host/         # All-in-one: broch + sqlite, no TLS. For kicking tires.
-│   └── with-postgres/       # broch + Postgres + Caddy (auto-TLS via Let's Encrypt).
+│   ├── single-host/         # broch + Postgres on one host, no TLS. Private-network use.
+│   └── with-postgres/       # broch + Postgres + Caddy (auto-TLS via Let's Encrypt). Public-internet use.
 ├── terraform/
 │   ├── aws-ecs/             # AWS Fargate + ALB + RDS Postgres + Secrets Manager.
 │   └── azure-container-apps/# Azure Container Apps + Postgres Flexible Server + Key Vault.
@@ -40,12 +40,14 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 
 ## Picking an example
 
-| Goal                                       | Use                                                            |
-| ------------------------------------------ | -------------------------------------------------------------- |
-| Try Broch locally on a laptop              | [`docker-compose/single-host/`](docker-compose/single-host/)   |
-| Small production deployment on a single VM | [`docker-compose/with-postgres/`](docker-compose/with-postgres/) |
-| AWS production deployment                  | [`terraform/aws-ecs/`](terraform/aws-ecs/)                     |
-| Azure production deployment                | [`terraform/azure-container-apps/`](terraform/azure-container-apps/) |
+| Goal                                                       | Use                                                            |
+| ---------------------------------------------------------- | -------------------------------------------------------------- |
+| Single-VM Broch on a private network (no public TLS)       | [`docker-compose/single-host/`](docker-compose/single-host/)   |
+| Single-VM Broch on the public internet (Caddy auto-TLS)    | [`docker-compose/with-postgres/`](docker-compose/with-postgres/) |
+| Production on AWS (Fargate + ALB + RDS)                    | [`terraform/aws-ecs/`](terraform/aws-ecs/)                     |
+| Production on Azure (Container Apps + Postgres Flexible)   | [`terraform/azure-container-apps/`](terraform/azure-container-apps/) |
+
+Every example uses the same dependency footprint — broch needs Postgres (the only supported database), a Broch license, and a wildcard hostname. The examples differ in **TLS exposure** (public-facing vs. private-network) and **infrastructure layer** (single VM vs. managed cloud services), not in commitment level.
 
 For other platforms (GCP, on-prem Kubernetes, Hetzner) the docker-compose examples translate cleanly — `with-postgres` is a complete production-shape stack that you can `scp` to any Linux VM.
 
