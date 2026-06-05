@@ -21,6 +21,7 @@ services:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
       BROCH_LICENSE: ${BROCH_LICENSE}
+      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       DATABASE__PROVIDER: PostgreSQL
       # Connection string points at your external DB. SSL Mode=Require is
       # standard for managed services; relax to Prefer or Disable if your

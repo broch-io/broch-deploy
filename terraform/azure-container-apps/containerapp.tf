@@ -61,6 +61,12 @@ resource "azurerm_container_app" "broch" {
   }
 
   secret {
+    name                = "master-key"
+    key_vault_secret_id = azurerm_key_vault_secret.master_key.id
+    identity            = azurerm_user_assigned_identity.broch.id
+  }
+
+  secret {
     name                = "postgres-connection-string"
     key_vault_secret_id = azurerm_key_vault_secret.postgres_connection_string.id
     identity            = azurerm_user_assigned_identity.broch.id
@@ -106,6 +112,10 @@ resource "azurerm_container_app" "broch" {
       env {
         name        = "BROCH_LICENSE"
         secret_name = "broch-license"
+      }
+      env {
+        name        = "BROCH_MASTER_KEY"
+        secret_name = "master-key"
       }
       env {
         name        = "ConnectionStrings__DefaultConnection"

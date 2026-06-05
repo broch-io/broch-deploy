@@ -39,7 +39,7 @@ Rough monthly numbers in `us-east-1`, on-demand pricing as of 2026:
 | RDS db.t4g.micro single-AZ + 20GB | $14-18              |
 | NAT Gateway + data transfer       | $32 + traffic       |
 | Route 53 zone + queries           | $0.50               |
-| Secrets Manager (4 secrets)       | $1.60               |
+| Secrets Manager (5 secrets)       | $2.00               |
 | **Total baseline**                | **~$75-90/month**   |
 
 The NAT gateway is the biggest individual line item. For a cost-optimized deployment, see "Tradeoffs" below.
@@ -77,8 +77,10 @@ curl -fsS "$(terraform output -raw broch_url)/healthz"
 
 1. You hand `broch_license` + `github_pat` + `github_username` to Terraform as variables.
 2. Terraform writes them to Secrets Manager.
-3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`BROCH_LICENSE`, `ConnectionStrings__DefaultConnection`) or as docker pull credentials.
+3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`BROCH_LICENSE`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`) or as docker pull credentials.
 4. The container never sees the raw secret on disk — it only gets the resolved values via env.
+
+The Postgres password and `BROCH_MASTER_KEY` are *generated* by Terraform (`random_password`), not supplied — they exist only in Secrets Manager and the container's environment. `BROCH_MASTER_KEY` is the at-rest encryption root the server requires at boot; rotating it forces a one-time re-auth (state self-heals).
 
 Rotating any secret = edit the secret value (via console or `aws secretsmanager update-secret`) + force a new ECS deployment (`aws ecs update-service --force-new-deployment`).
 

@@ -7,6 +7,15 @@ resource "random_password" "postgres" {
   special = false # avoid characters that need URL-encoding in the connection string
 }
 
+# BROCH_MASTER_KEY — the customer-owned at-rest encryption root. Generated once
+# here and stored in Secrets Manager; the server requires it at boot. It is never
+# supplied by the operator and never leaves your account. Rotating it forces a
+# one-time re-auth / license re-activation (state self-heals; nothing is bricked).
+resource "random_password" "master_key" {
+  length  = 48
+  special = false
+}
+
 resource "aws_db_subnet_group" "main" {
   name       = "${var.name_prefix}-rds"
   subnet_ids = aws_subnet.private[*].id
@@ -46,6 +55,17 @@ resource "aws_secretsmanager_secret" "broch_license" {
 resource "aws_secretsmanager_secret_version" "broch_license" {
   secret_id     = aws_secretsmanager_secret.broch_license.id
   secret_string = var.broch_license
+}
+
+resource "aws_secretsmanager_secret" "master_key" {
+  name                    = "${var.name_prefix}/master-key"
+  description             = "Broch at-rest encryption master key (BROCH_MASTER_KEY). Generated, not supplied; the server won't start without it."
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "master_key" {
+  secret_id     = aws_secretsmanager_secret.master_key.id
+  secret_string = random_password.master_key.result
 }
 
 resource "aws_secretsmanager_secret" "postgres_password" {
