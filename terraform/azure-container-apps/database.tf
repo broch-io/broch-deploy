@@ -10,6 +10,15 @@ resource "random_password" "postgres" {
   special = false # avoid URL-encoding pain in the connection string
 }
 
+# BROCH_MASTER_KEY — customer-owned at-rest encryption root. Generated here and
+# stored in Key Vault; required by the server at boot, never operator-supplied,
+# never leaves your subscription. Rotating it forces a one-time re-auth (state
+# self-heals).
+resource "random_password" "master_key" {
+  length  = 48
+  special = false
+}
+
 resource "azurerm_postgresql_flexible_server" "broch" {
   name                = "${var.name_prefix}-postgres-${local.suffix}"
   resource_group_name = azurerm_resource_group.broch.name

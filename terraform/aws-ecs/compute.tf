@@ -155,6 +155,7 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
       Action = ["secretsmanager:GetSecretValue"]
       Resource = [
         aws_secretsmanager_secret.broch_license.arn,
+        aws_secretsmanager_secret.master_key.arn,
         aws_secretsmanager_secret.connection_string.arn,
         aws_secretsmanager_secret.ghcr_pull.arn,
       ]
@@ -213,6 +214,10 @@ resource "aws_ecs_task_definition" "broch" {
       {
         name      = "BROCH_LICENSE"
         valueFrom = aws_secretsmanager_secret.broch_license.arn
+      },
+      {
+        name      = "BROCH_MASTER_KEY"
+        valueFrom = aws_secretsmanager_secret.master_key.arn
       },
       {
         name      = "ConnectionStrings__DefaultConnection"

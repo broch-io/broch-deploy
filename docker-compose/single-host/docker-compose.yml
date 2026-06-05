@@ -34,6 +34,7 @@ services:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
       BROCH_LICENSE: ${BROCH_LICENSE}
+      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       DATABASE__PROVIDER: PostgreSQL
       ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
     ports:

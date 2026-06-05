@@ -139,6 +139,8 @@ write_files:
     permissions: "0600"
     content: |
       BROCH_LICENSE=${license_key}
+      # Generated on first boot by the runcmd below — never supplied by the operator.
+      BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
       CentralServer__ApiUrl=${central_server_url}
       API__WILDCARDHOSTNAME=${wildcard_hostname}
       AUTHENTICATION__PROVIDER=${auth_provider}
@@ -171,6 +173,17 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  # Generate BROCH_MASTER_KEY on the droplet and inject it into .env before the
+  # stack starts. This is the customer-owned at-rest encryption root — the vendor
+  # never receives it. Idempotent: only fills the placeholder, so re-running
+  # cloud-init won't re-roll the key. (`$${MASTER_KEY}` is escaped for templatefile.)
+  - |
+    if grep -q '^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
+      MASTER_KEY=$(openssl rand -base64 48 | tr -d '\n')
+      sed -i "s|^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__|BROCH_MASTER_KEY=$${MASTER_KEY}|" /opt/broch/.env
+      chmod 0600 /opt/broch/.env
+    fi
+
   # Install Docker Engine
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
