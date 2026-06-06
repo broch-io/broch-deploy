@@ -16,9 +16,10 @@ output "rds_endpoint" {
 output "secrets_arns" {
   description = "ARNs of the Secrets Manager secrets this stack creates. Rotate values via the AWS console / CLI; the ECS task picks up new values on the next deployment."
   value = {
-    broch_license     = aws_secretsmanager_secret.broch_license.arn
-    postgres_password = aws_secretsmanager_secret.postgres_password.arn
-    connection_string = aws_secretsmanager_secret.connection_string.arn
-    ghcr_pull         = aws_secretsmanager_secret.ghcr_pull.arn
+    broch_license      = one(aws_secretsmanager_secret.broch_license[*].arn) # null when no license was supplied
+    auth_client_secret = aws_secretsmanager_secret.auth_client_secret.arn
+    postgres_password  = aws_secretsmanager_secret.postgres_password.arn
+    connection_string  = aws_secretsmanager_secret.connection_string.arn
+    ghcr_pull          = aws_secretsmanager_secret.ghcr_pull.arn
   }
 }

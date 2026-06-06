@@ -32,8 +32,9 @@ Only Caddy is reachable from outside the host. Broch and Postgres are on a priva
 - A VM with public IPs (v4 and ideally v6) and ports 80 / 443 open
 - A registered domain on **Cloudflare** (if you use a different DNS provider, see [Caddy.Dockerfile](Caddy.Dockerfile) — Caddy supports route53, googleclouddns, gandi, digitalocean, hetzner, and more)
 - A Cloudflare API token scoped to that zone with **Zone:Read + DNS:Edit** — create one at <https://dash.cloudflare.com/profile/api-tokens> using the "Edit zone DNS" template
-- A Broch license key from <https://broch.io/account>
+- An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub PAT with `read:packages` to pull the broch image (while the image is private — see [top-level README](../../README.md#the-broch-server-image))
+- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at <https://broch.io/pricing>
 
 ## DNS records
 
@@ -72,11 +73,14 @@ curl -fsS https://tunnels.example.com/healthz
 
 | Variable                  | What it is                                                        |
 | ------------------------- | ----------------------------------------------------------------- |
-| `BROCH_LICENSE`           | Your license key. Server refuses to start without it.             |
+| `BROCH_MASTER_KEY`        | At-rest encryption root. Server won't start without it — `openssl rand -base64 48`. |
 | `BROCH_WILDCARD_HOSTNAME` | Your real DNS name. Must resolve to this host's public IP.        |
 | `CADDY_ACME_EMAIL`        | Where Let's Encrypt sends cert-expiry warnings. Use a real inbox. |
 | `CLOUDFLARE_API_TOKEN`    | Zone:Read + DNS:Edit token for the zone hosting your hostname.    |
 | `POSTGRES_PASSWORD`       | Strong password for the bundled Postgres.                         |
+| `AUTHENTICATION__*`       | Your identity provider — part of the boot floor. No one can sign in until it's set. |
+
+`BROCH_LICENSE` is optional at boot — leave it blank and activate in-app on first sign-in, or pre-seed it.
 
 ## Lifecycle
 

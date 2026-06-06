@@ -47,8 +47,8 @@ echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
 # 2. Copy + fill the env template
 cp .env.example .env
-$EDITOR .env   # Set BROCH_LICENSE, BROCH_WILDCARD_HOSTNAME, CADDY_ACME_EMAIL,
-               # CLOUDFLARE_API_TOKEN, and BROCH_DB_CONNECTION_STRING.
+$EDITOR .env   # Set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*,
+               # CADDY_ACME_EMAIL, CLOUDFLARE_API_TOKEN, and BROCH_DB_CONNECTION_STRING.
 
 # 3. Start
 docker compose up -d --build

@@ -38,9 +38,10 @@ internet ──────▶  │ caddy (80/443/443udp)                    │
   - The wildcard (`*.tunnels.example.com`)
   - One cert with both as SANs is typical; two separate certs also works but requires Caddyfile edits
 - Routine to refresh those files before expiry (see [Renewal](#renewal))
-- A Broch license key
+- An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub PAT with `read:packages` (while the broch image is private)
 - DNS A/AAAA record for the apex hostname pointing at this host's public IP
+- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
@@ -57,7 +58,7 @@ echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
 # 3. Copy + fill the env template
 cp .env.example .env
-$EDITOR .env   # BROCH_LICENSE, BROCH_WILDCARD_HOSTNAME, POSTGRES_PASSWORD
+$EDITOR .env   # BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*, POSTGRES_PASSWORD
 
 # 4. Start
 docker compose up -d

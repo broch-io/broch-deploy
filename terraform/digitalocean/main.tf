@@ -60,6 +60,7 @@ resource "digitalocean_droplet" "broch" {
     dns_provider       = var.dns_provider
     dns_api_token      = var.dns_api_token
     auth_audience      = var.auth_audience
+    auth_authority     = var.auth_authority
   })
 }
 

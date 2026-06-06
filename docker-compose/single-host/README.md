@@ -2,7 +2,7 @@
 
 Single-VM Broch deployment with no TLS at the broch port — broch + a bundled Postgres on one host, broch exposed directly on `:8080`. Intended for **private networks, internal staging, or developer-laptop use against a hosts-file entry**.
 
-Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch needs Postgres — it's the only supported database; you also need a Broch license, a wildcard hostname, and the GHCR PAT while the image is private). The difference is purely TLS exposure: this example has none, with-postgres adds Caddy + Let's Encrypt for public-internet deployments.
+Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch needs Postgres — it's the only supported database; you also need an identity provider for sign-in, a wildcard hostname, and the GHCR PAT while the image is private; a Broch license is optional at boot). The difference is purely TLS exposure: this example has none, with-postgres adds Caddy + Let's Encrypt for public-internet deployments.
 
 **Don't use this on the public internet.** Tunnel credentials and tunnel traffic would flow over cleartext HTTP. Use [`../with-postgres/`](../with-postgres/) for anything internet-facing.
 
@@ -16,9 +16,10 @@ Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch nee
 ## Prerequisites
 
 - Docker 24+ and the `docker compose` v2 plugin
-- A Broch license key (see [broch.io/account](https://broch.io/account))
+- An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub Personal Access Token with `read:packages` (while the image is private — see the [top-level README](../../README.md#the-broch-server-image))
 - A DNS name (or hosts-file entry) for tunnel URLs
+- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
@@ -28,7 +29,7 @@ echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
 # 2. Copy the env template and fill it in
 cp .env.example .env
-$EDITOR .env   # set BROCH_LICENSE, BROCH_WILDCARD_HOSTNAME, POSTGRES_PASSWORD
+$EDITOR .env   # set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*, POSTGRES_PASSWORD
 
 # 3. Start the stack
 docker compose up -d
@@ -44,15 +45,14 @@ You should see a `200 OK` from `/healthz` once both services report `healthy`.
 
 ## What's required in `.env`
 
-Three values you have to provide:
-
 | Variable                  | What it is                                                   |
 | ------------------------- | ------------------------------------------------------------ |
-| `BROCH_LICENSE`           | Your license key. Server refuses to start without it.        |
+| `BROCH_MASTER_KEY`        | At-rest encryption root. Server won't start without it — `openssl rand -base64 48`. |
 | `BROCH_WILDCARD_HOSTNAME` | DNS wildcard that tunnel URLs use (e.g. `tunnels.example.com`). |
 | `POSTGRES_PASSWORD`       | Strong password for the bundled Postgres — `openssl rand -base64 32`. |
+| `AUTHENTICATION__*`       | Your identity provider — part of the boot floor. No one can sign in until it's set. |
 
-Everything else has a sensible default. See [`.env.example`](.env.example) for the full list.
+`BROCH_LICENSE` is optional at boot — leave it blank and activate in-app on first sign-in, or pre-seed it. Everything else has a sensible default. See [`.env.example`](.env.example) for the full list.
 
 ## Connecting a client
 

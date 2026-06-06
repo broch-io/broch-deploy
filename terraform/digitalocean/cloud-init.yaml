@@ -150,6 +150,7 @@ write_files:
       AUTHENTICATION__INSTANCE=${auth_instance}
       AUTHENTICATION__DOMAIN=${auth_domain}
       AUTHENTICATION__AUDIENCE=${auth_audience}
+      AUTHENTICATION__AUTHORITY=${auth_authority}
       Broch__AdminEmail=${admin_email}
       AUTHENTICATION__ADMINROLES=${admin_roles}
 

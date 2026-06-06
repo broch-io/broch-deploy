@@ -53,8 +53,8 @@ The cheapest cloud option of the three Terraform modules — by a wide margin. T
 - An SSH key [registered in DigitalOcean](https://cloud.digitalocean.com/account/security) — note the fingerprint
 - A registered domain on a [Caddy-compatible DNS provider](https://github.com/caddy-dns) — Cloudflare, GoDaddy, and Route 53 are compiled in by default
 - A DNS provider API token with permission to edit the zone hosting your wildcard hostname
-- A Broch license key
-- An identity provider app registration (Azure Entra ID, Auth0, Okta, etc.)
+- An identity provider app registration (Azure Entra ID, Auth0, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot
+- Optional: a Broch license key — activate in-app after first sign-in, or set `license_key` to pre-seed it
 - A GitHub PAT with `read:packages` (while `ghcr.io/broch-io/broch` is private)
 
 ## Setup

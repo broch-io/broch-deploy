@@ -54,9 +54,19 @@ resource "azurerm_container_app" "broch" {
     identity            = azurerm_user_assigned_identity.broch.id
   }
 
+  # License is optional at boot — only declare its secret when one was supplied.
+  dynamic "secret" {
+    for_each = toset(var.broch_license != "" ? ["license"] : [])
+    content {
+      name                = "broch-license"
+      key_vault_secret_id = azurerm_key_vault_secret.broch_license[0].id
+      identity            = azurerm_user_assigned_identity.broch.id
+    }
+  }
+
   secret {
-    name                = "broch-license"
-    key_vault_secret_id = azurerm_key_vault_secret.broch_license.id
+    name                = "auth-client-secret"
+    key_vault_secret_id = azurerm_key_vault_secret.auth_client_secret.id
     identity            = azurerm_user_assigned_identity.broch.id
   }
 
@@ -109,9 +119,13 @@ resource "azurerm_container_app" "broch" {
         name  = "DATABASE__PROVIDER"
         value = "PostgreSQL"
       }
-      env {
-        name        = "BROCH_LICENSE"
-        secret_name = "broch-license"
+      # License is optional at boot — only inject it when one was supplied.
+      dynamic "env" {
+        for_each = toset(var.broch_license != "" ? ["license"] : [])
+        content {
+          name        = "BROCH_LICENSE"
+          secret_name = "broch-license"
+        }
       }
       env {
         name        = "BROCH_MASTER_KEY"
@@ -120,6 +134,44 @@ resource "azurerm_container_app" "broch" {
       env {
         name        = "ConnectionStrings__DefaultConnection"
         secret_name = "postgres-connection-string"
+      }
+      # Identity provider — part of the boot floor (client secret injected from
+      # Key Vault above). Unused provider-specific values stay blank.
+      env {
+        name        = "AUTHENTICATION__CLIENTSECRET"
+        secret_name = "auth-client-secret"
+      }
+      env {
+        name  = "AUTHENTICATION__PROVIDER"
+        value = var.auth_provider
+      }
+      env {
+        name  = "AUTHENTICATION__CLIENTID"
+        value = var.auth_client_id
+      }
+      env {
+        name  = "AUTHENTICATION__ADMINROLES"
+        value = var.auth_admin_roles
+      }
+      env {
+        name  = "AUTHENTICATION__DOMAIN"
+        value = var.auth_domain
+      }
+      env {
+        name  = "AUTHENTICATION__TENANTID"
+        value = var.auth_tenant_id
+      }
+      env {
+        name  = "AUTHENTICATION__INSTANCE"
+        value = var.auth_instance
+      }
+      env {
+        name  = "AUTHENTICATION__AUTHORITY"
+        value = var.auth_authority
+      }
+      env {
+        name  = "AUTHENTICATION__AUDIENCE"
+        value = var.auth_audience
       }
 
       liveness_probe {

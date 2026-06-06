@@ -4,11 +4,34 @@
 
 wildcard_hostname = "tunnels.example.com"
 route53_zone_id   = "Z0123456789ABCDEFGHIJ"     # Route 53 hosted zone ID
-broch_license     = "<your-license-key>"
 github_pat        = "<github-pat-with-read-packages>"
 github_username   = "<your-github-username>"
 
+# Identity provider — required at boot. Broch has no built-in local login, so
+# no one can sign in (or finish first-run setup) until this is set. Your first
+# admin signs in holding a role named in auth_admin_roles.
+# Guides: https://broch.io/docs/identity-providers/
+auth_provider      = "Auth0"          # Auth0 | AzureAd | EntraExternalId | Okta | Oidc
+auth_client_id     = "<oauth-client-id>"
+auth_client_secret = "<oauth-client-secret>"
+auth_admin_roles   = "broch_admin"
+
+# Set the value(s) your provider needs; leave the rest unset:
+#   Auth0 / Okta:     auth_domain    = "your-tenant.auth0.com"
+#   AzureAd / Entra:  auth_tenant_id = "..."  +  auth_instance = "https://login.microsoftonline.com/"
+#   Oidc (generic):   auth_authority = "https://issuer.example.com"
+# auth_domain    = ""
+# auth_tenant_id = ""
+# auth_instance  = ""
+# auth_authority = ""
+# auth_audience  = ""
+
 # ── Optional (defaults shown) ────────────────────────────────────────────────
+
+# Broch license key. Optional at boot — leave unset to activate in-app on first
+# sign-in (Admin → License), or set it to pre-seed activation. Buy a license at
+# https://broch.io/pricing.
+# broch_license      = "<your-license-key>"
 
 # broch_image        = "ghcr.io/broch-io/broch:1.5.0"
 # aws_region         = "us-east-1"

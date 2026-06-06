@@ -11,10 +11,72 @@ variable "route53_zone_id" {
   type        = string
 }
 
-variable "broch_license" {
-  description = "Broch license key. Stored in AWS Secrets Manager; not committed to state or logs."
+# ─── Identity provider (required at boot) ────────────────────────────────────
+# Broch authenticates every user through your IdP — there is no built-in local
+# login, so the IdP is part of the boot floor. The server starts without these,
+# but no one can sign in (or finish first-run setup) until they're set. Set the
+# provider-specific values your IdP needs; leave the rest blank.
+# Guides: https://broch.io/docs/identity-providers/
+
+variable "auth_provider" {
+  description = "Identity provider type: Auth0 | AzureAd | EntraExternalId | Okta | Oidc."
+  type        = string
+}
+
+variable "auth_client_id" {
+  description = "OAuth client ID from your IdP."
+  type        = string
+}
+
+variable "auth_client_secret" {
+  description = "OAuth client secret from your IdP. Stored in AWS Secrets Manager; not committed to state or logs."
   type        = string
   sensitive   = true
+}
+
+variable "auth_admin_roles" {
+  description = "Comma-separated role/group names that grant admin access. Your first admin signs in holding one of these."
+  type        = string
+  default     = "broch_admin"
+}
+
+variable "auth_domain" {
+  description = "IdP domain — required for Auth0 and Okta (e.g. your-tenant.auth0.com). Leave blank for other providers."
+  type        = string
+  default     = ""
+}
+
+variable "auth_tenant_id" {
+  description = "Tenant ID — required for AzureAd and EntraExternalId. Leave blank for other providers."
+  type        = string
+  default     = ""
+}
+
+variable "auth_instance" {
+  description = "Login instance for AzureAd/EntraExternalId (e.g. https://login.microsoftonline.com/). Leave blank for other providers."
+  type        = string
+  default     = ""
+}
+
+variable "auth_authority" {
+  description = "Issuer URL — required for the generic Oidc provider (serves /.well-known/openid-configuration). Leave blank for other providers."
+  type        = string
+  default     = ""
+}
+
+variable "auth_audience" {
+  description = "OAuth audience identifier. Optional; falls back to the client ID."
+  type        = string
+  default     = ""
+}
+
+# ─── License (optional at boot) ──────────────────────────────────────────────
+
+variable "broch_license" {
+  description = "Broch license key. Optional at boot — leave blank to activate in-app on first sign-in (Admin → License), or set it to pre-seed activation. Stored in AWS Secrets Manager when set."
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "github_pat" {
