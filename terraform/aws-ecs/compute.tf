@@ -153,12 +153,12 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
     Statement = [{
       Effect = "Allow"
       Action = ["secretsmanager:GetSecretValue"]
-      Resource = [
-        aws_secretsmanager_secret.broch_license.arn,
+      Resource = concat([
         aws_secretsmanager_secret.master_key.arn,
         aws_secretsmanager_secret.connection_string.arn,
+        aws_secretsmanager_secret.auth_client_secret.arn,
         aws_secretsmanager_secret.ghcr_pull.arn,
-      ]
+      ], aws_secretsmanager_secret.broch_license[*].arn)
     }]
   })
 }
@@ -208,22 +208,44 @@ resource "aws_ecs_task_definition" "broch" {
       { name = "ASPNETCORE_URLS", value = "http://0.0.0.0:8080" },
       { name = "API__WILDCARDHOSTNAME", value = var.wildcard_hostname },
       { name = "DATABASE__PROVIDER", value = "PostgreSQL" },
+      # Identity provider — part of the boot floor (the client secret is injected
+      # separately via Secrets Manager below). Unused provider-specific values
+      # stay blank and are ignored by the server.
+      { name = "AUTHENTICATION__PROVIDER", value = var.auth_provider },
+      { name = "AUTHENTICATION__CLIENTID", value = var.auth_client_id },
+      { name = "AUTHENTICATION__ADMINROLES", value = var.auth_admin_roles },
+      { name = "AUTHENTICATION__DOMAIN", value = var.auth_domain },
+      { name = "AUTHENTICATION__TENANTID", value = var.auth_tenant_id },
+      { name = "AUTHENTICATION__INSTANCE", value = var.auth_instance },
+      { name = "AUTHENTICATION__AUTHORITY", value = var.auth_authority },
+      { name = "AUTHENTICATION__AUDIENCE", value = var.auth_audience },
     ]
 
-    secrets = [
-      {
-        name      = "BROCH_LICENSE"
-        valueFrom = aws_secretsmanager_secret.broch_license.arn
-      },
-      {
-        name      = "BROCH_MASTER_KEY"
-        valueFrom = aws_secretsmanager_secret.master_key.arn
-      },
-      {
-        name      = "ConnectionStrings__DefaultConnection"
-        valueFrom = aws_secretsmanager_secret.connection_string.arn
-      },
-    ]
+    # BROCH_LICENSE is only injected when a key was supplied (the secret is
+    # created conditionally). Without it the server boots unlicensed and the
+    # admin activates in-app.
+    secrets = concat(
+      [
+        {
+          name      = "BROCH_MASTER_KEY"
+          valueFrom = aws_secretsmanager_secret.master_key.arn
+        },
+        {
+          name      = "ConnectionStrings__DefaultConnection"
+          valueFrom = aws_secretsmanager_secret.connection_string.arn
+        },
+        {
+          name      = "AUTHENTICATION__CLIENTSECRET"
+          valueFrom = aws_secretsmanager_secret.auth_client_secret.arn
+        },
+      ],
+      var.broch_license != "" ? [
+        {
+          name      = "BROCH_LICENSE"
+          valueFrom = aws_secretsmanager_secret.broch_license[0].arn
+        },
+      ] : []
+    )
 
     logConfiguration = {
       logDriver = "awslogs"
