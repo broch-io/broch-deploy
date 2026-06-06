@@ -59,9 +59,20 @@ resource "azurerm_role_assignment" "kv_caller_admin" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+# License is optional at boot — only store the secret when a key is supplied.
+# When blank, the server starts unlicensed and the admin activates in-app.
 resource "azurerm_key_vault_secret" "broch_license" {
+  count        = var.broch_license != "" ? 1 : 0
   name         = "broch-license"
   value        = var.broch_license
+  key_vault_id = azurerm_key_vault.broch.id
+
+  depends_on = [azurerm_role_assignment.kv_caller_admin]
+}
+
+resource "azurerm_key_vault_secret" "auth_client_secret" {
+  name         = "auth-client-secret"
+  value        = var.auth_client_secret
   key_vault_id = azurerm_key_vault.broch.id
 
   depends_on = [azurerm_role_assignment.kv_caller_admin]
