@@ -41,9 +41,10 @@ variable "volume_size" {
 # --- Broch ---
 
 variable "license_key" {
-  description = "Broch license key issued by Broch, LLC"
+  description = "Broch license key. Optional at boot — leave blank to activate in-app on first sign-in (Admin → License), or set it to pre-seed activation."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "central_server_url" {
@@ -91,7 +92,7 @@ variable "dns_api_token" {
 # --- Authentication ---
 
 variable "auth_provider" {
-  description = "Identity provider type (AzureAd, EntraExternalId, Auth0, Okta)"
+  description = "Identity provider type (AzureAd, EntraExternalId, Auth0, Okta, Oidc)"
   type        = string
   default     = "AzureAd"
 }
@@ -127,6 +128,12 @@ variable "auth_domain" {
 
 variable "auth_audience" {
   description = "OAuth2 audience (required for Okta)"
+  type        = string
+  default     = ""
+}
+
+variable "auth_authority" {
+  description = "Issuer URL — required for the generic Oidc provider (serves /.well-known/openid-configuration). Leave blank for other providers."
   type        = string
   default     = ""
 }
