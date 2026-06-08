@@ -39,7 +39,6 @@ internet ──────▶  │ caddy (80/443/443udp)                    │
   - One cert with both as SANs is typical; two separate certs also works but requires Caddyfile edits
 - Routine to refresh those files before expiry (see [Renewal](#renewal))
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
-- A GitHub PAT with `read:packages` (while the broch image is private)
 - DNS A/AAAA record for the apex hostname pointing at this host's public IP
 - Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
@@ -53,17 +52,14 @@ cp /path/to/your/privkey.pem    ./certs/privkey.pem
 chmod 644 ./certs/fullchain.pem
 chmod 600 ./certs/privkey.pem
 
-# 2. Log in to GHCR for the broch image
-echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
-
-# 3. Copy + fill the env template
+# 2. Copy + fill the env template
 cp .env.example .env
 $EDITOR .env   # BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*, POSTGRES_PASSWORD
 
-# 4. Start
+# 3. Start
 docker compose up -d
 
-# 5. Verify (give Postgres a minute on first run)
+# 4. Verify (give Postgres a minute on first run)
 docker compose ps
 curl -fsS https://tunnels.example.com/healthz
 ```

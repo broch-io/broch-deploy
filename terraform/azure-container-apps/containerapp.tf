@@ -37,23 +37,9 @@ resource "azurerm_container_app" "broch" {
     identity_ids = [azurerm_user_assigned_identity.broch.id]
   }
 
-  # Pull credentials for the private GHCR image. Once the image is public,
-  # delete this block + the github_pat var + the github_pat secret.
-  registry {
-    server               = "ghcr.io"
-    username             = var.github_username
-    password_secret_name = "ghcr-registry-credentials"
-  }
-
   # Each Key Vault secret the container needs has to be re-declared here as
   # a Container Apps secret that points at the Key Vault entry by URI. The
   # `identity` field names the managed identity Container Apps uses to read.
-  secret {
-    name                = "ghcr-registry-credentials"
-    key_vault_secret_id = azurerm_key_vault_secret.github_pat.id
-    identity            = azurerm_user_assigned_identity.broch.id
-  }
-
   secret {
     name                = "auth-client-secret"
     key_vault_secret_id = azurerm_key_vault_secret.auth_client_secret.id

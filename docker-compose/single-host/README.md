@@ -2,7 +2,7 @@
 
 Single-VM Broch deployment with no TLS at the broch port — broch + a bundled Postgres on one host, broch exposed directly on `:8080`. Intended for **private networks, internal staging, or developer-laptop use against a hosts-file entry**.
 
-Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch needs Postgres — it's the only supported database; you also need an identity provider for sign-in, a wildcard hostname, and the GHCR PAT while the image is private; a Broch license is optional at boot). The difference is purely TLS exposure: this example has none, with-postgres adds Caddy + Let's Encrypt for public-internet deployments.
+Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch needs Postgres — it's the only supported database; you also need an identity provider for sign-in and a wildcard hostname; a Broch license is activated in-app after first sign-in). The difference is purely TLS exposure: this example has none, with-postgres adds Caddy + Let's Encrypt for public-internet deployments.
 
 **Don't use this on the public internet.** Tunnel credentials and tunnel traffic would flow over cleartext HTTP. Use [`../with-postgres/`](../with-postgres/) for anything internet-facing.
 
@@ -17,27 +17,23 @@ Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch nee
 
 - Docker 24+ and the `docker compose` v2 plugin
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
-- A GitHub Personal Access Token with `read:packages` (while the image is private — see the [top-level README](../../README.md#the-broch-server-image))
 - A DNS name (or hosts-file entry) for tunnel URLs
 - Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
 ```sh
-# 1. Log in to GHCR so you can pull the private image (one-time)
-echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
-
-# 2. Copy the env template and fill it in
+# 1. Copy the env template and fill it in
 cp .env.example .env
 $EDITOR .env   # set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*, POSTGRES_PASSWORD
 
-# 3. Start the stack
+# 2. Start the stack
 docker compose up -d
 
-# 4. Wait for healthchecks to settle (~60s on first run, postgres init + EF migrations)
+# 3. Wait for healthchecks to settle (~60s on first run, postgres init + EF migrations)
 docker compose ps
 
-# 5. Verify the server is responding
+# 4. Verify the server is responding
 curl -fsS http://localhost:8080/healthz
 ```
 

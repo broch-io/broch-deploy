@@ -75,10 +75,3 @@ resource "azurerm_key_vault_secret" "master_key" {
   depends_on = [azurerm_role_assignment.kv_caller_admin]
 }
 
-resource "azurerm_key_vault_secret" "github_pat" {
-  name         = "github-pat"
-  value        = var.github_pat
-  key_vault_id = azurerm_key_vault.broch.id
-
-  depends_on = [azurerm_role_assignment.kv_caller_admin]
-}

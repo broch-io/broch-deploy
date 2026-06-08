@@ -70,17 +70,6 @@ variable "auth_audience" {
   default     = ""
 }
 
-variable "github_pat" {
-  description = "GitHub Personal Access Token with read:packages, used by ECS to pull the broch image from GHCR while the image is private. Stored in AWS Secrets Manager."
-  type        = string
-  sensitive   = true
-}
-
-variable "github_username" {
-  description = "GitHub username paired with github_pat for GHCR auth."
-  type        = string
-}
-
 # ─── Optional inputs (sensible defaults) ─────────────────────────────────────
 
 variable "broch_image" {

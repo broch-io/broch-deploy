@@ -19,6 +19,5 @@ output "secrets_arns" {
     auth_client_secret = aws_secretsmanager_secret.auth_client_secret.arn
     postgres_password  = aws_secretsmanager_secret.postgres_password.arn
     connection_string  = aws_secretsmanager_secret.connection_string.arn
-    ghcr_pull          = aws_secretsmanager_secret.ghcr_pull.arn
   }
 }

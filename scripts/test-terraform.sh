@@ -18,7 +18,7 @@
 #   - Cloud credentials configured (aws configure / az login)
 #   - terraform.tfvars filled in for the target module — copy from
 #     terraform.tfvars.example. The script doesn't fill these for you because
-#     they include your license key + GitHub PAT.
+#     they include secrets (e.g. your IdP client secret).
 #
 # Cost: a single apply→destroy cycle is a few dollars (mostly NAT gateway
 # hourly + RDS provisioning minimum). The script always attempts destroy on

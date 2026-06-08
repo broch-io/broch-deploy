@@ -91,19 +91,3 @@ resource "aws_secretsmanager_secret_version" "connection_string" {
   secret_id     = aws_secretsmanager_secret.connection_string.id
   secret_string = "Host=${aws_db_instance.broch.address};Port=${aws_db_instance.broch.port};Database=${var.postgres_db_name};Username=${var.postgres_user};Password=${random_password.postgres.result}"
 }
-
-# GHCR pull credentials in the docker-registry-credentials format ECS expects.
-# Used by the task definition's repositoryCredentials block.
-resource "aws_secretsmanager_secret" "ghcr_pull" {
-  name                    = "${var.name_prefix}/ghcr-pull-credentials"
-  description             = "GHCR docker credentials for pulling the broch image while it's private."
-  recovery_window_in_days = 0
-}
-
-resource "aws_secretsmanager_secret_version" "ghcr_pull" {
-  secret_id = aws_secretsmanager_secret.ghcr_pull.id
-  secret_string = jsonencode({
-    username = var.github_username
-    password = var.github_pat
-  })
-}

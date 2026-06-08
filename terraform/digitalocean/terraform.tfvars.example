@@ -33,9 +33,3 @@ postgres_password   = "<strong-random-password>"
 # dns_provider        = "cloudflare"
 # auth_provider       = "AzureAd"
 # auth_instance       = "https://login.microsoftonline.com/"
-
-# ── While the broch image is private ─────────────────────────────────────────
-
-# GHCR PAT (read:packages) so the droplet can pull the image at boot.
-# Drop this once ghcr.io/broch-io/broch goes public.
-# ghcr_token = "<github-pat-with-read-packages>"

@@ -63,12 +63,6 @@ variable "image_tag" {
   default     = "latest"
 }
 
-variable "ghcr_token" {
-  description = "GitHub Container Registry token for pulling private images. Leave empty for public images."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
 
 variable "dns_provider" {
   description = "DNS provider name matching the compiled Caddy plugin (cloudflare, godaddy, route53)"

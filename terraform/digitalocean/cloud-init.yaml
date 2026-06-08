@@ -207,12 +207,6 @@ runcmd:
   - mkdir -p /mnt/broch-data/postgresql
   - chown -R 999:999 /mnt/broch-data/postgresql
 
-  # Log in to private registry if a token was provided
-  - |
-    %{ if ghcr_token != "" ~}
-    echo "${ghcr_token}" | docker login ghcr.io -u x-access-token --password-stdin
-    %{ endif ~}
-
   # Start Broch
   - systemctl daemon-reload
   - systemctl enable broch.service

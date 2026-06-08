@@ -55,7 +55,6 @@ resource "digitalocean_droplet" "broch" {
     postgres_password  = var.postgres_password
     image              = var.image
     image_tag          = var.image_tag
-    ghcr_token         = var.ghcr_token
     dns_provider       = var.dns_provider
     dns_api_token      = var.dns_api_token
     auth_audience      = var.auth_audience
