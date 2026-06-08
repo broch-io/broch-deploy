@@ -19,7 +19,7 @@ Same dependency footprint as [`../with-postgres/`](../with-postgres/) (broch nee
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub Personal Access Token with `read:packages` (while the image is private — see the [top-level README](../../README.md#the-broch-server-image))
 - A DNS name (or hosts-file entry) for tunnel URLs
-- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at [broch.io/pricing](https://broch.io/pricing).
+- Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
@@ -52,7 +52,7 @@ You should see a `200 OK` from `/healthz` once both services report `healthy`.
 | `POSTGRES_PASSWORD`       | Strong password for the bundled Postgres — `openssl rand -base64 32`. |
 | `AUTHENTICATION__*`       | Your identity provider — part of the boot floor. No one can sign in until it's set. |
 
-`BROCH_LICENSE` is optional at boot — leave it blank and activate in-app on first sign-in, or pre-seed it. Everything else has a sensible default. See [`.env.example`](.env.example) for the full list.
+A Broch license is activated in-app on first sign-in (Admin → License) — there's no env var for it. Everything else has a sensible default. See [`.env.example`](.env.example) for the full list.
 
 ## Connecting a client
 

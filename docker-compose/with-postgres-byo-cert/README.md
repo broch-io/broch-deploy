@@ -41,7 +41,7 @@ internet ──────▶  │ caddy (80/443/443udp)                    │
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub PAT with `read:packages` (while the broch image is private)
 - DNS A/AAAA record for the apex hostname pointing at this host's public IP
-- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at [broch.io/pricing](https://broch.io/pricing).
+- Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
