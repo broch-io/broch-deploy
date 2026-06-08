@@ -51,7 +51,7 @@ The NAT gateway is the biggest individual line item. For a cost-optimized deploy
 - A Route 53 hosted zone for your wildcard hostname's parent domain. You provide the zone ID; this module adds records to it.
 - An identity provider app registration (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub PAT with `read:packages` (while the broch image is private).
-- Optional: a Broch license key — activate in-app after first sign-in, or set `broch_license` to pre-seed it. Buy at [broch.io/pricing](https://broch.io/pricing).
+- A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
 
@@ -76,9 +76,9 @@ curl -fsS "$(terraform output -raw broch_url)/healthz"
 
 ## How the secrets flow at runtime
 
-1. You hand the IdP `auth_client_secret` (and optionally `broch_license`) + `github_pat` + `github_username` to Terraform as variables.
-2. Terraform writes them to Secrets Manager. The license secret is only created when you supply a key — leave `broch_license` unset and the server boots unlicensed for in-app activation.
-3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`, and `BROCH_LICENSE` when present) or as docker pull credentials. Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment.
+1. You hand the IdP `auth_client_secret` + `github_pat` + `github_username` to Terraform as variables.
+2. Terraform writes them to Secrets Manager.
+3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`) or as docker pull credentials. Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment. The license is not a boot input — it's activated in-app on first sign-in.
 4. The container never sees the raw secret on disk — it only gets the resolved values via env.
 
 The Postgres password and `BROCH_MASTER_KEY` are *generated* by Terraform (`random_password`), not supplied — they exist only in Secrets Manager and the container's environment. `BROCH_MASTER_KEY` is the at-rest encryption root the server requires at boot; rotating it forces a one-time re-auth (state self-heals).

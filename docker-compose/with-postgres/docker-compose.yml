@@ -23,18 +23,20 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
-      BROCH_LICENSE: ${BROCH_LICENSE:-}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
-      # these, but no one can sign in (or finish setup) until they're set. See
-      # .env.example / README. Unused provider-specific vars stay blank.
+      # these, but no one can sign in (or finish setup) until they're set; a
+      # license is activated in-app (Admin → License), not here. See .env.example / README.
+      #
+      # Required for every provider:
       AUTHENTICATION__PROVIDER: ${AUTHENTICATION__PROVIDER:-}
       AUTHENTICATION__CLIENTID: ${AUTHENTICATION__CLIENTID:-}
       AUTHENTICATION__CLIENTSECRET: ${AUTHENTICATION__CLIENTSECRET:-}
       AUTHENTICATION__ADMINROLES: ${AUTHENTICATION__ADMINROLES:-}
+      # Provider-specific — set only what your provider needs:
+      #   Auth0/Okta → DOMAIN (Auth0 RBAC also → AUDIENCE) · AzureAd/Entra → TENANTID + INSTANCE · generic OIDC → AUTHORITY
       AUTHENTICATION__DOMAIN: ${AUTHENTICATION__DOMAIN:-}
       AUTHENTICATION__TENANTID: ${AUTHENTICATION__TENANTID:-}
       AUTHENTICATION__INSTANCE: ${AUTHENTICATION__INSTANCE:-}

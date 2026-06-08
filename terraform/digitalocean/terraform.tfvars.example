@@ -4,7 +4,6 @@
 
 do_token            = "dop_v1_<your-digitalocean-api-token>"
 ssh_key_fingerprint = "aa:bb:cc:dd:ee:ff:..."   # `doctl compute ssh-key list`
-license_key         = "<your-broch-license-key>"
 wildcard_hostname   = "tunnels.example.com"
 
 # DNS provider for Caddy's wildcard cert (DNS-01 challenge).

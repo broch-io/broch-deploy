@@ -34,7 +34,7 @@ Only Caddy is reachable from outside the host. Broch and Postgres are on a priva
 - A Cloudflare API token scoped to that zone with **Zone:Read + DNS:Edit** — create one at <https://dash.cloudflare.com/profile/api-tokens> using the "Edit zone DNS" template
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A GitHub PAT with `read:packages` to pull the broch image (while the image is private — see [top-level README](../../README.md#the-broch-server-image))
-- Optional: a Broch license key — activate in-app after first sign-in, or pre-seed it. Buy at <https://broch.io/pricing>
+- Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at <https://broch.io/pricing>
 
 ## DNS records
 
@@ -80,7 +80,7 @@ curl -fsS https://tunnels.example.com/healthz
 | `POSTGRES_PASSWORD`       | Strong password for the bundled Postgres.                         |
 | `AUTHENTICATION__*`       | Your identity provider — part of the boot floor. No one can sign in until it's set. |
 
-`BROCH_LICENSE` is optional at boot — leave it blank and activate in-app on first sign-in, or pre-seed it.
+A Broch license is activated in-app on first sign-in (Admin → License) — there's no env var for it.
 
 ## Lifecycle
 

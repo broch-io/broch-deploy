@@ -40,13 +40,6 @@ variable "volume_size" {
 
 # --- Broch ---
 
-variable "license_key" {
-  description = "Broch license key. Optional at boot — leave blank to activate in-app on first sign-in (Admin → License), or set it to pre-seed activation."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "central_server_url" {
   description = "URL of the Broch Central Server API for license validation"
   type        = string

@@ -70,15 +70,6 @@ variable "auth_audience" {
   default     = ""
 }
 
-# ─── License (optional at boot) ──────────────────────────────────────────────
-
-variable "broch_license" {
-  description = "Broch license key. Optional at boot — leave blank to activate in-app on first sign-in (Admin → License), or set it to pre-seed activation. Stored in AWS Secrets Manager when set."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "github_pat" {
   description = "GitHub Personal Access Token with read:packages, used by ECS to pull the broch image from GHCR while the image is private. Stored in AWS Secrets Manager."
   type        = string

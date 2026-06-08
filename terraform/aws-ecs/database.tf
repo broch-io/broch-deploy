@@ -46,21 +46,6 @@ resource "aws_db_instance" "broch" {
 
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 
-# License is optional at boot — only create the secret when a key is supplied.
-# When blank, the server starts unlicensed and the admin activates in-app.
-resource "aws_secretsmanager_secret" "broch_license" {
-  count                   = var.broch_license != "" ? 1 : 0
-  name                    = "${var.name_prefix}/broch-license"
-  description             = "Broch license key used by the server container at startup."
-  recovery_window_in_days = 0 # immediate delete on terraform destroy
-}
-
-resource "aws_secretsmanager_secret_version" "broch_license" {
-  count         = var.broch_license != "" ? 1 : 0
-  secret_id     = aws_secretsmanager_secret.broch_license[0].id
-  secret_string = var.broch_license
-}
-
 resource "aws_secretsmanager_secret" "auth_client_secret" {
   name                    = "${var.name_prefix}/auth-client-secret"
   description             = "OAuth client secret for the configured identity provider (AUTHENTICATION__CLIENTSECRET)."

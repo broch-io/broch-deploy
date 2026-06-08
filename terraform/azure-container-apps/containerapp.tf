@@ -54,16 +54,6 @@ resource "azurerm_container_app" "broch" {
     identity            = azurerm_user_assigned_identity.broch.id
   }
 
-  # License is optional at boot — only declare its secret when one was supplied.
-  dynamic "secret" {
-    for_each = toset(var.broch_license != "" ? ["license"] : [])
-    content {
-      name                = "broch-license"
-      key_vault_secret_id = azurerm_key_vault_secret.broch_license[0].id
-      identity            = azurerm_user_assigned_identity.broch.id
-    }
-  }
-
   secret {
     name                = "auth-client-secret"
     key_vault_secret_id = azurerm_key_vault_secret.auth_client_secret.id
@@ -118,14 +108,6 @@ resource "azurerm_container_app" "broch" {
       env {
         name  = "DATABASE__PROVIDER"
         value = "PostgreSQL"
-      }
-      # License is optional at boot — only inject it when one was supplied.
-      dynamic "env" {
-        for_each = toset(var.broch_license != "" ? ["license"] : [])
-        content {
-          name        = "BROCH_LICENSE"
-          secret_name = "broch-license"
-        }
       }
       env {
         name        = "BROCH_MASTER_KEY"
