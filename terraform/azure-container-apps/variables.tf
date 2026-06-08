@@ -64,17 +64,6 @@ variable "auth_audience" {
   default     = ""
 }
 
-variable "github_pat" {
-  description = "GitHub PAT with read:packages, used by Container Apps to pull the broch image from GHCR while it's private. Stored in Key Vault."
-  type        = string
-  sensitive   = true
-}
-
-variable "github_username" {
-  description = "GitHub username paired with github_pat for GHCR auth."
-  type        = string
-}
-
 # ─── Optional ────────────────────────────────────────────────────────────────
 
 variable "broch_image" {

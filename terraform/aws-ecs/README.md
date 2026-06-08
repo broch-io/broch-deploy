@@ -26,7 +26,7 @@ internet  ─── HTTPS:443  ─────▶     │ Application Load Balan
                                     └─────────────────────────────┘
 ```
 
-Tightly-scoped IAM lets the task pull from GHCR (with a stored PAT) and read its own secrets — nothing more.
+Tightly-scoped IAM lets the task read its own secrets — nothing more. The broch image pulls from GHCR without credentials (public image).
 
 ## What it costs
 
@@ -50,7 +50,6 @@ The NAT gateway is the biggest individual line item. For a cost-optimized deploy
 - AWS credentials with permissions to create everything in this module (VPC, ECS, RDS, ALB, Route 53, ACM, IAM, Secrets Manager). Easiest: an admin role for the initial apply, then restrict ongoing.
 - A Route 53 hosted zone for your wildcard hostname's parent domain. You provide the zone ID; this module adds records to it.
 - An identity provider app registration (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
-- A GitHub PAT with `read:packages` (while the broch image is private).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup
@@ -76,9 +75,9 @@ curl -fsS "$(terraform output -raw broch_url)/healthz"
 
 ## How the secrets flow at runtime
 
-1. You hand the IdP `auth_client_secret` + `github_pat` + `github_username` to Terraform as variables.
-2. Terraform writes them to Secrets Manager.
-3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`) or as docker pull credentials. Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment. The license is not a boot input — it's activated in-app on first sign-in.
+1. You hand the IdP `auth_client_secret` to Terraform as a variable.
+2. Terraform writes it (plus the generated master key and DB connection string) to Secrets Manager.
+3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`). Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment. The license is not a boot input — it's activated in-app on first sign-in. The broch image is public, so no registry credentials are needed.
 4. The container never sees the raw secret on disk — it only gets the resolved values via env.
 
 The Postgres password and `BROCH_MASTER_KEY` are *generated* by Terraform (`random_password`), not supplied — they exist only in Secrets Manager and the container's environment. `BROCH_MASTER_KEY` is the at-rest encryption root the server requires at boot; rotating it forces a one-time re-auth (state self-heals).

@@ -4,8 +4,6 @@
 
 wildcard_hostname = "tunnels.example.com"
 route53_zone_id   = "Z0123456789ABCDEFGHIJ"     # Route 53 hosted zone ID
-github_pat        = "<github-pat-with-read-packages>"
-github_username   = "<your-github-username>"
 
 # Identity provider — required at boot. Broch has no built-in local login, so
 # no one can sign in (or finish first-run setup) until this is set. Your first
