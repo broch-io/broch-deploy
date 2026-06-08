@@ -27,10 +27,8 @@ auth_admin_roles   = "broch_admin"
 
 # ── Optional (defaults shown) ────────────────────────────────────────────────
 
-# Broch license key. Optional at boot — leave unset to activate in-app on first
-# sign-in (Admin → License), or set it to pre-seed activation. Buy a license at
-# https://broch.io/pricing.
-# broch_license       = "<your-license-key>"
+# A Broch license is activated in-app on first sign-in (Admin → License) — there
+# is no license env var. Buy a license at https://broch.io/pricing.
 
 # broch_image         = "ghcr.io/broch-io/broch:1.5.0"
 # location            = "eastus"

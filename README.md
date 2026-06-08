@@ -53,7 +53,7 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 | Production on AWS (Fargate + ALB + RDS)                       | [`terraform/aws-ecs/`](terraform/aws-ecs/)                                   |
 | Production on Azure (Container Apps + Postgres Flexible)      | [`terraform/azure-container-apps/`](terraform/azure-container-apps/)         |
 
-Every example uses the same dependency footprint — broch needs Postgres (the only supported database), a Broch license, and a wildcard hostname. The examples differ along three axes:
+Every example uses the same dependency footprint — broch needs Postgres (the only supported database), an identity provider, and a wildcard hostname. A Broch license is activated in-app after first sign-in, not supplied at boot. The examples differ along three axes:
 
 - **TLS exposure**: private-network (single-host) vs. public-facing
 - **TLS source**: Caddy ACME (auto), BYO cert (manual rotation), or cloud-managed cert (AWS ACM / Azure managed)

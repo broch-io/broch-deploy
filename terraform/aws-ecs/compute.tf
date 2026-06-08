@@ -153,12 +153,12 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
     Statement = [{
       Effect = "Allow"
       Action = ["secretsmanager:GetSecretValue"]
-      Resource = concat([
+      Resource = [
         aws_secretsmanager_secret.master_key.arn,
         aws_secretsmanager_secret.connection_string.arn,
         aws_secretsmanager_secret.auth_client_secret.arn,
         aws_secretsmanager_secret.ghcr_pull.arn,
-      ], aws_secretsmanager_secret.broch_license[*].arn)
+      ]
     }]
   })
 }
@@ -221,31 +221,20 @@ resource "aws_ecs_task_definition" "broch" {
       { name = "AUTHENTICATION__AUDIENCE", value = var.auth_audience },
     ]
 
-    # BROCH_LICENSE is only injected when a key was supplied (the secret is
-    # created conditionally). Without it the server boots unlicensed and the
-    # admin activates in-app.
-    secrets = concat(
-      [
-        {
-          name      = "BROCH_MASTER_KEY"
-          valueFrom = aws_secretsmanager_secret.master_key.arn
-        },
-        {
-          name      = "ConnectionStrings__DefaultConnection"
-          valueFrom = aws_secretsmanager_secret.connection_string.arn
-        },
-        {
-          name      = "AUTHENTICATION__CLIENTSECRET"
-          valueFrom = aws_secretsmanager_secret.auth_client_secret.arn
-        },
-      ],
-      var.broch_license != "" ? [
-        {
-          name      = "BROCH_LICENSE"
-          valueFrom = aws_secretsmanager_secret.broch_license[0].arn
-        },
-      ] : []
-    )
+    secrets = [
+      {
+        name      = "BROCH_MASTER_KEY"
+        valueFrom = aws_secretsmanager_secret.master_key.arn
+      },
+      {
+        name      = "ConnectionStrings__DefaultConnection"
+        valueFrom = aws_secretsmanager_secret.connection_string.arn
+      },
+      {
+        name      = "AUTHENTICATION__CLIENTSECRET"
+        valueFrom = aws_secretsmanager_secret.auth_client_secret.arn
+      },
+    ]
 
     logConfiguration = {
       logDriver = "awslogs"

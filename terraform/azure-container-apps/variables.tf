@@ -64,15 +64,6 @@ variable "auth_audience" {
   default     = ""
 }
 
-# ─── License (optional at boot) ──────────────────────────────────────────────
-
-variable "broch_license" {
-  description = "Broch license key. Optional at boot — leave blank to activate in-app on first sign-in (Admin → License), or set it to pre-seed activation. Stored in Key Vault when set."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "github_pat" {
   description = "GitHub PAT with read:packages, used by Container Apps to pull the broch image from GHCR while it's private. Stored in Key Vault."
   type        = string

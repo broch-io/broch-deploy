@@ -138,7 +138,6 @@ write_files:
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
-      BROCH_LICENSE=${license_key}
       # Generated on first boot by the runcmd below — never supplied by the operator.
       BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
       CentralServer__ApiUrl=${central_server_url}

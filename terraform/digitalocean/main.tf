@@ -42,7 +42,6 @@ resource "digitalocean_droplet" "broch" {
 
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     deployment_name    = var.deployment_name
-    license_key        = var.license_key
     central_server_url = var.central_server_url
     wildcard_hostname  = var.wildcard_hostname
     auth_provider      = var.auth_provider
