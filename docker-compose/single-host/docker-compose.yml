@@ -14,9 +14,9 @@
 # in the clear on :8080 — no TLS.
 #
 # Same dependency footprint as the with-postgres example (broch needs
-# Postgres, an identity provider, a wildcard hostname, and the GHCR PAT).
-# The difference is TLS exposure, not lightness — broch only supports
-# PostgreSQL, so there's no "sqlite mode" alternative.
+# Postgres, an identity provider, and a wildcard hostname). The difference
+# is TLS exposure, not lightness — broch only supports PostgreSQL, so
+# there's no "sqlite mode" alternative.
 #
 # Do NOT use this directly on the public internet — tunnel credentials
 # and tunnel traffic would be cleartext over HTTP. Use the with-postgres

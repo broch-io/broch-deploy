@@ -42,21 +42,18 @@ Same as [`../with-postgres/`](../with-postgres/), plus:
 ## Setup
 
 ```sh
-# 1. Log in to GHCR for the broch image
-echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
-
-# 2. Copy + fill the env template
+# 1. Copy + fill the env template
 cp .env.example .env
 $EDITOR .env   # Set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*,
                # CADDY_ACME_EMAIL, CLOUDFLARE_API_TOKEN, and BROCH_DB_CONNECTION_STRING.
 
-# 3. Start
+# 2. Start
 docker compose up -d --build
 
-# 4. Wait for Caddy to issue certs + broch to come up
+# 3. Wait for Caddy to issue certs + broch to come up
 docker compose logs -f broch caddy
 
-# 5. Verify
+# 4. Verify
 curl -fsS https://tunnels.example.com/healthz
 ```
 

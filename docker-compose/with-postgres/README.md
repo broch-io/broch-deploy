@@ -33,7 +33,6 @@ Only Caddy is reachable from outside the host. Broch and Postgres are on a priva
 - A registered domain on **Cloudflare** (if you use a different DNS provider, see [Caddy.Dockerfile](Caddy.Dockerfile) — Caddy supports route53, googleclouddns, gandi, digitalocean, hetzner, and more)
 - A Cloudflare API token scoped to that zone with **Zone:Read + DNS:Edit** — create one at <https://dash.cloudflare.com/profile/api-tokens> using the "Edit zone DNS" template
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
-- A GitHub PAT with `read:packages` to pull the broch image (while the image is private — see [top-level README](../../README.md#the-broch-server-image))
 - Optional: a Broch license — activated in-app after first sign-in (Admin → License). Buy at <https://broch.io/pricing>
 
 ## DNS records
@@ -52,20 +51,17 @@ You do **not** need to pre-create wildcard records — Caddy uses DNS-01 to prov
 ## Setup
 
 ```sh
-# 1. Log in to GHCR for the broch image (one-time)
-echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
-
-# 2. Copy + fill the env template
+# 1. Copy + fill the env template
 cp .env.example .env
 $EDITOR .env
 
-# 3. Build the custom Caddy image (with Cloudflare-DNS module) + pull broch/postgres + start
+# 2. Build the custom Caddy image (with Cloudflare-DNS module) + pull broch/postgres + start
 docker compose up -d --build
 
-# 4. Watch the logs while Caddy provisions certs (first run takes ~30-60s)
+# 3. Watch the logs while Caddy provisions certs (first run takes ~30-60s)
 docker compose logs -f caddy
 
-# 5. Once you see "certificate obtained successfully", verify the endpoint
+# 4. Once you see "certificate obtained successfully", verify the endpoint
 curl -fsS https://tunnels.example.com/healthz
 ```
 

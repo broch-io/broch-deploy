@@ -28,14 +28,9 @@ Pick the directory that matches where you want to run Broch. Each has its own RE
 ghcr.io/broch-io/broch:<version>
 ```
 
-> **The image is currently a private GHCR package.** To pull, you need a
-> GitHub Personal Access Token with the `read:packages` scope, then
-> `docker login ghcr.io -u <github-user>` once. This repo and the image
-> will both become public in a future release; until then, treat both as
-> internal/customer-shared artifacts.
+The image is a public GHCR package — pull it directly, no authentication needed:
 
 ```sh
-echo $GITHUB_PAT | docker login ghcr.io -u <github-user> --password-stdin
 docker pull ghcr.io/broch-io/broch:1.5.0
 ```
 
