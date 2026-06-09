@@ -53,6 +53,8 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 
 Two Azure options: the **Terraform** module provisions managed Postgres Flexible Server + Key Vault for a scale-out, HA shape; the **Bicep** module is the self-contained single-replica stack (Postgres sidecar) that Broch, LLC runs for its own deployments. Pick Terraform for managed Postgres and scale, Bicep for the smallest footprint or to match exactly what we run.
 
+> **`terraform/aws-ecs` is experimental.** AWS isn't part of the current supported deploy set — the module is provided as a working starting point, not a supported production path. The docker-compose and Azure/DigitalOcean examples are the supported options today.
+
 Every example uses the same dependency footprint — broch needs Postgres (the only supported database), an identity provider, and a wildcard hostname. A Broch license is activated in-app after first sign-in, not supplied at boot. The examples differ along three axes:
 
 - **TLS exposure**: private-network (single-host) vs. public-facing

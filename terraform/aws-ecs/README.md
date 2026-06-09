@@ -1,5 +1,7 @@
 # AWS ECS Fargate Terraform module
 
+> **Status: experimental.** AWS isn't part of Broch's current supported deploy set. This module is a working starting point, not a supported production path — expect rough edges and validate thoroughly before relying on it. The docker-compose and Azure/DigitalOcean examples are the supported options today.
+
 Production-shape Broch on AWS: ECS Fargate behind an Application Load Balancer, RDS Postgres in private subnets, secrets in Secrets Manager, TLS via an ACM cert covering both the apex and wildcard hostname.
 
 ## What this provisions
