@@ -13,6 +13,10 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Bicep — filled-in parameter files hold secrets; keep only the examples
+*.bicepparam
+!*.example.bicepparam
+
 # Docker Compose secrets / local overrides
 .env
 .env.local

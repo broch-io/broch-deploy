@@ -17,6 +17,8 @@ broch-deploy/
 │   ├── digitalocean/                 # Droplet + Docker Compose + Caddy + block storage.
 │   ├── aws-ecs/                      # AWS Fargate + ALB + RDS Postgres + Secrets Manager.
 │   └── azure-container-apps/         # Azure Container Apps + Postgres Flexible + Key Vault.
+├── bicep/
+│   └── azure-container-apps/         # Azure Container Apps + Postgres sidecar. What Broch runs.
 └── COMPATIBILITY.md                  # Which examples support which Broch server versions.
 ```
 
@@ -47,6 +49,9 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 | Production on DigitalOcean (Droplet + Docker Compose + Caddy) | [`terraform/digitalocean/`](terraform/digitalocean/)                         |
 | Production on AWS (Fargate + ALB + RDS)                       | [`terraform/aws-ecs/`](terraform/aws-ecs/)                                   |
 | Production on Azure (Container Apps + Postgres Flexible)      | [`terraform/azure-container-apps/`](terraform/azure-container-apps/)         |
+| Azure with Bicep instead of Terraform (sidecar Postgres)      | [`bicep/azure-container-apps/`](bicep/azure-container-apps/)                 |
+
+Two Azure options: the **Terraform** module provisions managed Postgres Flexible Server + Key Vault for a scale-out, HA shape; the **Bicep** module is the self-contained single-replica stack (Postgres sidecar) that Broch, LLC runs for its own deployments. Pick Terraform for managed Postgres and scale, Bicep for the smallest footprint or to match exactly what we run.
 
 Every example uses the same dependency footprint — broch needs Postgres (the only supported database), an identity provider, and a wildcard hostname. A Broch license is activated in-app after first sign-in, not supplied at boot. The examples differ along three axes:
 
