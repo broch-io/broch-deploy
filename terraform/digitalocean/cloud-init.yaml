@@ -138,7 +138,7 @@ write_files:
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
-      # Generated on first boot by the runcmd below — never supplied by the operator.
+      # Generated on first boot by the runcmd below - never supplied by the operator.
       BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
       CentralServer__ApiUrl=${central_server_url}
       API__WILDCARDHOSTNAME=${wildcard_hostname}
@@ -174,7 +174,7 @@ write_files:
 
 runcmd:
   # Generate BROCH_MASTER_KEY on the droplet and inject it into .env before the
-  # stack starts. This is the customer-owned at-rest encryption root — the vendor
+  # stack starts. This is the customer-owned at-rest encryption root - the vendor
   # never receives it. Idempotent: only fills the placeholder, so re-running
   # cloud-init won't re-roll the key. (`$${MASTER_KEY}` is escaped for templatefile.)
   - |
