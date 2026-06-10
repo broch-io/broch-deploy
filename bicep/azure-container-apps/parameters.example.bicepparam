@@ -11,7 +11,6 @@ using './mainTemplate.bicep'
 
 // ── Required ─────────────────────────────────────────────────────────────────
 
-param administratorEmail = 'admin@example.com'
 param wildcardHostname = 'tunnels.example.com'
 
 // At-rest encryption root. Customer-owned — Broch, LLC never sees it. Wraps the

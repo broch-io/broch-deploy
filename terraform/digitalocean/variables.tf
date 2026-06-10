@@ -26,6 +26,12 @@ variable "ssh_key_fingerprint" {
   type        = string
 }
 
+variable "ssh_allowed_cidrs" {
+  description = "CIDRs allowed to reach SSH (port 22) on the droplet. Defaults to open for evaluation convenience — lock to your bastion / VPN CIDR before real production use (see the tradeoffs table in the README)."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
 variable "deployment_name" {
   description = "Unique name for this deployment (used in resource names, e.g., broch-okta, broch-entra)"
   type        = string
@@ -126,11 +132,6 @@ variable "auth_authority" {
 }
 
 # --- Admin ---
-
-variable "admin_email" {
-  description = "Administrator email address for notifications"
-  type        = string
-}
 
 variable "admin_roles" {
   description = "Comma-separated IdP role/claim values that grant admin access"

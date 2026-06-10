@@ -20,9 +20,6 @@ param location string = resourceGroup().location
 @description('Base name for resources')
 param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 
-@description('Administrator email address for notifications')
-param administratorEmail string
-
 @description('At-rest encryption root used to derive the DataProtection keyring wrap key (HKDF-SHA256). Customer-owned; rotating it invalidates anything DP-wrapped in the database. Required.')
 @secure()
 param masterKey string
@@ -441,10 +438,6 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
               {
                 name: 'BROCH_MASTER_KEY'
                 secretRef: 'master-key'
-              }
-              {
-                name: 'Broch__AdminEmail'
-                value: administratorEmail
               }
               {
                 name: 'AUTHENTICATION__ADMINROLES'
