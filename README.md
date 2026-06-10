@@ -37,6 +37,8 @@ docker pull ghcr.io/broch-io/broch:1.5.0
 
 Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we recommend pinning to a specific version (`ghcr.io/broch-io/broch:1.5.0`) rather than `:latest`.
 
+Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [compatibility matrix](COMPATIBILITY.md) tracks what's supported.
+
 ## Picking an example
 
 | Goal                                                          | Use                                                                          |
