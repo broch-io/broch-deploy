@@ -61,3 +61,24 @@ jobs:
 
       - name: terraform validate
         run: terraform validate
+
+  # cloud-init delivers its config as droplet user_data, and cloud-init's YAML
+  # loader rejects multi-byte UTF-8 there: a stray em-dash surfaces as
+  # 'unacceptable character #x0080' and the ENTIRE cloud-config is silently
+  # discarded, booting the droplet to bare Ubuntu while `terraform apply` still
+  # goes green. `terraform validate` never executes cloud-init, so it can't
+  # catch this. Keep cloud-init files pure ASCII.
+  cloud-init-ascii:
+    name: cloud-init ASCII guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Reject non-ASCII bytes in cloud-init files
+        run: |
+          hits=$(grep -rlP "[^\x00-\x7F]" --include='cloud-init*.yaml' terraform || true)
+          if [ -n "$hits" ]; then
+            echo "::error::Non-ASCII characters in cloud-init file(s). See lines below:"
+            grep -rnP "[^\x00-\x7F]" --include='cloud-init*.yaml' terraform || true
+            exit 1
+          fi
+          echo "cloud-init files are ASCII-clean."
