@@ -9,7 +9,6 @@ If you're looking for **the application** itself, the public docs at <https://br
 ```text
 broch-deploy/
 ├── docker-compose/
-│   ├── single-host/                  # broch + Postgres, no TLS. Private-network use.
 │   ├── with-postgres/                # broch + Postgres + Caddy auto-TLS. Public-internet use.
 │   ├── with-postgres-external/       # broch + Caddy + external managed Postgres.
 │   └── with-postgres-byo-cert/       # broch + Postgres + Caddy serving a cert YOU provide.
@@ -42,7 +41,6 @@ Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we 
 
 | Goal                                                          | Use                                                                          |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Single-VM Broch on a private network (no public TLS)          | [`docker-compose/single-host/`](docker-compose/single-host/)                 |
 | Single-VM Broch on the public internet (Caddy auto-TLS)       | [`docker-compose/with-postgres/`](docker-compose/with-postgres/)             |
 | Same as above but Broch points at a managed/external Postgres | [`docker-compose/with-postgres-external/`](docker-compose/with-postgres-external/) |
 | Same as above but with a wildcard cert YOU provide            | [`docker-compose/with-postgres-byo-cert/`](docker-compose/with-postgres-byo-cert/) |
@@ -55,9 +53,8 @@ Two Azure options: the **Terraform** module provisions managed Postgres Flexible
 
 > **`terraform/aws-ecs` is experimental.** AWS isn't part of the current supported deploy set — the module is provided as a working starting point, not a supported production path. The docker-compose and Azure/DigitalOcean examples are the supported options today.
 
-Every example uses the same dependency footprint — broch needs Postgres (the only supported database), an identity provider, and a wildcard hostname. A Broch license is activated in-app after first sign-in, not supplied at boot. The examples differ along three axes:
+Every example uses the same dependency footprint — broch needs Postgres (the only supported database), an identity provider, and a wildcard hostname. Every example is public-facing and terminates TLS. A Broch license is activated in-app after first sign-in, not supplied at boot. The examples differ along two axes:
 
-- **TLS exposure**: private-network (single-host) vs. public-facing
 - **TLS source**: Caddy ACME (auto), BYO cert (manual rotation), or cloud-managed cert (AWS ACM / Azure managed)
 - **Infrastructure layer**: single VM (docker-compose, DigitalOcean Droplet) vs. managed cloud services (ECS Fargate, Azure Container Apps)
 
