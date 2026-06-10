@@ -16,9 +16,6 @@ auth_client_id      = "<idp-application-id>"
 auth_client_secret  = "<idp-client-secret>"
 auth_tenant_id      = "<azure-tenant-id>"       # required for AzureAd / EntraExternalId
 
-# Admin email — receives notifications and licensing-related mail.
-admin_email         = "admin@example.com"
-
 # Postgres password for the bundled DB. Generate with `openssl rand -base64 32`.
 postgres_password   = "<strong-random-password>"
 
@@ -33,3 +30,4 @@ postgres_password   = "<strong-random-password>"
 # dns_provider        = "cloudflare"
 # auth_provider       = "AzureAd"
 # auth_instance       = "https://login.microsoftonline.com/"
+# ssh_allowed_cidrs   = ["0.0.0.0/0", "::/0"]   # lock to your bastion/VPN CIDRs for real prod

@@ -50,7 +50,6 @@ resource "digitalocean_droplet" "broch" {
     auth_tenant_id     = var.auth_tenant_id
     auth_instance      = var.auth_instance
     auth_domain        = var.auth_domain
-    admin_email        = var.admin_email
     admin_roles        = var.admin_roles
     postgres_password  = var.postgres_password
     image              = var.image
@@ -89,7 +88,7 @@ resource "digitalocean_firewall" "broch" {
   inbound_rule {
     protocol         = "tcp"
     port_range       = "22"
-    source_addresses = ["0.0.0.0/0", "::/0"]
+    source_addresses = var.ssh_allowed_cidrs
   }
 
   inbound_rule {

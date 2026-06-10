@@ -32,9 +32,8 @@ write_files:
           depends_on:
             postgres:
               condition: service_healthy
-          volumes:
-            - ssh_keys:/app/ssh_keys
-            - dataprotection_keys:/root/.aspnet/DataProtection-Keys
+          # No state volumes: Data Protection keys and the SSH host key persist in
+          # PostgreSQL. Recovery-critical state is the Postgres data + BROCH_MASTER_KEY.
           # No healthcheck -- aspnet image has no curl/wget/nc.
           # Restart policy handles crashes; Caddy retries upstream.
           logging:
@@ -90,8 +89,6 @@ write_files:
       volumes:
         caddy_data:
         caddy_config:
-        dataprotection_keys:
-        ssh_keys:
 
       networks:
         default:
@@ -150,7 +147,6 @@ write_files:
       AUTHENTICATION__DOMAIN=${auth_domain}
       AUTHENTICATION__AUDIENCE=${auth_audience}
       AUTHENTICATION__AUTHORITY=${auth_authority}
-      Broch__AdminEmail=${admin_email}
       AUTHENTICATION__ADMINROLES=${admin_roles}
 
   # Systemd service for auto-start on reboot

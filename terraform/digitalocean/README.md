@@ -140,7 +140,7 @@ Block storage volume snapshots via the DigitalOcean console are also fine and co
 | Embedded Postgres              | One less service to operate                                                        | When you need encryption-at-rest, PITR, or multi-replica    |
 | `s-1vcpu-1gb` default          | $6/mo baseline for evaluation; bump for real load                                  | More users, more tunnels, more idle headroom                |
 | Single AZ                      | DO Droplets are AZ-bound; HA needs a load balancer + multi-droplet setup           | When you need cross-AZ failover                             |
-| Firewall: SSH from 0.0.0.0/0   | Convenient for setup                                                               | Lock to your bastion / VPN CIDR before going to real prod   |
+| Firewall: SSH from 0.0.0.0/0   | Convenient for setup (default of `ssh_allowed_cidrs`)                              | Set `ssh_allowed_cidrs` to your bastion / VPN CIDRs before going to real prod |
 | No automated DB backups        | You configure your own via cron + DO Spaces or external storage                    | The minute the data matters                                 |
 | Reserved IP without IPv6       | DO reserved IPs are v4-only                                                        | If you need v6, attach a floating v6 to the Droplet itself  |
 
