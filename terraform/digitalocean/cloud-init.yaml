@@ -169,6 +169,19 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  # Swap: the s-1vcpu-1gb default has too little RAM for the one-time `xcaddy`
+  # build of the custom Caddy image (a Go compile of the DNS plugins), which gets
+  # OOM-killed on a bare 1 GB droplet. A 2 GB swapfile lets the build complete and
+  # is cheap insurance on larger sizes too. Idempotent across cloud-init re-runs.
+  - |
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
   # Generate BROCH_MASTER_KEY on the droplet and inject it into .env before the
   # stack starts. This is the customer-owned at-rest encryption root - the vendor
   # never receives it. Idempotent: only fills the placeholder, so re-running
