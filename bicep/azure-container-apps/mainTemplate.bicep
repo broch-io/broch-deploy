@@ -579,6 +579,25 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             ]
           )
           volumeMounts: []
+          // Liveness only. /healthz is the always-200, license-independent endpoint, so ACA can
+          // restart a container that's TCP-alive but hung at the HTTP layer (the default TCP probe
+          // can't). Matches the terraform variant's liveness settings. Deliberately NO readiness
+          // probe on /healthz/ready: it's license-gated, and gating ingress on it deadlocks
+          // first-run activation (no traffic → can't reach setup UI → never activates).
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/healthz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            }
+          ]
         }
       ], databaseMode == 'Embedded' ? [
         {
