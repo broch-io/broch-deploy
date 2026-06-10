@@ -2,8 +2,6 @@
 
 Production-shape Broch on a single VM: server + bundled Postgres + Caddy as a reverse proxy with automatic Let's Encrypt TLS, including the wildcard cert for tunnel subdomains. This is what most self-hosters want.
 
-If you don't need TLS yet (laptop testing, private network), [`../single-host/`](../single-host/) is simpler.
-
 ## Architecture
 
 ```
