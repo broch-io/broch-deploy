@@ -117,6 +117,8 @@ $(terraform output -raw ssh_command)
 
 The Droplet runs Docker Compose at `/opt/broch/`. `docker compose ps` shows the running services; `docker compose logs broch` tails server output.
 
+> With the default `ssh_allowed_cidrs` (open to the internet), automated scanners constantly probe port 22 and can trip sshd's `MaxStartups` throttle — a legit `ssh` then fails with `kex_exchange_identification: Connection closed`. Retry, or set `ssh_allowed_cidrs` to your own CIDR to stop the noise.
+
 ## Backup
 
 ```sh
@@ -138,7 +140,7 @@ Block storage volume snapshots via the DigitalOcean console are also fine and co
 | ------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Single Droplet                 | Cheapest cloud Broch                                                               | When you need HA or scale beyond a single VM                |
 | Embedded Postgres              | One less service to operate                                                        | When you need encryption-at-rest, PITR, or multi-replica    |
-| `s-1vcpu-1gb` default          | $6/mo baseline for evaluation; bump for real load                                  | More users, more tunnels, more idle headroom                |
+| `s-1vcpu-1gb` default          | $6/mo baseline for evaluation; a 2 GB swapfile is added so the one-time Caddy build fits | More users, more tunnels, more idle headroom           |
 | Single AZ                      | DO Droplets are AZ-bound; HA needs a load balancer + multi-droplet setup           | When you need cross-AZ failover                             |
 | Firewall: SSH from 0.0.0.0/0   | Convenient for setup (default of `ssh_allowed_cidrs`)                              | Set `ssh_allowed_cidrs` to your bastion / VPN CIDRs before going to real prod |
 | No automated DB backups        | You configure your own via cron + DO Spaces or external storage                    | The minute the data matters                                 |
