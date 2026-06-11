@@ -37,17 +37,24 @@ param containerImage string = 'ghcr.io/broch-io/broch:latest'
 // Database Parameters
 // ============================================================================
 
-@description('Database deployment mode. Embedded: evaluation only — single-instance PostgreSQL sidecar on EPHEMERAL storage; the database is lost on revision restarts, image upgrades, and platform maintenance. Shared: external PostgreSQL connection string (production; supports multi-instance HA).')
-@allowed(['Embedded', 'Shared'])
+@description('Database deployment mode. Embedded: evaluation only — single-instance PostgreSQL sidecar on EPHEMERAL storage; the database is lost on revision restarts, image upgrades, and platform maintenance. Managed: provision an Azure Database for PostgreSQL flexible server in this deployment (production). Shared: connect to an external PostgreSQL via connection string (production).')
+@allowed(['Embedded', 'Managed', 'Shared'])
 param databaseMode string = 'Embedded'
 
 @secure()
-@description('PostgreSQL connection string. Required for Shared mode. For Embedded mode, auto-generated to connect to the sidecar.')
+@description('PostgreSQL connection string. Required for Shared mode. For Embedded/Managed modes it is generated automatically.')
 param databaseConnectionString string = ''
 
 @secure()
-@description('PostgreSQL password for the Embedded mode sidecar. Auto-generated when omitted — the sidecar is reachable only on localhost inside the Container App. Ignored in Shared mode.')
+@description('PostgreSQL password for the Embedded mode sidecar. Auto-generated when omitted — the sidecar is reachable only on localhost inside the Container App. Ignored in Shared/Managed modes.')
 param databasePassword string = ''
+
+@secure()
+@description('Administrator password for the PostgreSQL flexible server provisioned in Managed mode. Required for Managed mode; ignored otherwise.')
+param postgresAdminPassword string = ''
+
+@description('Compute SKU for the PostgreSQL flexible server provisioned in Managed mode (e.g. Standard_B1ms burstable, Standard_D2ds_v5 general purpose).')
+param postgresSkuName string = 'Standard_B1ms'
 
 // ============================================================================
 // API & Networking Parameters
@@ -238,10 +245,20 @@ var resolvedAppInsightsConnectionString = !empty(applicationInsightsConnectionSt
 // databaseConnectionString as-is.
 var effectiveDatabasePassword = empty(databasePassword) ? uniqueString(resourceGroup().id, masterKey) : databasePassword
 
-// Resolve connection string: external (Shared) or auto-generated for sidecar (Embedded)
+// Managed PostgreSQL flexible server: name and FQDN are derived from the known
+// naming pattern (<name>.postgres.database.azure.com) rather than read off the
+// resource, so resolvedConnectionString never references a conditionally-deployed
+// resource (which would fail to resolve in the other modes).
+var managedPgServerName = '${siteName}-pg'
+var managedPgFqdn = '${managedPgServerName}.postgres.database.azure.com'
+
+// Resolve connection string by mode: external (Shared), provisioned flexible
+// server (Managed), or the localhost sidecar (Embedded).
 var resolvedConnectionString = databaseMode == 'Shared'
   ? databaseConnectionString
-  : 'Host=localhost;Database=brochdb;Username=broch;Password=${effectiveDatabasePassword}'
+  : databaseMode == 'Managed'
+      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${postgresAdminPassword};SSL Mode=Require;Trust Server Certificate=true'
+      : 'Host=localhost;Database=brochdb;Username=broch;Password=${effectiveDatabasePassword}'
 
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName
@@ -286,12 +303,73 @@ resource sslCertificate 'Microsoft.App/managedEnvironments/certificates@2025-01-
 }
 
 // ============================================================================
+// Managed PostgreSQL (Managed mode) — Azure Database for PostgreSQL flexible server
+// ============================================================================
+
+var managedPgTier = startsWith(postgresSkuName, 'Standard_B')
+  ? 'Burstable'
+  : (startsWith(postgresSkuName, 'Standard_D') ? 'GeneralPurpose' : 'MemoryOptimized')
+
+resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (databaseMode == 'Managed') {
+  name: managedPgServerName
+  location: location
+  sku: {
+    name: postgresSkuName
+    tier: managedPgTier
+  }
+  properties: {
+    version: '16'
+    administratorLogin: 'brochadmin'
+    administratorLoginPassword: postgresAdminPassword
+    storage: {
+      storageSizeGB: 32
+    }
+    backup: {
+      backupRetentionDays: 7
+      geoRedundantBackup: 'Disabled'
+    }
+    highAvailability: {
+      mode: 'Disabled'
+    }
+    network: {
+      publicNetworkAccess: 'Enabled'
+    }
+  }
+}
+
+// Allow Azure-internal traffic (the Container App's Consumption egress has no stable
+// IP to allow-list individually) to reach the server. Connections are still gated by
+// SSL + the admin password. For stricter isolation, VNet-integrate the environment and
+// use a private endpoint — tracked as future hardening.
+resource postgresAzureFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (databaseMode == 'Managed') {
+  parent: postgresServer
+  name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
+resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = if (databaseMode == 'Managed') {
+  parent: postgresServer
+  name: 'brochdb'
+  properties: {
+    charset: 'UTF8'
+    collation: 'en_US.utf8'
+  }
+}
+
+// ============================================================================
 // Container App
 // ============================================================================
 
 resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: resolvedContainerAppName
   location: location
+  // In Managed mode, wait for the flexible server + database before starting the app:
+  // Broch runs migrations on boot, and the server takes several minutes to provision.
+  // The dependency is ignored in modes where these resources are not deployed.
+  dependsOn: databaseMode == 'Managed' ? [postgresDatabase, postgresAzureFirewall] : []
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
@@ -662,7 +740,7 @@ output sshEndpoint string = 'wss://${wildcardHostname}/ws/share'
 output deploymentMode string = databaseMode
 
 @description('Database server info')
-output databaseServer string = databaseMode == 'Shared' ? 'External PostgreSQL (connection string provided)' : 'Embedded PostgreSQL sidecar — EVALUATION ONLY: ephemeral storage, the database does not survive revision restarts or image upgrades. For production, set databaseMode=Shared with a managed PostgreSQL.'
+output databaseServer string = databaseMode == 'Shared' ? 'External PostgreSQL (connection string provided)' : databaseMode == 'Managed' ? 'Azure Database for PostgreSQL flexible server (${managedPgFqdn})' : 'Embedded PostgreSQL sidecar — EVALUATION ONLY: ephemeral storage, the database does not survive revision restarts or image upgrades. For production, set databaseMode=Managed (provisioned) or Shared (external).'
 
 @description('Application Insights name (if enabled)')
 output applicationInsightsName string = ((telemetryProvider == 'ApplicationInsights') && empty(applicationInsightsConnectionString)) ? appInsights.name : ((telemetryProvider == 'ApplicationInsights') ? 'Using provided connection string' : 'Application Insights not enabled')
