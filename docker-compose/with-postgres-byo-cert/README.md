@@ -100,6 +100,25 @@ docker compose down                               # Stop, keep DB volume
 docker compose down -v                            # Stop, destroy DB volume
 ```
 
+## Persistence
+
+Recovery-critical state is the Postgres data + `BROCH_MASTER_KEY`: the DataProtection keys stored in Postgres are encrypted under your master key, so a restored database is only readable together with the key from your `.env`. Back up:
+
+- **your `.env`** — holds `BROCH_MASTER_KEY` (and the rest of your configuration)
+- **`with-postgres-byo-cert_postgres_data`** — your broch state (users, tunnels, licenses, …)
+- **`./certs/`** — your cert + key pair (re-issuable from your CA, but a copy speeds recovery)
+
+Example backup:
+
+```sh
+cp .env broch-env-$(date +%Y%m%d).backup   # store somewhere safe — it contains secrets
+docker run --rm \
+  -v with-postgres-byo-cert_postgres_data:/data/postgres \
+  -v "$PWD":/backup \
+  alpine \
+  tar czf /backup/broch-state-$(date +%Y%m%d).tar.gz -C /data .
+```
+
 ## When to graduate from this example
 
 If your wildcard cert source supports a Caddy DNS module (Cloudflare, Route 53, Google Cloud DNS, Gandi, DigitalOcean, Hetzner, etc.), switch to [`../with-postgres/`](../with-postgres/) — automatic issuance + renewal in-stack, no cron jobs to maintain.

@@ -40,7 +40,7 @@ param databaseMode string = 'Embedded'
 param databaseConnectionString string = ''
 
 @secure()
-@description('PostgreSQL password for Embedded mode sidecar. Required for Embedded mode, ignored in Shared mode.')
+@description('PostgreSQL password for the Embedded mode sidecar. Auto-generated when omitted — the sidecar is reachable only on localhost inside the Container App. Ignored in Shared mode.')
 param databasePassword string = ''
 
 // ============================================================================
@@ -59,7 +59,7 @@ param wildcardHostname string
 // ============================================================================
 
 @description('Authentication provider type')
-@allowed(['AzureAd', 'EntraExternalId', 'Auth0'])
+@allowed(['AzureAd', 'EntraExternalId', 'Auth0', 'Okta', 'Oidc'])
 param authProvider string = 'AzureAd'
 
 @description('Identity provider tenant ID (e.g., contoso.onmicrosoft.com or a GUID). Required for AzureAd and EntraExternalId providers. Auth0 uses authDomain instead.')
@@ -71,8 +71,11 @@ param authClientId string = ''
 @description('Identity provider instance URL. Defaults per provider: AzureAd/EntraExternalId use https://login.microsoftonline.com/, Auth0 is derived from authDomain.')
 param authInstance string = ''
 
-@description('Auth0 domain (e.g., contoso.auth0.com). Only used when authProvider is Auth0.')
+@description('Auth0/Okta domain (e.g., contoso.auth0.com or contoso.okta.com). Only used when authProvider is Auth0 or Okta.')
 param authDomain string = ''
+
+@description('Issuer URL — required for the generic Oidc provider (serves /.well-known/openid-configuration). Leave blank for other providers.')
+param authAuthority string = ''
 
 @description('OAuth2 API audience identifier. When empty, falls back to authClientId.')
 param authAudience string = ''
@@ -84,8 +87,8 @@ param authScopes string = ''
 @secure()
 param authClientSecret string = ''
 
-@description('Comma-separated list of IdP role/claim values that grant admin access (e.g., Admin,CompanyAdmin). Leave empty to disable admin access.')
-param adminRoles string = ''
+@description('Comma-separated role/group names that grant admin access. Your first admin signs in holding one of these.')
+param adminRoles string = 'broch_admin'
 
 // ============================================================================
 // Monitoring Parameters
@@ -222,10 +225,17 @@ var resolvedAppInsightsConnectionString = !empty(applicationInsightsConnectionSt
   ? applicationInsightsConnectionString
   : ((telemetryProvider == 'ApplicationInsights') && empty(applicationInsightsConnectionString) ? appInsights.properties.ConnectionString : '')
 
+// Embedded-mode sidecar password: operator-provided, or derived deterministically
+// from the resource group + master key when omitted. The sidecar listens on
+// localhost inside the Container App only — the password never crosses a network
+// boundary. Only consumed on the Embedded paths below; Shared mode uses
+// databaseConnectionString as-is.
+var effectiveDatabasePassword = empty(databasePassword) ? uniqueString(resourceGroup().id, masterKey) : databasePassword
+
 // Resolve connection string: external (Shared) or auto-generated for sidecar (Embedded)
 var resolvedConnectionString = databaseMode == 'Shared'
   ? databaseConnectionString
-  : 'Host=localhost;Database=brochdb;Username=broch;Password=${databasePassword}'
+  : 'Host=localhost;Database=brochdb;Username=broch;Password=${effectiveDatabasePassword}'
 
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName
@@ -399,7 +409,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
         databaseMode == 'Embedded' ? [
           {
             name: 'postgres-password'
-            value: databasePassword
+            value: effectiveDatabasePassword
           }
         ] : [],
         !empty(authClientSecret) ? [
@@ -474,6 +484,14 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                   value: authDomain
                 }
               ] : [],
+              // Set unconditionally (the server ignores an empty value), matching the
+              // Terraform templates' AUTHENTICATION__AUTHORITY wiring.
+              [
+                {
+                  name: 'AUTHENTICATION__AUTHORITY'
+                  value: authAuthority
+                }
+              ],
               !empty(authAudience) ? [
                 {
                   name: 'AUTHENTICATION__AUDIENCE'

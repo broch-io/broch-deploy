@@ -51,7 +51,7 @@ Shared mode removes the sidecar but you then pay for your own managed Postgres s
 - Azure CLI logged in (`az login`) against a subscription with the Container Apps resource providers registered (the first deploy registers them; takes 5-10 min).
 - Contributor on the target resource group.
 - DNS control for your wildcard hostname's parent domain — Container Apps doesn't manage DNS for you.
-- An identity provider app registration (Auth0, Entra ID / Azure AD, or Okta) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
+- An identity provider app registration (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Setup

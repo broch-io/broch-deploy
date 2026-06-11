@@ -241,7 +241,9 @@ resource "aws_ecs_task_definition" "broch" {
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      # bash /dev/tcp probe, not curl: broch images ≤1.23.0 ship no curl/wget
+      # (bash is present in the Debian-based aspnet image).
+      command     = ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
       interval    = 30
       timeout     = 10
       retries     = 3

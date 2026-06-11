@@ -19,24 +19,23 @@ param wildcardHostname = 'tunnels.example.com'
 // Generate with: openssl rand -base64 48
 param masterKey = '<openssl rand -base64 48>'
 
-// Embedded-mode PostgreSQL sidecar password (ignored in Shared mode).
-param databasePassword = '<a-strong-random-password>'
-
 // Identity provider — required at boot. Broch has no built-in local login, so
 // no one can sign in (or finish first-run setup) until this is set. Your first
 // admin signs in holding a role named in adminRoles.
 // Guides: https://broch.io/docs/identity-providers/
-param authProvider = 'Auth0' // AzureAd | EntraExternalId | Auth0
+param authProvider = 'Auth0' // AzureAd | EntraExternalId | Auth0 | Okta | Oidc
 param authClientId = '<oauth-client-id>'
 param authClientSecret = '<oauth-client-secret>'
 param adminRoles = 'broch_admin'
 
 // Set the value(s) your provider needs; leave the rest at their empty defaults:
-//   Auth0:            authDomain   = 'your-tenant.auth0.com'
-//   AzureAd / Entra:  authTenantId = '...'  +  authInstance = 'https://login.microsoftonline.com/'
+//   Auth0 / Okta:     authDomain    = 'your-tenant.auth0.com' / 'your-org.okta.com'
+//   AzureAd / Entra:  authTenantId  = '...'  +  authInstance = 'https://login.microsoftonline.com/'
+//   Generic Oidc:     authAuthority = '<issuer URL serving /.well-known/openid-configuration>'
 // param authDomain = ''
 // param authTenantId = ''
 // param authInstance = ''
+// param authAuthority = ''
 // param authAudience = ''
 // param authScopes = ''
 
@@ -47,6 +46,7 @@ param adminRoles = 'broch_admin'
 
 // param databaseMode = 'Embedded'        // 'Embedded' (sidecar) or 'Shared' (BYO Postgres)
 // param databaseConnectionString = ''    // required for Shared mode
+// param databasePassword = ''            // Embedded sidecar password — auto-generated when omitted
 // param containerImage = 'ghcr.io/broch-io/broch:latest'  // pin a version in production
 // param centralServerUrl = 'https://api.broch.io'
 
