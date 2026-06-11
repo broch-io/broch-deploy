@@ -26,6 +26,9 @@ param masterKey = '<openssl rand -base64 48>'
 param authProvider = 'Auth0' // AzureAd | EntraExternalId | Auth0 | Okta | Oidc
 param authClientId = '<oauth-client-id>'
 param authClientSecret = '<oauth-client-secret>'
+// broch_admin is an example — replace with admin group(s)/role(s) from your
+// own IdP that your first admin actually holds. Comma-separated; holding any
+// listed role grants admin.
 param adminRoles = 'broch_admin'
 
 // Set the value(s) your provider needs; leave the rest at their empty defaults:
