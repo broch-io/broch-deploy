@@ -30,22 +30,6 @@ internet  ─── HTTPS:443  ─────▶     │ Application Load Balan
 
 Tightly-scoped IAM lets the task read its own secrets — nothing more. The broch image pulls from GHCR without credentials (public image).
 
-## What it costs
-
-Rough monthly numbers in `us-east-1`, on-demand pricing as of 2026:
-
-| Resource                          | ~Monthly cost (USD) |
-| --------------------------------- | ------------------- |
-| ALB (always-on)                   | $16-20              |
-| ECS Fargate (0.5 vCPU / 1 GB)     | $12-15              |
-| RDS db.t4g.micro single-AZ + 20GB | $14-18              |
-| NAT Gateway + data transfer       | $32 + traffic       |
-| Route 53 zone + queries           | $0.50               |
-| Secrets Manager (5 secrets)       | $2.00               |
-| **Total baseline**                | **~$75-90/month**   |
-
-The NAT gateway is the biggest individual line item. For a cost-optimized deployment, see "Tradeoffs" below.
-
 ## Prerequisites
 
 - Terraform 1.6+

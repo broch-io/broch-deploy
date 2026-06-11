@@ -32,19 +32,7 @@ internet  ─── HTTPS:443  ─────▶     │ DigitalOcean Droplet  
 
 The Droplet is firewalled: only SSH (22) and HTTPS (443) inbound from the public internet. Caddy redirects HTTP→HTTPS internally.
 
-## What it costs
-
-Rough monthly numbers (as of 2026):
-
-| Resource                              | ~Monthly cost (USD) |
-| ------------------------------------- | ------------------- |
-| Droplet `s-1vcpu-1gb`                 | $6                  |
-| Reserved IP (attached, no charge)     | $0                  |
-| Block storage 10 GB                   | $1                  |
-| Bandwidth (1 TB included with Droplet)| $0                  |
-| **Total baseline**                    | **~$7/month**       |
-
-The cheapest cloud option of the three Terraform modules — by a wide margin. Tradeoff is the obvious one: single VM, no managed services, no failover.
+The smallest footprint of the three Terraform modules. Tradeoff is the obvious one: single VM, no managed services, no failover.
 
 ## Prerequisites
 
