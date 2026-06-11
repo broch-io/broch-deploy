@@ -88,24 +88,40 @@ docker compose logs -f broch caddy
 # Stop, keeping data
 docker compose down
 
-# Pull a new broch image + restart
-docker compose pull broch
-docker compose up -d
-
 # Renew Caddy after editing Caddyfile
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
+## Upgrading
+
+1. Back up first — Postgres data plus your `.env` (see [Persistence](#persistence)).
+2. Set an explicit `BROCH_VERSION` in `.env` so the version you run is the version you chose (and rollback is a one-line change):
+
+   ```sh
+   BROCH_VERSION=1.23.0
+   ```
+
+3. Pull and restart:
+
+   ```sh
+   docker compose pull broch
+   docker compose up -d
+   ```
+
+Release notes and version-specific steps: <https://broch.io/docs/self-hosting/upgrading/>
+
 ## Persistence
 
-Two named volumes you'll want to back up:
+Recovery-critical state is the Postgres data + `BROCH_MASTER_KEY`: the DataProtection keys stored in Postgres are encrypted under your master key, so a restored database is only readable together with the key from your `.env`. Back up:
 
+- **your `.env`** — holds `BROCH_MASTER_KEY` (and the rest of your configuration)
 - **`with-postgres_postgres_data`** — your broch state (users, tunnels, licenses, …)
 - **`with-postgres_caddy_data`** — Caddy's ACME account + issued certs. If you lose this, Let's Encrypt rate-limits new issuance to 5/week per hostname; you don't want to hit that during recovery.
 
 Example backup:
 
 ```sh
+cp .env broch-env-$(date +%Y%m%d).backup   # store somewhere safe — it contains secrets
 docker run --rm \
   -v with-postgres_postgres_data:/data/postgres \
   -v with-postgres_caddy_data:/data/caddy \
