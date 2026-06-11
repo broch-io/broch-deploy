@@ -11,11 +11,12 @@
 
 name: Terraform Validate
 
+# No paths filter on pull_request: validate (aws-ecs) and
+# validate (azure-container-apps) are required checks in the main ruleset,
+# and a path-filtered workflow never reports on PRs outside its paths —
+# leaving them BLOCKED forever. The jobs are fast; run them on every PR.
 on:
   pull_request:
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-validate.yml'
   push:
     branches: [main]
     paths:

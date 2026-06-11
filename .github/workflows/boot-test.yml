@@ -20,11 +20,12 @@
 
 name: Compose Boot Test
 
+# No paths filter on pull_request — same reason as terraform-validate.yml:
+# path-filtered workflows never report on PRs outside their paths, which
+# deadlocks any required check. This keeps the boot jobs eligible to be
+# required in the main ruleset.
 on:
   pull_request:
-    paths:
-      - 'docker-compose/**'
-      - '.github/workflows/boot-test.yml'
   push:
     branches: [main]
     paths:
