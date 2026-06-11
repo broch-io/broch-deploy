@@ -1,0 +1,134 @@
+# Boot test for the docker-compose variants.
+#
+# Each variant is booted exactly the way its README tells a customer to:
+# cp .env.example .env, fill the required values, docker compose up. The
+# assertion that matters is broch's container healthcheck reaching `healthy` —
+# that proves the published image boots, runs its migrations against the
+# bundled/external Postgres, and answers /healthz through the bash /dev/tcp
+# probe, end to end on the customer-facing template.
+#
+# Deliberately out of scope:
+#   - ACME issuance — CI has no real DNS zone or Cloudflare token. The dummy
+#     token is shape-valid (40 url-safe chars) because the cloudflare module
+#     format-checks it at provision time and exits otherwise; issuance then
+#     fails in the background and Caddy keeps running. The job asserts the
+#     caddy process is running, not that a cert was minted.
+#   - Tunnel traffic — covered by the monorepo e2e suite.
+#
+# The weekly schedule re-runs the templates against ghcr.io/broch-io/broch:latest
+# so an image regression surfaces here instead of in a customer install.
+
+name: Compose Boot Test
+
+# No paths filter on pull_request — same reason as terraform-validate.yml:
+# path-filtered workflows never report on PRs outside their paths, which
+# deadlocks any required check. This keeps the boot jobs eligible to be
+# required in the main ruleset.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'docker-compose/**'
+      - '.github/workflows/boot-test.yml'
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC — catch :latest image drift
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: boot (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - with-postgres
+          - with-postgres-byo-cert
+          - with-postgres-external
+
+    defaults:
+      run:
+        working-directory: docker-compose/${{ matrix.variant }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Start from the customer template so a broken .env.example fails here.
+      # sed-replace (not append) so the values hold regardless of which
+      # duplicate-key precedence the dotenv parser uses.
+      #
+      # The dummy IdP is an interim concession: broch <= 1.23.0 crashes when
+      # AUTHENTICATION__PROVIDER arrives as the empty string the compose files
+      # pass for unset vars (empty != absent in the enum binder), so the
+      # template-default "boot first, configure IdP in-app" path cannot pass
+      # against :latest yet. Once the server fix ships in a stable image,
+      # drop the AUTHENTICATION__* lines so this job covers the empty-IdP
+      # first-run boot floor — the customer default — again.
+      - name: Fill .env from the customer template
+        run: |
+          cp .env.example .env
+          sed -i \
+            -e "s|^BROCH_MASTER_KEY=.*|BROCH_MASTER_KEY=$(openssl rand -base64 48)|" \
+            -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=boot-test-pg-password|" \
+            -e "s|^CADDY_ACME_EMAIL=.*|CADDY_ACME_EMAIL=boot-test@example.invalid|" \
+            -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=$(openssl rand -hex 20)|" \
+            -e "s|^AUTHENTICATION__PROVIDER=.*|AUTHENTICATION__PROVIDER=Auth0|" \
+            -e "s|^AUTHENTICATION__CLIENTID=.*|AUTHENTICATION__CLIENTID=boot-test-client|" \
+            -e "s|^AUTHENTICATION__CLIENTSECRET=.*|AUTHENTICATION__CLIENTSECRET=boot-test-secret|" \
+            -e "s|^AUTHENTICATION__DOMAIN=.*|AUTHENTICATION__DOMAIN=boot-test.auth0.invalid|" \
+            .env
+
+      # The byo-cert variant bind-mounts ./certs/*.pem; the files must exist
+      # before `up` or docker creates directories in their place.
+      - name: Generate self-signed wildcard cert (byo-cert)
+        if: matrix.variant == 'with-postgres-byo-cert'
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -keyout certs/privkey.pem -out certs/fullchain.pem \
+            -subj "/CN=tunnels.example.com" \
+            -addext "subjectAltName=DNS:tunnels.example.com,DNS:*.tunnels.example.com"
+
+      # Stand in for the customer's managed Postgres: a sidecar container,
+      # attached to the compose network once `up --no-start` has created it.
+      # SSL Mode=Disable because the alpine image ships without TLS — the
+      # template's documented default for managed services is Require.
+      - name: Provision external Postgres (external)
+        if: matrix.variant == 'with-postgres-external'
+        run: |
+          sed -i "s|^BROCH_DB_CONNECTION_STRING=.*|BROCH_DB_CONNECTION_STRING=Host=pg-external;Port=5432;Database=brochdb;Username=broch;Password=boot-test-pg-password;SSL Mode=Disable|" .env
+          docker run -d --name pg-external \
+            -e POSTGRES_DB=brochdb \
+            -e POSTGRES_USER=broch \
+            -e POSTGRES_PASSWORD=boot-test-pg-password \
+            postgres:17-alpine
+          docker compose up --no-start
+          docker network connect with-postgres-external_default pg-external
+
+      # `--wait` blocks until every service is running (healthy where a
+      # healthcheck is defined) and fails the step otherwise — this single
+      # command is the boot test.
+      - name: docker compose up
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: Assert broch healthy + caddy running
+        run: |
+          docker compose ps
+          broch_health=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q broch)")
+          caddy_state=$(docker inspect -f '{{.State.Status}}' "$(docker compose ps -q caddy)")
+          echo "broch health: $broch_health · caddy state: $caddy_state"
+          test "$broch_health" = healthy
+          test "$caddy_state" = running
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

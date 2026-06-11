@@ -16,17 +16,14 @@
 	# Default email retained for completeness; not used since auto_https is off.
 }
 
-# Apex: the API endpoint customers and the CLI talk to.
-{env.BROCH_WILDCARD_HOSTNAME}:443 {
-	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
-
-	reverse_proxy broch:8080 {
-		header_up Host {host}
-	}
-}
-
-# Wildcard: every tunnel subdomain.
-*.{env.BROCH_WILDCARD_HOSTNAME}:443 {
+# One catch-all block serves both the apex (the API endpoint customers and
+# the CLI talk to) and every wildcard tunnel subdomain — with a static cert
+# they were identical proxies anyway, and the cert itself bounds what clients
+# accept. A catch-all is also required here: Caddy validates explicit-cert
+# site addresses before {env.*} substitution, so a placeholder address like
+# *.{env.BROCH_WILDCARD_HOSTNAME} fails to adapt ("subject does not qualify
+# for certificate") and Caddy never starts.
+:443 {
 	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
 
 	reverse_proxy broch:8080 {

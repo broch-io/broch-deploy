@@ -77,13 +77,13 @@ services:
 
   caddy:
     # Stock caddy:2 — no DNS modules needed since we're not doing ACME.
+    # No environment either: the Caddyfile serves a catch-all :443 with the
+    # mounted cert, so it never reads the hostname.
     image: caddy:2
     restart: unless-stopped
     depends_on:
       broch:
         condition: service_healthy
-    environment:
-      BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
     ports:
       - "80:80"
       - "443:443"
