@@ -35,20 +35,6 @@ internet  ─── HTTPS:443  ─────▶     │ Container App ingress 
                                     └────────────────────────────────┘
 ```
 
-## What it costs
-
-Rough monthly numbers, `eastus`, pay-as-you-go pricing as of 2026:
-
-| Resource                              | ~Monthly cost (USD) |
-| ------------------------------------- | ------------------- |
-| Container Apps (0.5 vCPU / 1 Gi, 1×)  | $15-25              |
-| Postgres Flexible B_Standard_B1ms     | $13-15              |
-| Log Analytics workspace + ingestion   | $3-10               |
-| Key Vault (4 secrets, low ops)        | $0.30               |
-| **Total baseline**                    | **~$30-50/month**   |
-
-Notably cheaper than the AWS equivalent — Container Apps doesn't bill for the equivalent of a NAT gateway / ALB.
-
 ## Prerequisites
 
 - Terraform 1.6+

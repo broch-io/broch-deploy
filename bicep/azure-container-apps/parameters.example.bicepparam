@@ -47,7 +47,9 @@ param adminRoles = 'broch_admin'
 // A Broch license is activated in-app on first sign-in (Admin → License) — there
 // is no license parameter. Buy a license at https://broch.io/pricing.
 
-// param databaseMode = 'Embedded'        // 'Embedded' (sidecar) or 'Shared' (BYO Postgres)
+// param databaseMode = 'Embedded'        // 'Embedded' = evaluation only: ephemeral sidecar, data
+//                                        // lost on revision restarts/upgrades. 'Shared' (BYO
+//                                        // managed Postgres) is the production shape.
 // param databaseConnectionString = ''    // required for Shared mode
 // param databasePassword = ''            // Embedded sidecar password — auto-generated when omitted
 // param containerImage = 'ghcr.io/broch-io/broch:latest'  // pin a version in production

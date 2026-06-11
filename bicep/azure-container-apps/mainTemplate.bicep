@@ -1,8 +1,14 @@
 // Broch on Azure Container Apps — Bicep deployment template.
 //
 // Deploys the Broch server on Azure Container Apps with PostgreSQL:
-// - Embedded mode: PostgreSQL sidecar container persisted to Azure Files (single replica)
-// - Shared mode:   bring-your-own PostgreSQL connection string (e.g. Flexible Server)
+// - Embedded mode: EVALUATION ONLY — PostgreSQL sidecar on ephemeral storage
+//   (single replica). The database does not survive revision restarts, image
+//   upgrades, or platform maintenance: each one returns the app to first-run
+//   state (re-enter IdP config, re-activate the license). Azure Files can't
+//   host postgres (SMB has no chmod, initdb requires it), and that's fine for
+//   this mode's purpose: click, deploy, evaluate.
+// - Shared mode:   bring-your-own PostgreSQL connection string (e.g. Flexible
+//   Server) — the production shape.
 //
 // This is the same template Broch, LLC runs for its own dev and production
 // deployments — what you deploy here is what we run. See README.md for the
@@ -31,7 +37,7 @@ param containerImage string = 'ghcr.io/broch-io/broch:latest'
 // Database Parameters
 // ============================================================================
 
-@description('Database deployment mode: Embedded (PostgreSQL sidecar, single instance) or Shared (external PostgreSQL connection string, multi-instance HA)')
+@description('Database deployment mode. Embedded: evaluation only — single-instance PostgreSQL sidecar on EPHEMERAL storage; the database is lost on revision restarts, image upgrades, and platform maintenance. Shared: external PostgreSQL connection string (production; supports multi-instance HA).')
 @allowed(['Embedded', 'Shared'])
 param databaseMode string = 'Embedded'
 
@@ -240,34 +246,6 @@ var resolvedConnectionString = databaseMode == 'Shared'
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName
 var resolvedEnvironmentName = !empty(environmentName) ? environmentName : '${siteName}-env'
-var storageAccountName = take(toLower(replace('${siteName}st${uniqueString(resourceGroup().id)}', '-', '')), 24)
-
-// ============================================================================
-// Persistent Storage (Embedded mode — PostgreSQL data)
-// ============================================================================
-
-@description('Storage Account for PostgreSQL data persistence (Embedded mode only)')
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = if (databaseMode == 'Embedded') {
-  name: storageAccountName
-  location: location
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    accessTier: 'Hot'
-    supportsHttpsTrafficOnly: true
-    minimumTlsVersion: 'TLS1_2'
-  }
-}
-
-@description('File Share for PostgreSQL data persistence')
-resource fileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = if (databaseMode == 'Embedded') {
-  name: '${storageAccount.name}/default/postgres-data'
-  properties: {
-    shareQuota: 5 // 5 GB for PostgreSQL data files
-  }
-}
 
 // ============================================================================
 // Container App Environment
@@ -293,20 +271,6 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
   }
 }
 
-@description('Storage binding for PostgreSQL data volume (Embedded mode only)')
-resource envStorage 'Microsoft.App/managedEnvironments/storages@2023-05-01' = if (databaseMode == 'Embedded') {
-  name: 'postgres-data'
-  parent: containerAppEnv
-  properties: {
-    azureFile: {
-      accountName: storageAccount.name
-      accountKey: storageAccount.listKeys().keys[0].value
-      shareName: 'postgres-data'
-      accessMode: 'ReadWrite'
-    }
-  }
-}
-
 // ============================================================================
 // SSL Certificate (custom domain only)
 // ============================================================================
@@ -328,7 +292,6 @@ resource sslCertificate 'Microsoft.App/managedEnvironments/certificates@2025-01-
 resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: resolvedContainerAppName
   location: location
-  dependsOn: databaseMode == 'Embedded' ? [envStorage] : []
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
@@ -651,11 +614,16 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
           ]
         }
       ] : [])
+      // EmptyDir is replica-scoped ephemeral storage: it survives individual
+      // container restarts within the replica (a broch liveness restart doesn't
+      // wipe postgres) but is lost with the replica itself — revision restarts,
+      // image upgrades, platform maintenance. That is Embedded mode's contract.
+      // Azure Files is not an option here: SMB has no chmod and postgres initdb
+      // hard-requires it.
       volumes: databaseMode == 'Embedded' ? [
         {
           name: 'postgres-data-volume'
-          storageName: 'postgres-data'
-          storageType: 'AzureFile'
+          storageType: 'EmptyDir'
         }
       ] : []
       scale: {
@@ -693,11 +661,8 @@ output sshEndpoint string = 'wss://${wildcardHostname}/ws/share'
 @description('Deployment mode used')
 output deploymentMode string = databaseMode
 
-@description('Estimated monthly cost (USD)')
-output estimatedMonthlyCost string = databaseMode == 'Embedded' ? '~$50 (always-on, 0.75 vCPU / 1.5 GiB)' : '$16-20 (typical usage)'
-
 @description('Database server info')
-output databaseServer string = databaseMode == 'Shared' ? 'External PostgreSQL (connection string provided)' : 'Embedded PostgreSQL sidecar'
+output databaseServer string = databaseMode == 'Shared' ? 'External PostgreSQL (connection string provided)' : 'Embedded PostgreSQL sidecar — EVALUATION ONLY: ephemeral storage, the database does not survive revision restarts or image upgrades. For production, set databaseMode=Shared with a managed PostgreSQL.'
 
 @description('Application Insights name (if enabled)')
 output applicationInsightsName string = ((telemetryProvider == 'ApplicationInsights') && empty(applicationInsightsConnectionString)) ? appInsights.name : ((telemetryProvider == 'ApplicationInsights') ? 'Using provided connection string' : 'Application Insights not enabled')
