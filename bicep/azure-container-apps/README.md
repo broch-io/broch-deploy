@@ -2,7 +2,9 @@
 
 Broch on Azure Container Apps, deployed with Bicep. **This is the same template Broch, LLC runs for its own dev and production deployments** — what you deploy here is what we run.
 
-By default it's a self-contained single-replica stack: the Broch server plus a PostgreSQL sidecar, with the database persisted to Azure Files. No Key Vault, no separate managed database — fewer moving parts and lower cost than the [Terraform Azure module](../../terraform/azure-container-apps/), which provisions Postgres Flexible Server + Key Vault for a scale-out, production-HA shape. Pick this one if you want the smallest Azure footprint or want to match exactly what Broch runs; pick the Terraform module if you need managed Postgres and horizontal scale.
+By default (`databaseMode=Embedded`) it's a self-contained single-replica **evaluation** stack: the Broch server plus a PostgreSQL sidecar on **ephemeral storage**. The database does not survive revision restarts, image upgrades, or platform maintenance — each one returns the app to first-run state (re-enter IdP config, re-activate the license). That's the point: click, deploy, evaluate, no other resources to manage.
+
+For production, set `databaseMode=Shared` and point `databaseConnectionString` at a managed PostgreSQL — that's the shape Broch, LLC's own dev and production deployments run — or use the [Terraform Azure module](../../terraform/azure-container-apps/), which provisions Postgres Flexible Server + Key Vault for a scale-out, production-HA shape.
 
 ## What this provisions
 
@@ -18,33 +20,18 @@ internet  ─── HTTPS:443  ─────▶     │ Container App ingress 
                                     │ Container App (single replica) │
                                     │   - broch container (GHCR)     │
                                     │   - postgres:16 sidecar        │  ◀── Embedded mode
+                                    │     (ephemeral EmptyDir volume │      (evaluation only)
+                                    │      — data lost on revision   │
+                                    │      restarts and upgrades)    │
                                     │   - secrets inline in config   │
-                                    └──────────────┬─────────────────┘
-                                                   │ volume mount
-                                    ┌──────────────▼─────────────────┐
-                                    │ Azure Files share              │
-                                    │   - PostgreSQL data (5 GiB)    │
                                     └────────────────────────────────┘
 
-  Shared mode: drop the sidecar + Azure Files, set databaseMode=Shared and
+  Shared mode (production): drop the sidecar, set databaseMode=Shared and
   point databaseConnectionString at your own managed Postgres instead.
 
   Optional: Log Analytics + Application Insights are created when
   telemetryProvider=ApplicationInsights and no connection string is supplied.
 ```
-
-## What it costs
-
-Rough monthly numbers, `eastus`, pay-as-you-go, Embedded mode:
-
-| Resource                                   | ~Monthly cost (USD) |
-| ------------------------------------------ | ------------------- |
-| Container Apps (broch 0.5 vCPU / 1 GiB + postgres 0.25 / 0.5, always-on 1×) | $35-50 |
-| Azure Files (5 GiB, transactions)          | $1-3                |
-| Log Analytics + App Insights (if enabled)  | $3-10               |
-| **Total baseline**                         | **~$40-60/month**   |
-
-Shared mode removes the sidecar but you then pay for your own managed Postgres separately.
 
 ## Prerequisites
 
@@ -121,11 +108,13 @@ Rotate by re-running the deploy with the new value, or `az containerapp secret s
 
 | Decision                          | Why                                                  | When to change                                      |
 | --------------------------------- | ---------------------------------------------------- | --------------------------------------------------- |
-| Embedded Postgres sidecar         | Self-contained, cheapest, matches what Broch runs    | Set `databaseMode=Shared` for managed/HA Postgres   |
+| Embedded sidecar is ephemeral     | Evaluation mode — nothing kept, nothing to manage    | Set `databaseMode=Shared` for production            |
 | Single replica (Embedded)         | Sidecar Postgres is single-instance; no scale-out    | Use Shared mode + raise `maxReplicas`               |
 | Secrets inline, no Key Vault      | One fewer resource + role assignment to manage        | Use the Terraform module for Key Vault-backed flow  |
-| No ACA health probes yet          | Restart policy handles crashes; liveness only if added must hit `/healthz`, never `/healthz/ready` (license-gated → first-run deadlock) | When you want orchestrator-level health gating |
+| Liveness probe only (`/healthz`)  | Restarts a container that's TCP-alive but HTTP-hung  | —                                                   |
 | Wildcard cert is BYO PFX          | Azure managed certs don't issue wildcards            | Front Door / App Gateway with a managed wildcard    |
+
+Two of these deserve the long version. *Ephemeral:* Azure Files can't host the sidecar's data — SMB has no chmod and postgres `initdb` requires it — so Embedded data lives on a replica-scoped EmptyDir volume and is lost on revision restarts, image upgrades, and platform maintenance, returning the app to first-run state (re-enter IdP config, re-activate the license). *No readiness probe:* `/healthz/ready` is license-gated, and gating ingress on it deadlocks first-run activation — no traffic means no setup UI means no license.
 
 ## Pulling a new Broch image
 
