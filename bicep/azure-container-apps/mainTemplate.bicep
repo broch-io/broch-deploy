@@ -74,7 +74,7 @@ param authTenantId string = ''
 @description('OAuth2 client/application ID registered in the identity provider')
 param authClientId string = ''
 
-@description('Identity provider instance URL. Defaults per provider: AzureAd/EntraExternalId use https://login.microsoftonline.com/, Auth0 is derived from authDomain.')
+@description('Identity provider instance URL. Leave empty for AzureAd/EntraExternalId to use the login authority of the cloud this deploys into (public, Government, or China — resolved automatically). Set only to override. Auth0/Okta derive their authority from authDomain.')
 param authInstance string = ''
 
 @description('Auth0/Okta domain (e.g., contoso.auth0.com or contoso.okta.com). Only used when authProvider is Auth0 or Okta.')
@@ -189,8 +189,8 @@ param environmentName string = ''
 @description('Minimum number of replicas')
 param minReplicas int = 0
 
-@description('Maximum number of replicas')
-param maxReplicas int = 3
+@description('Maximum number of replicas. Broch is single-replica: WebSocket tunnels pin to a replica, so scaling past 1 breaks tunnel routing. Leave at 1 unless sticky-session routing is in place.')
+param maxReplicas int = 1
 
 @description('Revision suffix for tracking deployments (e.g., commit SHA). Leave empty for auto-generated.')
 param revisionSuffix string = ''
@@ -435,12 +435,21 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                   value: authTenantId
                 }
               ] : [],
-              !empty(authInstance) ? [
+              // AUTHENTICATION__INSTANCE is required by the server for AzureAd/EntraExternalId.
+              // Default to the login authority of the cloud this deployment runs in
+              // (environment() resolves public, Government, and China correctly); an explicit
+              // authInstance still wins. For other providers it is only emitted when supplied.
+              (authProvider == 'AzureAd' || authProvider == 'EntraExternalId') ? [
+                {
+                  name: 'AUTHENTICATION__INSTANCE'
+                  value: empty(authInstance) ? environment().authentication.loginEndpoint : authInstance
+                }
+              ] : (!empty(authInstance) ? [
                 {
                   name: 'AUTHENTICATION__INSTANCE'
                   value: authInstance
                 }
-              ] : [],
+              ] : []),
               !empty(authDomain) ? [
                 {
                   name: 'AUTHENTICATION__DOMAIN'
