@@ -8,8 +8,10 @@
 # probe, end to end on the customer-facing template.
 #
 # Deliberately out of scope:
-#   - ACME issuance — CI has no real DNS zone or Cloudflare token. Caddy
-#     starts and retries issuance in the background; the job asserts the
+#   - ACME issuance — CI has no real DNS zone or Cloudflare token. The dummy
+#     token is shape-valid (40 url-safe chars) because the cloudflare module
+#     format-checks it at provision time and exits otherwise; issuance then
+#     fails in the background and Caddy keeps running. The job asserts the
 #     caddy process is running, not that a cert was minted.
 #   - Tunnel traffic — covered by the monorepo e2e suite.
 #
@@ -72,7 +74,7 @@ jobs:
             -e "s|^BROCH_MASTER_KEY=.*|BROCH_MASTER_KEY=$(openssl rand -base64 48)|" \
             -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=boot-test-pg-password|" \
             -e "s|^CADDY_ACME_EMAIL=.*|CADDY_ACME_EMAIL=boot-test@example.invalid|" \
-            -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=boot-test-dummy-token|" \
+            -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=$(openssl rand -hex 20)|" \
             -e "s|^AUTHENTICATION__PROVIDER=.*|AUTHENTICATION__PROVIDER=Auth0|" \
             -e "s|^AUTHENTICATION__CLIENTID=.*|AUTHENTICATION__CLIENTID=boot-test-client|" \
             -e "s|^AUTHENTICATION__CLIENTSECRET=.*|AUTHENTICATION__CLIENTSECRET=boot-test-secret|" \
