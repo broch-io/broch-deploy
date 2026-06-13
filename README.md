@@ -18,6 +18,7 @@ broch-deploy/
 │   └── azure-container-apps/         # Azure Container Apps + Postgres Flexible + Key Vault.
 ├── bicep/
 │   └── azure-container-apps/         # Azure Container Apps + Postgres sidecar. What Broch runs.
+├── CHANGELOG.md                      # What changed in each Broch server release.
 └── COMPATIBILITY.md                  # Which examples support which Broch server versions.
 ```
 
@@ -32,12 +33,12 @@ ghcr.io/broch-io/broch:<version>
 The image is a public GHCR package — pull it directly, no authentication needed:
 
 ```sh
-docker pull ghcr.io/broch-io/broch:1.5.0
+docker pull ghcr.io/broch-io/broch:1.24.0
 ```
 
-Available tags follow semver (`1.5.0`, `1.5`, `1`, `latest`). For production we recommend pinning to a specific version (`ghcr.io/broch-io/broch:1.5.0`) rather than `:latest`.
+Available tags follow semver (`1.24.0`, `1.24`, `1`, `latest`). For production we recommend pinning to a specific version (`ghcr.io/broch-io/broch:1.24.0`) rather than `:latest`.
 
-Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [compatibility matrix](COMPATIBILITY.md) tracks what's supported.
+Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [compatibility matrix](COMPATIBILITY.md) tracks what's supported, and the [changelog](CHANGELOG.md) records what changed in each release.
 
 ## Picking an example
 

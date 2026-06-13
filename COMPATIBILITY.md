@@ -2,6 +2,10 @@
 
 Which version of this repo to use with which Broch server release.
 
+For what changed in each server release — features, behavior, and upgrade notes —
+see [CHANGELOG.md](CHANGELOG.md). This file maps those releases to the examples
+that support them.
+
 ## How this works
 
 Examples in `main` track the **current stable** Broch server release. When something in the examples needs to change for a new server version (renamed env var, new required resource, etc.), we cut a git tag *before* making the change. That tag captures the last working examples for the prior server version.
