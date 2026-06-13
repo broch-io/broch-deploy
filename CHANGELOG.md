@@ -1,8 +1,7 @@
 # Changelog
 
 Customer-facing changes to the Broch server, release to release. Versions match
-the published image — `ghcr.io/broch-io/broch:<version>`. For which deploy
-examples support which server version, see [COMPATIBILITY.md](COMPATIBILITY.md).
+the published image — `ghcr.io/broch-io/broch:<version>`.
 
 This changelog covers what changes for you as an operator: features you can use,
 behavior you'll notice, and anything you need to do when upgrading. It is not a

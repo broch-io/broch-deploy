@@ -18,8 +18,7 @@ broch-deploy/
 │   └── azure-container-apps/         # Azure Container Apps + Postgres Flexible + Key Vault.
 ├── bicep/
 │   └── azure-container-apps/         # Azure Container Apps + Postgres sidecar. What Broch runs.
-├── CHANGELOG.md                      # What changed in each Broch server release.
-└── COMPATIBILITY.md                  # Which examples support which Broch server versions.
+└── CHANGELOG.md                      # What changed in each Broch server release.
 ```
 
 Pick the directory that matches where you want to run Broch. Each has its own README with `make`-style commands and the env vars you'll need to fill in.
@@ -38,7 +37,7 @@ docker pull ghcr.io/broch-io/broch:1.24.0
 
 Available tags follow semver (`1.24.0`, `1.24`, `1`, `latest`). For production we recommend pinning to a specific version (`ghcr.io/broch-io/broch:1.24.0`) rather than `:latest`.
 
-Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [compatibility matrix](COMPATIBILITY.md) tracks what's supported, and the [changelog](CHANGELOG.md) records what changed in each release.
+Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [changelog](CHANGELOG.md) records what changed in each release, including anything that affects an upgrade.
 
 ## Picking an example
 
@@ -65,12 +64,7 @@ For other platforms (GCP, on-prem Kubernetes, Hetzner) the docker-compose exampl
 
 ## Version compatibility
 
-Examples in `main` track the **current stable** Broch server release. If you're running an older version, check the [compatibility matrix](COMPATIBILITY.md) and either:
-
-- Read the matrix to confirm your version is still in the supported range for `main`, or
-- Check out an older git tag (e.g. `git checkout broch-v1.2.x`) to get the examples that matched that release.
-
-We deliberately don't duplicate examples per version — most things stay the same release-to-release. The matrix tells you when something materially changed.
+Examples in `main` track the **current stable** Broch server release, and Broch purges superseded images — so pinning to a current release and keeping up is the supported path. We don't duplicate examples per version; most things stay the same release-to-release, and when something deployment-affecting does change (a renamed env var, a new required resource), it's called out in the [changelog](CHANGELOG.md)'s **Deploy impact** section.
 
 ## Contributing
 
