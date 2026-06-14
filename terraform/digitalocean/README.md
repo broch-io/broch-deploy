@@ -103,7 +103,7 @@ $(terraform output -raw ssh_command)
 # → ssh root@<reserved-ip>
 ```
 
-The Droplet runs Docker Compose at `/opt/broch/`. `docker compose ps` shows the running services; `docker compose logs broch` tails server output.
+The Droplet runs Docker Compose at `/opt/broch/`. `docker compose ps` shows the running services; `docker compose logs broch-server` tails server output.
 
 > With the default `ssh_allowed_cidrs` (open to the internet), automated scanners constantly probe port 22 and can trip sshd's `MaxStartups` throttle — a legit `ssh` then fails with `kex_exchange_identification: Connection closed`. Retry, or set `ssh_allowed_cidrs` to your own CIDR to stop the noise.
 
