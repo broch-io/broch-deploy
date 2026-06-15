@@ -74,9 +74,17 @@ resource "digitalocean_reserved_ip" "broch" {
   region = var.region
 }
 
+# DigitalOcean serializes per-droplet actions: while one is in flight the API
+# rejects the next with 422 "Droplet already has a pending event". Both the
+# volume attachment and this reserved-IP assignment issue a droplet action, and
+# Terraform creates them concurrently (each only references the droplet id), so
+# whichever loses the race fails the apply. Order the IP assignment after the
+# volume attachment so the two droplet actions never overlap.
 resource "digitalocean_reserved_ip_assignment" "broch" {
   ip_address = digitalocean_reserved_ip.broch.ip_address
   droplet_id = digitalocean_droplet.broch.id
+
+  depends_on = [digitalocean_volume_attachment.broch_data]
 }
 
 # --- Firewall ---
