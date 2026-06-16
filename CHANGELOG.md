@@ -8,6 +8,48 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.26.0
+
+### Added
+
+- **Free trial.** New deployments are offered a card-upfront free trial in the first-run setup — "Start your free trial" alongside "Buy now". The trial runs until the 1st of the following month (at least 15 days); a live countdown banner appears once the trial is active.
+- **Wildcard DNS diagnostics.** The admin status panel, `broch status`, and `broch doctor` now detect and report when the wildcard DNS required for Share or Access tunnels is not resolving correctly, with remediation guidance.
+- **`broch share --no-rewrite`.** Opt-in flag to forward requests to your local service without Broch rewriting Host, Referer, Location, or cookies — for apps that do their own host-based routing or expect the public hostname.
+- **`broch access` accepts group names.** `broch access <group-name>` now connects to every endpoint in that group at once. Short names shown by `broch services` also work directly as targets.
+- **Break-glass for IdP lockout.** Set `BROCH_AUTH_CONFIG_RESET=true` to clear a stuck persisted auth configuration at boot — the recovery path when an expired IdP client secret locks you out of your own deployment. Also: `curl` is now included in the server image so container healthchecks work without a custom base.
+
+### Changed
+
+- **License enforcement is now immediate.** Deactivating a license or clearing the license key now terminates all live Share and Access sessions right away, not on their next reconnect.
+- **License auto-recovers after renewal.** A deployment parked on a rejected or expired license now re-probes the licensing server once per day. A renewed or restored license heals automatically without requiring a manual Refresh.
+- **Share policy changes take effect immediately.** Editing or deleting a Share policy now invalidates the server's authorization cache instantly; the previous window where a deleted policy could still authorize reconnects is closed.
+- **Admins can remove their own seat assignment.** The 403 on deleting or anonymizing your own seat is lifted — admin access is governed by your IdP role claim, not by the seat row.
+- **Anonymized seats no longer count against your seat limit.**
+
+### Security
+
+- **CLI requires HTTPS.** The `broch` CLI now rejects `http://` server URLs outright. `BROCH_CA_CERT_PATH` custom CA certificates are also now correctly applied to all TLS and WebSocket connections (previously ignored).
+- **Rate limiting on auth and tunnel endpoints.** Login, callback, and session-token endpoints are now rate-limited per client IP (60 requests / 5 minutes). Share tunnel URLs have default-on flood protection (~100 req/s per tunnel).
+- **Observability secrets encrypted at rest.** DataDog API key, OTLP headers, AppInsights connection string, and Seq server URL are now wrapped with AES-256-GCM in the database; existing plaintext values self-heal on next write.
+- **`BROCH_MASTER_KEY` entropy enforced at startup.** Keys shorter than 32 bytes are rejected with an actionable error message naming the remedy.
+- **Access HTTPS backends require valid certificates.** A self-signed or untrusted backend certificate now returns 502 instead of silently accepting the connection.
+
+### Fixed
+
+- **Admin save dialogs no longer reopen after saving.** A loading-state race caused the empty Add dialog to reappear after every successful save or delete in the admin tabs.
+- **Server boots correctly with an empty `AUTHENTICATION__PROVIDER`.** Docker Compose templates that pass unset IdP variables as empty strings no longer crash on startup.
+- **OIDC login failures on clean deployments.** A custom `AUTHENTICATION__SCOPES` that omitted `openid` — or used Entra's `.default` — prevented login. Required OIDC scopes are now always included regardless of the operator-supplied value.
+- **Dead Share tunnels after setup failures.** A transient error during tunnel setup (database blip, invalid claims) previously left the SSH session open, so the CLI showed "connected" while every request 502'd. The session is now closed with a reconnect signal.
+- **Connectivity and session reliability.** `broch share` and `broch access` running concurrently no longer force a re-login (token refreshes now coalesce server-side). `broch share` exits non-zero when reconnection is permanently abandoned. SSH keepalive now actually closes wedged connections. Reverse-proxy 502/503s during server restarts are retried indefinitely. Cold-start wake budget raised to 120 seconds for scale-to-zero deployments. `broch share` on macOS no longer incorrectly reports a service as down when it binds IPv4 only.
+
+### Deploy impact
+
+- **CLI requires HTTPS.** Any `BROCH_SERVER_URL` or saved server URL using `http://` must be changed to `https://` before upgrading the CLI. There is no insecure override; the `--insecure` flag and `BROCH_INSECURE` environment variable have been removed.
+- **CLI requires Node.js ≥ 22.19.0.** Node.js 22.0–22.18 will crash at runtime with the updated `@broch/cli`. Upgrade Node.js before upgrading the CLI.
+- **Access HTTPS backends.** Endpoints that target `https://` backends using self-signed or otherwise invalid certificates will return 502 after this upgrade. Ensure the backend presents a certificate trusted by the system CA store, or configure the endpoint to use `http://` if TLS is terminated elsewhere.
+- **`BROCH_MASTER_KEY` entropy floor.** If you manually set `BROCH_MASTER_KEY` to a value shorter than 32 bytes, the server will refuse to start. Keys generated by the deploy template are unaffected.
+- **Database migrations.** Two additive, non-breaking migrations run automatically on first boot. You cannot downgrade to a prior image after upgrading.
+
 ## 1.24.0
 
 ### Changed
