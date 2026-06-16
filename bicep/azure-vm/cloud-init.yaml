@@ -1,0 +1,207 @@
+#cloud-config
+# Broch — Azure VM appliance bootstrap (Docker Compose: broch + Postgres + Caddy)
+# Copyright (c) 2026 Broch, LLC. All rights reserved.
+#
+# DRAFT — not yet validated end-to-end on Azure. See README.md.
+#
+# Placeholders __LIKE_THIS__ are substituted by main.bicep before this file is
+# base64-encoded into the VM's customData. BROCH_MASTER_KEY and the Postgres
+# password are generated ON the VM at first boot (they never leave the box).
+# Runtime ${VARS} and $(...) are literal here — resolved on the VM, not by Bicep.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+
+write_files:
+  - path: /opt/broch/docker-compose.yml
+    permissions: "0644"
+    content: |
+      # Postgres data lives on the mounted data disk (/mnt/broch-data) so it
+      # survives VM/image recreation. Only Caddy is published to the host.
+      services:
+        broch:
+          image: ghcr.io/broch-io/broch:__BROCH_VERSION__
+          restart: unless-stopped
+          env_file: [.env]
+          environment:
+            ASPNETCORE_URLS: http://0.0.0.0:8080
+            DATABASE__PROVIDER: PostgreSQL
+            ConnectionStrings__DefaultConnection: Host=postgres;Database=brochdb;Username=broch;Password=${POSTGRES_PASSWORD}
+          depends_on:
+            postgres:
+              condition: service_healthy
+          expose: ["8080"]
+          logging:
+            driver: json-file
+            options: { max-size: "10m", max-file: "3" }
+
+        postgres:
+          image: postgres:17-alpine
+          restart: unless-stopped
+          environment:
+            POSTGRES_DB: brochdb
+            POSTGRES_USER: broch
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+          volumes:
+            - /mnt/broch-data/postgresql:/var/lib/postgresql/data
+          expose: ["5432"]
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U broch"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+          logging:
+            driver: json-file
+            options: { max-size: "5m", max-file: "3" }
+
+        caddy:
+          build: { context: ., dockerfile: Caddy.Dockerfile }
+          image: broch-deploy/caddy:dns-cloudflare
+          restart: unless-stopped
+          depends_on: [broch]
+          environment:
+            BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+            CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
+            CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+          ports: ["80:80", "443:443", "443:443/udp"]
+          volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+            - caddy_config:/config
+          logging:
+            driver: json-file
+            options: { max-size: "5m", max-file: "3" }
+
+      volumes:
+        caddy_data:
+        caddy_config:
+
+      networks:
+        default:
+          name: broch-network
+
+  - path: /opt/broch/Caddyfile
+    permissions: "0644"
+    content: |
+      # Wildcard TLS via Let's Encrypt DNS-01 (Cloudflare): mints the apex and
+      # the *.<hostname> wildcard. Swap the dns line + Caddy.Dockerfile module
+      # for another provider (route53, googleclouddns, ...).
+      {
+        email {env.CADDY_ACME_EMAIL}
+      }
+
+      {env.BROCH_WILDCARD_HOSTNAME}, *.{env.BROCH_WILDCARD_HOSTNAME} {
+        tls {
+          dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+        }
+        reverse_proxy broch:8080 {
+          header_up Host {host}
+          lb_try_duration 30s
+          lb_try_interval 250ms
+        }
+      }
+
+  - path: /opt/broch/Caddy.Dockerfile
+    permissions: "0644"
+    content: |
+      FROM caddy:2-builder AS builder
+      RUN xcaddy build \
+          --with github.com/caddy-dns/cloudflare \
+          --with github.com/caddy-dns/route53 \
+          --with github.com/caddy-dns/googleclouddns
+      FROM caddy:2-alpine
+      COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+  - path: /opt/broch/.env
+    permissions: "0600"
+    content: |
+      # BROCH_MASTER_KEY and POSTGRES_PASSWORD are generated on the VM at first
+      # boot (runcmd below) — never supplied by the operator, never leave the box.
+      BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
+      POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__
+      CentralServer__ApiUrl=__CENTRAL_SERVER_URL__
+      BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
+      API__WILDCARDHOSTNAME=__WILDCARD_HOSTNAME__
+      CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
+      CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
+      AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
+      AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
+      AUTHENTICATION__CLIENTSECRET=__AUTH_CLIENT_SECRET__
+      AUTHENTICATION__ADMINROLES=__AUTH_ADMIN_ROLES__
+      AUTHENTICATION__DOMAIN=__AUTH_DOMAIN__
+      AUTHENTICATION__TENANTID=__AUTH_TENANT_ID__
+      AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
+      AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
+      AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
+
+  - path: /etc/systemd/system/broch.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Broch (Docker Compose)
+      Requires=docker.service
+      After=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/broch
+      ExecStart=/usr/bin/docker compose up -d --build
+      ExecStop=/usr/bin/docker compose down
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 2 GB swap so the one-time xcaddy (Go) build of the custom Caddy image isn't
+  # OOM-killed on small VM sizes. Idempotent.
+  - |
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+      chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+  # Generate the at-rest encryption root and the Postgres password ON the VM and
+  # inject them into .env before the stack starts. Idempotent: only fill the
+  # placeholder, so re-running cloud-init won't re-roll them.
+  - |
+    if grep -q '^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
+      MK=$(openssl rand -base64 48 | tr -d '\n')
+      sed -i "s|^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__|BROCH_MASTER_KEY=$MK|" /opt/broch/.env
+    fi
+  - |
+    if grep -q '^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
+      PW=$(openssl rand -base64 32 | tr -d '\n/+=')
+      sed -i "s|^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__|POSTGRES_PASSWORD=$PW|" /opt/broch/.env
+    fi
+  - chmod 0600 /opt/broch/.env
+
+  # Docker Engine
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Mount the Azure data disk (LUN 0) for Postgres data.
+  - mkdir -p /mnt/broch-data
+  - |
+    DEVICE=/dev/disk/azure/scsi1/lun0
+    for i in $(seq 1 30); do [ -e "$DEVICE" ] && break; sleep 2; done
+    if [ -e "$DEVICE" ]; then
+      if ! blkid "$DEVICE" | grep -q ext4; then mkfs.ext4 -F "$DEVICE"; fi
+      mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
+      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+    fi
+  - mkdir -p /mnt/broch-data/postgresql
+  - chown -R 999:999 /mnt/broch-data/postgresql
+
+  # Start
+  - systemctl daemon-reload
+  - systemctl enable broch.service
+  - cd /opt/broch && docker compose up -d --build

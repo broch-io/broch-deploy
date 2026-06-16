@@ -1,0 +1,213 @@
+// Broch — Azure VM appliance (Bicep). DRAFT / local-first — see README.md.
+// Boots the with-postgres + Caddy Docker Compose stack on an Ubuntu 24.04 VM:
+// the VM path for Azure (alongside the existing ACA Bicep), and the substrate
+// Broch's own prod dogfoods.
+// Copyright (c) 2026 Broch, LLC. All rights reserved.
+
+@description('Azure region. Defaults to the resource group location.')
+param location string = resourceGroup().location
+
+@description('Base name for the VM and its resources.')
+param vmName string = 'broch'
+
+@description('VM size. B2s (2 vCPU / 4 GB) is a sensible small default.')
+param vmSize string = 'Standard_B2s'
+
+@description('Admin username for SSH.')
+param adminUsername string = 'broch'
+
+@description('SSH public key for the admin user.')
+param adminSshPublicKey string
+
+@description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
+param wildcardHostname string
+
+@description('Email Let\'s Encrypt notifies about cert-renewal failures.')
+param acmeEmail string
+
+@description('Cloudflare API token (Zone:Read + DNS:Edit) for the zone hosting wildcardHostname. Used by Caddy for ACME DNS-01.')
+@secure()
+param cloudflareApiToken string
+
+@description('Broch central server URL (license activation).')
+param centralServerUrl string = 'https://api.broch.io'
+
+@description('Broch server image tag. Pin in production.')
+param brochVersion string = 'latest'
+
+@description('CIDR allowed to reach SSH (port 22). Default * = open to the internet — restrict this.')
+param sshAllowedCidr string = '*'
+
+@description('Data disk size (GB) for the Postgres data directory.')
+param dataDiskSizeGb int = 32
+
+// --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. ---
+@description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
+param authProvider string = ''
+param authClientId string = ''
+@secure()
+param authClientSecret string = ''
+@description('Comma-separated admin role(s); a user holding any one is granted admin.')
+param authAdminRoles string = ''
+param authDomain string = ''
+param authTenantId string = ''
+param authInstance string = ''
+param authAuthority string = ''
+param authAudience string = ''
+
+// cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
+// Runtime ${VARS}/$(...) in the file are left untouched (they aren't __TOKEN__ form).
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+  loadTextContent('cloud-init.yaml'),
+  '__BROCH_VERSION__', brochVersion),
+  '__CENTRAL_SERVER_URL__', centralServerUrl),
+  '__WILDCARD_HOSTNAME__', wildcardHostname),
+  '__CADDY_ACME_EMAIL__', acmeEmail),
+  '__CLOUDFLARE_API_TOKEN__', cloudflareApiToken),
+  '__AUTH_PROVIDER__', authProvider),
+  '__AUTH_CLIENT_ID__', authClientId),
+  '__AUTH_CLIENT_SECRET__', authClientSecret),
+  '__AUTH_ADMIN_ROLES__', authAdminRoles),
+  '__AUTH_DOMAIN__', authDomain),
+  '__AUTH_TENANT_ID__', authTenantId),
+  '__AUTH_INSTANCE__', authInstance),
+  '__AUTH_AUTHORITY__', authAuthority),
+  '__AUTH_AUDIENCE__', authAudience)
+
+resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
+  name: '${vmName}-nsg'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'SSH'
+        properties: {
+          priority: 1000
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: sshAllowedCidr
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '22'
+        }
+      }
+      {
+        name: 'HTTP'
+        properties: {
+          priority: 1010
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '80'
+        }
+      }
+      {
+        name: 'HTTPS'
+        properties: {
+          priority: 1020
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '443'
+        }
+      }
+    ]
+  }
+}
+
+resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
+  name: '${vmName}-vnet'
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: ['10.0.0.0/16'] }
+    subnets: [
+      {
+        name: 'default'
+        properties: {
+          addressPrefix: '10.0.0.0/24'
+          networkSecurityGroup: { id: nsg.id }
+        }
+      }
+    ]
+  }
+}
+
+resource publicIp 'Microsoft.Network/publicIPAddresses@2023-09-01' = {
+  name: '${vmName}-pip'
+  location: location
+  sku: { name: 'Standard' }
+  properties: { publicIPAllocationMethod: 'Static' }
+}
+
+resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
+  name: '${vmName}-nic'
+  location: location
+  properties: {
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          subnet: { id: vnet.properties.subnets[0].id }
+          privateIPAllocationMethod: 'Dynamic'
+          publicIPAddress: { id: publicIp.id }
+        }
+      }
+    ]
+  }
+}
+
+resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
+  name: vmName
+  location: location
+  properties: {
+    hardwareProfile: { vmSize: vmSize }
+    osProfile: {
+      computerName: vmName
+      adminUsername: adminUsername
+      customData: base64(cloudInit)
+      linuxConfiguration: {
+        disablePasswordAuthentication: true
+        ssh: {
+          publicKeys: [
+            {
+              path: '/home/${adminUsername}/.ssh/authorized_keys'
+              keyData: adminSshPublicKey
+            }
+          ]
+        }
+      }
+    }
+    storageProfile: {
+      imageReference: {
+        publisher: 'Canonical'
+        offer: 'ubuntu-24_04-lts'
+        sku: 'server'
+        version: 'latest'
+      }
+      osDisk: {
+        createOption: 'FromImage'
+        managedDisk: { storageAccountType: 'Premium_LRS' }
+      }
+      dataDisks: [
+        {
+          lun: 0
+          createOption: 'Empty'
+          diskSizeGB: dataDiskSizeGb
+          managedDisk: { storageAccountType: 'Premium_LRS' }
+        }
+      ]
+    }
+    networkProfile: { networkInterfaces: [ { id: nic.id } ] }
+  }
+}
+
+output publicIpAddress string = publicIp.properties.ipAddress
+output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
+output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
