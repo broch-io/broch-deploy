@@ -38,8 +38,13 @@ param brochVersion string = 'latest'
 @description('CIDR allowed to reach SSH (port 22). Default * = open to the internet — restrict this.')
 param sshAllowedCidr string = '*'
 
-@description('Data disk size (GB) for the Postgres data directory.')
-param dataDiskSizeGb int = 32
+@description('The EXISTING Broch master key the target database was encrypted with. A fresh key cannot decrypt existing state (Data Protection keyring, IdP tokens, license) — reuse the current one.')
+@secure()
+param brochMasterKey string
+
+@description('Connection string for the existing external PostgreSQL (e.g. Azure Database for PostgreSQL Flexible Server). Npgsql format, including SSL mode.')
+@secure()
+param databaseConnectionString string
 
 // --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. ---
 @description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
@@ -57,9 +62,11 @@ param authAudience string = ''
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Runtime ${VARS}/$(...) in the file are left untouched (they aren't __TOKEN__ form).
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
   loadTextContent('cloud-init.yaml'),
   '__BROCH_VERSION__', brochVersion),
+  '__BROCH_MASTER_KEY__', brochMasterKey),
+  '__DATABASE_CONNECTION_STRING__', databaseConnectionString),
   '__CENTRAL_SERVER_URL__', centralServerUrl),
   '__WILDCARD_HOSTNAME__', wildcardHostname),
   '__CADDY_ACME_EMAIL__', acmeEmail),
@@ -195,14 +202,6 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
         createOption: 'FromImage'
         managedDisk: { storageAccountType: 'Premium_LRS' }
       }
-      dataDisks: [
-        {
-          lun: 0
-          createOption: 'Empty'
-          diskSizeGB: dataDiskSizeGb
-          managedDisk: { storageAccountType: 'Premium_LRS' }
-        }
-      ]
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
   }

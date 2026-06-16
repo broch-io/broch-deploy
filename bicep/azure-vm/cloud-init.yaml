@@ -1,13 +1,17 @@
 #cloud-config
-# Broch — Azure VM appliance bootstrap (Docker Compose: broch + Postgres + Caddy)
+# Broch — Azure VM appliance bootstrap (Docker Compose: broch + Caddy).
+# Connects to an EXISTING external PostgreSQL (e.g. Azure Database for PostgreSQL
+# Flexible Server). No embedded Postgres, no data disk — the database is managed
+# elsewhere and passed in as a connection string.
 # Copyright (c) 2026 Broch, LLC. All rights reserved.
 #
 # DRAFT — not yet validated end-to-end on Azure. See README.md.
 #
-# Placeholders __LIKE_THIS__ are substituted by main.bicep before this file is
-# base64-encoded into the VM's customData. BROCH_MASTER_KEY and the Postgres
-# password are generated ON the VM at first boot (they never leave the box).
-# Runtime ${VARS} and $(...) are literal here — resolved on the VM, not by Bicep.
+# Placeholders __LIKE_THIS__ are substituted by main.bicep before base64. Unlike
+# an embedded-DB variant, BROCH_MASTER_KEY is INJECTED, not generated: it MUST be
+# the same key the existing database was encrypted with, or broch cannot decrypt
+# its stored state (Data Protection keyring, IdP tokens, license). Runtime ${VARS}
+# are resolved on the VM, not by Bicep.
 
 package_update: true
 package_upgrade: true
@@ -21,8 +25,7 @@ write_files:
   - path: /opt/broch/docker-compose.yml
     permissions: "0644"
     content: |
-      # Postgres data lives on the mounted data disk (/mnt/broch-data) so it
-      # survives VM/image recreation. Only Caddy is published to the host.
+      # broch (HTTP, behind Caddy) + Caddy (TLS). Database is external — see .env.
       services:
         broch:
           image: ghcr.io/broch-io/broch:__BROCH_VERSION__
@@ -31,33 +34,10 @@ write_files:
           environment:
             ASPNETCORE_URLS: http://0.0.0.0:8080
             DATABASE__PROVIDER: PostgreSQL
-            ConnectionStrings__DefaultConnection: Host=postgres;Database=brochdb;Username=broch;Password=${POSTGRES_PASSWORD}
-          depends_on:
-            postgres:
-              condition: service_healthy
           expose: ["8080"]
           logging:
             driver: json-file
             options: { max-size: "10m", max-file: "3" }
-
-        postgres:
-          image: postgres:17-alpine
-          restart: unless-stopped
-          environment:
-            POSTGRES_DB: brochdb
-            POSTGRES_USER: broch
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-          volumes:
-            - /mnt/broch-data/postgresql:/var/lib/postgresql/data
-          expose: ["5432"]
-          healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U broch"]
-            interval: 10s
-            timeout: 5s
-            retries: 5
-          logging:
-            driver: json-file
-            options: { max-size: "5m", max-file: "3" }
 
         caddy:
           build: { context: ., dockerfile: Caddy.Dockerfile }
@@ -88,9 +68,9 @@ write_files:
   - path: /opt/broch/Caddyfile
     permissions: "0644"
     content: |
-      # Wildcard TLS via Let's Encrypt DNS-01 (Cloudflare): mints the apex and
-      # the *.<hostname> wildcard. Swap the dns line + Caddy.Dockerfile module
-      # for another provider (route53, googleclouddns, ...).
+      # Wildcard TLS via Let's Encrypt DNS-01 (Cloudflare): mints the apex and the
+      # *.<hostname> wildcard. Swap the dns line + Caddy.Dockerfile for another
+      # provider (route53, googleclouddns, ...).
       {
         email {env.CADDY_ACME_EMAIL}
       }
@@ -120,10 +100,11 @@ write_files:
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
-      # BROCH_MASTER_KEY and POSTGRES_PASSWORD are generated on the VM at first
-      # boot (runcmd below) — never supplied by the operator, never leave the box.
-      BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
-      POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__
+      # BROCH_MASTER_KEY is the EXISTING key the database was encrypted with —
+      # injected here, NEVER generated (a fresh key can't decrypt stored state).
+      BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
+      # External database (e.g. Azure Database for PostgreSQL Flexible Server).
+      ConnectionStrings__DefaultConnection=__DATABASE_CONNECTION_STRING__
       CentralServer__ApiUrl=__CENTRAL_SERVER_URL__
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
       API__WILDCARDHOSTNAME=__WILDCARD_HOSTNAME__
@@ -165,19 +146,6 @@ runcmd:
       echo '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
 
-  # Generate the at-rest encryption root and the Postgres password ON the VM and
-  # inject them into .env before the stack starts. Idempotent: only fill the
-  # placeholder, so re-running cloud-init won't re-roll them.
-  - |
-    if grep -q '^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
-      MK=$(openssl rand -base64 48 | tr -d '\n')
-      sed -i "s|^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__|BROCH_MASTER_KEY=$MK|" /opt/broch/.env
-    fi
-  - |
-    if grep -q '^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
-      PW=$(openssl rand -base64 32 | tr -d '\n/+=')
-      sed -i "s|^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__|POSTGRES_PASSWORD=$PW|" /opt/broch/.env
-    fi
   - chmod 0600 /opt/broch/.env
 
   # Docker Engine
@@ -187,19 +155,6 @@ runcmd:
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-  # Mount the Azure data disk (LUN 0) for Postgres data.
-  - mkdir -p /mnt/broch-data
-  - |
-    DEVICE=/dev/disk/azure/scsi1/lun0
-    for i in $(seq 1 30); do [ -e "$DEVICE" ] && break; sleep 2; done
-    if [ -e "$DEVICE" ]; then
-      if ! blkid "$DEVICE" | grep -q ext4; then mkfs.ext4 -F "$DEVICE"; fi
-      mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
-      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 2" >> /etc/fstab
-    fi
-  - mkdir -p /mnt/broch-data/postgresql
-  - chown -R 999:999 /mnt/broch-data/postgresql
 
   # Start
   - systemctl daemon-reload

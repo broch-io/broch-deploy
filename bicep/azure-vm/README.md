@@ -1,83 +1,88 @@
 # Azure VM (Bicep)
 
-Broch on a single Azure VM, running the same Docker Compose + Caddy appliance as
-the `docker-compose/with-postgres` variant: `broch` + bundled Postgres + Caddy
-with automatic wildcard TLS (Let's Encrypt DNS-01). Postgres data lives on a
-managed data disk so it survives image upgrades. **Bring your own domain** — you
-point DNS at the VM; there's no Broch-managed domain.
+Broch on a single Azure VM running the broch + Caddy Docker Compose stack
+(automatic wildcard TLS via Let's Encrypt DNS-01), connecting to an **existing
+external PostgreSQL** (e.g. Azure Database for PostgreSQL Flexible Server) — the
+`with-postgres-external` shape, not embedded. **Bring your own domain.**
 
-This is the VM path for Azure, alongside the [ACA Bicep](../azure-container-apps/).
+This is the VM path for Azure, alongside the [ACA Bicep](../azure-container-apps/),
+and the substrate Broch's own production is meant to dogfood.
 
-> **⚠️ DRAFT — not yet validated end-to-end.** This template was ported from the
-> [DigitalOcean module](../../terraform/digitalocean/) and compiles (`az bicep
-> build`), but has **not** been run on Azure yet. Expect to iterate it against a
-> real deployment. It is **not** wired into CI and is **not** a supported path
-> until that run-through passes. Treat the device path (`/dev/disk/azure/scsi1/lun0`),
-> the Ubuntu image reference, and VM size as the most likely things to adjust.
+> **⚠️ DRAFT — not validated end-to-end.** Compiles (`az bicep build`); not yet
+> run on Azure. Not wired to CI; not a supported path until a run-through passes.
+> Likeliest adjustments: the Ubuntu ARM image reference, VM size/quota by region,
+> and SSL settings in the connection string.
+
+> **🚨 PRODUCTION CUTOVER — read before pointing this at a live database.**
+> Connecting this VM to an existing Broch database is a **migration, not a test**:
+> - **One instance per database.** Broch does not cluster — do **not** run this VM
+>   against the live DB while the current instance (ACA) is also connected. Stop the
+>   old instance first (maintenance window).
+> - **Version match.** Broch runs EF migrations on boot. Booting a different image
+>   version against the live DB migrates the prod schema — pin `brochVersion` to the
+>   currently-running version.
+> - **Master key must match.** `brochMasterKey` MUST be the existing key the DB was
+>   encrypted with; a fresh key cannot decrypt stored state.
+> - **Back up first** (`broch-postgres` + the master key) and have a rollback.
+> - Validate the template against a **restored copy** of the DB before the real cutover.
 
 ## What it provisions
 
-- An Ubuntu 24.04 VM (`Standard_B2s` by default) with your SSH key.
-- A **static** Standard public IP — the address you point your wildcard DNS at.
-- An NSG: SSH (22) from `sshAllowedCidr`, HTTP (80) + HTTPS (443) from the internet.
-- A managed **data disk** (LUN 0) for the Postgres data directory.
-- cloud-init that writes the compose stack, **generates `BROCH_MASTER_KEY` and the
-  Postgres password on the VM at first boot** (they never leave the box), installs
-  Docker, mounts the data disk, and starts the stack via systemd.
+- An Ubuntu 24.04 **ARM64** VM (default `Standard_B2ps_v2`; size availability varies
+  by region/quota — this sub had `Dpsv6` quota) with your SSH key.
+- A **static** Standard public IP — the address your wildcard DNS points at.
+- An NSG: SSH (22) from `sshAllowedCidr`; HTTP (80) + HTTPS (443) from the internet.
+- cloud-init that writes the compose stack + Caddy config, **injects the existing
+  `BROCH_MASTER_KEY` and the external DB connection string**, installs Docker
+  (arm64), and starts via systemd. No embedded Postgres, no data disk.
 
 ## Prerequisites
 
-- A domain you control with DNS on **Cloudflare** (or swap the provider — see the
-  `Caddy.Dockerfile` block in `cloud-init.yaml`).
-- A Cloudflare API token: **Zone:Read + DNS:Edit**, scoped to that zone
-  (dashboard → "Edit zone DNS" template).
+- The **existing PostgreSQL** connection string (Npgsql format, incl. `Ssl Mode=Require`).
+- The **existing `BROCH_MASTER_KEY`** (paired with that database).
+- A domain on **Cloudflare** + an API token (**Zone:Read + DNS:Edit**) for DNS-01.
 - An **IdP app** (Auth0 / Entra / Okta / OIDC). Register the callback URL
-  **`https://<wildcardHostname>/auth/callback`** in the IdP app **before** you sign
-  in, or you'll be bounced at login.
-- An Azure resource group, an SSH keypair, and the Azure CLI (`az`).
+  **`https://<wildcardHostname>/auth/callback`** before signing in.
+- An Azure resource group, an SSH keypair, and the Azure CLI.
 
 ## Deploy (local-first, by hand)
 
 ```bash
-# 1. Copy the example params and fill them in (keep real secrets out of git).
-cp main.example.bicepparam main.bicepparam
+cp main.example.bicepparam main.bicepparam   # fill in non-secret values
 $EDITOR main.bicepparam
 
-# 2. Deploy into a resource group. Pass secrets on the CLI rather than committing.
-az group create -n broch-rg -l eastus
 az deployment group create \
   -g broch-rg \
   --template-file main.bicep \
   --parameters main.bicepparam \
-  --parameters cloudflareApiToken='<token>' authClientSecret='<secret>'
+  --parameters \
+      brochMasterKey='<existing-master-key>' \
+      databaseConnectionString='Host=broch-postgres.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;Ssl Mode=Require' \
+      cloudflareApiToken='<token>' \
+      authClientSecret='<secret>'
 
-# 3. Note the output IP.
-az deployment group show -g broch-rg -n main --query properties.outputs.publicIpAddress.value -o tsv
+az deployment group show -g broch-rg -n main \
+  --query properties.outputs.publicIpAddress.value -o tsv
 ```
+
+Pass `brochMasterKey`, `databaseConnectionString`, `cloudflareApiToken`, and
+`authClientSecret` on the CLI (or via Key Vault references) — never commit them.
 
 ## After deploy
 
-1. **DNS** — create two A records pointing at the output IP, **DNS-only (grey
-   cloud)** on Cloudflare (a proxied/orange-cloud record breaks Caddy's TLS and the
-   DNS-01 challenge):
-   - `wildcardHostname` → IP
-   - `*.wildcardHostname` → IP
-2. **Wait for TLS** — Caddy builds its image (the swap file covers the one-time
-   `xcaddy` compile) and provisions the apex + wildcard certs via DNS-01 (~1–2 min
-   after DNS resolves). `ssh` in and `cd /opt/broch && docker compose logs -f caddy`
-   to watch.
-3. **Sign in** at `https://<wildcardHostname>`, complete first-run setup (buy/trial
-   or paste a key), and create your first tunnel.
-4. If your reverse proxy weren't on this host you'd set Trusted Proxy CIDRs — here
-   Caddy is on the same VM (Docker bridge), so set **Share → Trusted Proxy CIDRs**
-   to the Docker bridge range (e.g. `172.16.0.0/12`) if you use IP-based Share
-   Network rules. See the [Ingress docs](https://broch.io/docs/self-hosting/ingress/).
+1. **TLS** — Caddy builds the custom image and provisions the apex + wildcard certs
+   via DNS-01. `ssh` in, `cd /opt/broch && docker compose logs -f caddy`.
+2. **DNS cutover** — when ready, point `wildcardHostname` (apex + `*`) at the output
+   IP, **DNS-only / grey-cloud** on Cloudflare. (DNS-01 issues the cert *before* this,
+   so you can validate the cert first and switch DNS last.)
+3. Sign in at `https://<wildcardHostname>`.
 
 ## Notes
 
-- **Upgrades:** `ssh` in, `cd /opt/broch`, bump `BROCH_VERSION` in `.env` (pin it!),
-  `docker compose pull && docker compose up -d`. Data persists on the data disk.
-- **Secrets:** `BROCH_MASTER_KEY` and the Postgres password are generated on the VM
-  and live only in `/opt/broch/.env` (mode 0600). Back them up with the Postgres
-  data — losing the master key means losing access to encrypted state.
-- This is the same appliance Broch's own production is intended to dogfood.
+- **State lives in the external database**, not on the VM — the VM is stateless
+  (recreate it freely; back up the DB + master key).
+- **Upgrades:** `ssh` in, bump `BROCH_VERSION` in `/opt/broch/.env` (pin it),
+  `docker compose pull && docker compose up -d`. Mind the version/migration note above.
+- Secrets are injected into the VM's `customData` (base64) — visible to anyone with
+  VM read access. For production, prefer Key Vault references / a managed identity
+  over inline injection (a follow-up hardening item).

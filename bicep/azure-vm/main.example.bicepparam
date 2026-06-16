@@ -8,6 +8,10 @@ using 'main.bicep'
 param adminSshPublicKey = 'ssh-ed25519 AAAA...replace-with-your-public-key... you@example'
 param sshAllowedCidr = '203.0.113.0/24' // restrict to your admin network; '*' = open to the internet
 
+// --- Existing database + master key (paired — see README's cutover warning) ---
+param brochMasterKey = '<existing-master-key>' // prefer --parameters over committing
+param databaseConnectionString = 'Host=broch-postgres.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;Ssl Mode=Require' // prefer --parameters
+
 // --- Domain + TLS (bring your own domain) ---
 param wildcardHostname = 'tunnels.example.com'
 param acmeEmail = 'ops@example.com'
@@ -23,6 +27,5 @@ param authDomain = 'your-tenant.auth0.com'
 // Generic OIDC: set authAuthority.
 
 // --- Optional ---
-// param vmSize = 'Standard_B2s'
-// param brochVersion = 'latest'   // pin in production
-// param dataDiskSizeGb = 32
+// param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region
+// param brochVersion = 'latest'      // pin to the running version before any prod cutover
