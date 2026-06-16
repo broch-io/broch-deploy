@@ -10,8 +10,8 @@ param location string = resourceGroup().location
 @description('Base name for the VM and its resources.')
 param vmName string = 'broch'
 
-@description('VM size. B2s (2 vCPU / 4 GB) is a sensible small default.')
-param vmSize string = 'Standard_B2s'
+@description('VM size. Default is ARM64 (Ampere) burstable — cheaper than x86; the broch image is multi-arch (amd64 + arm64). Use an x86 size only with the x86 image SKU.')
+param vmSize string = 'Standard_B2ps_v2'
 
 @description('Admin username for SSH.')
 param adminUsername string = 'broch'
@@ -188,7 +188,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
       imageReference: {
         publisher: 'Canonical'
         offer: 'ubuntu-24_04-lts'
-        sku: 'server'
+        sku: 'server-arm64'
         version: 'latest'
       }
       osDisk: {
