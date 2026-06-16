@@ -113,7 +113,13 @@ write_files:
       		dns ${dns_provider} {$DNS_API_TOKEN}
       	}
 
-      	reverse_proxy broch-server:8080
+      	# Ride out a broch restart/upgrade (broch-server briefly unreachable)
+      	# by retrying the dial for up to 30s, instead of returning an immediate
+      	# 502. Connection-level only.
+      	reverse_proxy broch-server:8080 {
+      		lb_try_duration 30s
+      		lb_try_interval 250ms
+      	}
       }
 
   # Custom Caddy build with DNS provider plugins
