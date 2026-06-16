@@ -8,12 +8,6 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
-## Unreleased
-
-### Changed
-
-- **Reverse-proxy resilience (deploy templates).** The bundled Caddy templates now retry the connection to the broch container for up to 30 seconds (`lb_try_duration`) instead of returning an immediate 502. A broch restart or image upgrade no longer surfaces a brief gateway error to end users — Caddy holds the request until broch is back, matching the hosted ingress behavior across a revision swap. If you front broch with your own reverse proxy, configure an equivalent connect-retry. (This covers broch being briefly unreachable; it does not change how a 5xx that broch itself returns is handled.)
-
 ## 1.26.0
 
 ### Added
