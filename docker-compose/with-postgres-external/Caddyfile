@@ -35,7 +35,7 @@
 		# upgrade) by retrying the dial for up to 30s, instead of returning an
 		# immediate 502. Mirrors the hosted ingress, which holds traffic across
 		# a revision swap. Connection-level only — cannot mask a 5xx the broch
-		# server itself returns. (BROCH-1016)
+		# server itself returns.
 		lb_try_duration 30s
 		lb_try_interval 250ms
 	}
@@ -51,7 +51,7 @@
 	reverse_proxy broch:8080 {
 		header_up Host {host}
 
-		# Restart/upgrade resilience — see the apex block above. (BROCH-1016)
+		# Restart/upgrade resilience — see the apex block above.
 		lb_try_duration 30s
 		lb_try_interval 250ms
 	}
