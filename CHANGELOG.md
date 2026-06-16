@@ -8,6 +8,12 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.26.0
+
+### Security
+
+- The CLI's WebSocket transport has been updated to patch a high-severity denial-of-service vulnerability (CVE-2026-48779). Update your `@broch/cli` installation to pick up the fix.
+
 ## 1.24.0
 
 ### Changed
