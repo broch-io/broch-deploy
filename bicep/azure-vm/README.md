@@ -1,109 +1,82 @@
 # Azure VM (Bicep)
 
-Broch on a single Azure VM running the broch + Caddy Docker Compose stack
-(automatic wildcard TLS via Let's Encrypt DNS-01), connecting to an **existing
-external PostgreSQL** (e.g. Azure Database for PostgreSQL Flexible Server) — the
-`with-postgres-external` shape, not embedded. **Bring your own domain.**
+Broch on a single Azure VM running the broch + Caddy stack (automatic wildcard TLS via
+Let's Encrypt DNS-01) against an **existing external PostgreSQL** (e.g. Azure Database for
+PostgreSQL Flexible Server) — the `with-postgres-external` shape, not embedded. **Bring
+your own domain.**
 
-This is the VM path for Azure, alongside the [ACA Bicep](../azure-container-apps/),
-and the substrate Broch's own production is meant to dogfood.
+The VM path for Azure, alongside the [ACA Bicep](../azure-container-apps/). It deploys the
+canonical [`docker-compose/with-postgres-external`](../../docker-compose/with-postgres-external/)
+stack **verbatim**, so the VM runs the same thing as a docker-direct deploy.
 
-> **⚠️ DRAFT — partially validated (2026-06-17).** Deployed on Azure (x86
-> `Standard_B2s`, eastus): the VM provisioned, cloud-init installed Docker + built the
-> custom Caddy, **broch booted against a fresh `brochvm` database and migrated**, and
-> **Caddy obtained real apex + `*.` wildcard certs via DNS-01**. **Entra (AzureAd) SSO
-> wiring validated**: with `AUTHENTICATION__*` set, `/auth/login` 302-redirects to the
-> tenant's `oauth2/authorize` with the right `client_id`, the VM's `/auth/callback`
-> `redirect_uri`, and PKCE — once the callback URL is registered on the IdP app. **Still
-> unvalidated:** the full interactive browser sign-in loop and the prod-DB cutover. Not
-> yet wired to CI.
->
-> **Gotcha:** `AUTHENTICATION__*` is read from the `.env` via Compose `env_file`, which
-> is only evaluated at container **create** time. After editing `/opt/broch/.env`, run
-> `docker compose up -d` (recreate) — a plain `docker restart` reuses the old environment
-> and the new values are silently ignored.
-
-<!-- two distinct callouts; comment separates the blockquotes (MD028) -->
-
-> **🚨 PRODUCTION CUTOVER — read before pointing this at a live database.**
-> Connecting this VM to an existing Broch database is a **migration, not a test**:
->
-> - **One instance per database.** Broch does not cluster — do **not** run this VM
->   against the live DB while the current instance (ACA) is also connected. Stop the
->   old instance first (maintenance window).
-> - **Version match.** Broch runs EF migrations on boot. Booting a different image
->   version against the live DB migrates the prod schema — pin `brochVersion` to the
->   currently-running version.
-> - **Master key must match.** `brochMasterKey` MUST be the existing key the DB was
->   encrypted with; a fresh key cannot decrypt stored state.
-> - **Back up first** (`broch-postgres` + the master key) and have a rollback.
-> - Validate the template against a **restored copy** of the DB before the real cutover.
+> **`.env` changes need a recreate.** broch reads `AUTHENTICATION__*` and other settings
+> from `.env` via Compose `env_file`, evaluated only at container **create** time. After
+> editing `/opt/broch/.env`, run `docker compose up -d` (recreate) — a plain
+> `docker restart` reuses the old environment and silently ignores the change.
 
 ## What it provisions
 
-- An Ubuntu 24.04 VM (default **x86** `Standard_B2s`; ARM64 is a one-line opt-in via
-  `vmSize` + `imageSku` where Ampere capacity exists) with your SSH key.
-- A **static** Standard public IP — the address your wildcard DNS points at.
+- An Ubuntu 24.04 VM (default x86 `Standard_B2s`; ARM64 is a one-line opt-in via the
+  `vmSize`/`imageSku` params where Ampere capacity exists).
+- A **static** Standard public IP — the address your DNS points at.
 - An NSG: HTTP (80) + HTTPS (443) from the internet. SSH (22) is **closed by default** —
-  set `sshAllowedCidr` to a CIDR to open break-glass SSH; otherwise manage via
-  `az vm run-command` / Serial Console.
-- cloud-init that deploys the **canonical `docker-compose/with-postgres-external`
-  assets verbatim** (compose + Caddyfile + Caddy.Dockerfile — base64-embedded at deploy
-  time, so this VM runs byte-for-byte the same stack a docker-direct customer runs),
-  writes a templated `.env`, **injects `BROCH_MASTER_KEY` + the external DB connection
-  string**, installs Docker, and starts via systemd. No embedded Postgres, no data disk.
+  set `sshAllowedCidr` to a CIDR for break-glass SSH; otherwise manage via
+  `az vm run-command` / Azure Serial Console.
+- cloud-init that deploys the canonical compose + Caddyfile + Caddy.Dockerfile verbatim,
+  writes a templated `.env`, **injects `BROCH_MASTER_KEY` + the DB connection string**,
+  installs Docker, and starts via systemd. No embedded Postgres, no data disk.
 - **Telemetry, logging, and the license are configured in-app** (Admin UI) after first
-  sign-in — not baked into the deploy. The central server URL defaults in code.
-- **Note:** the database server's firewall must allow the VM's public IP (the output
-  address) — add a rule after deploy.
+  sign-in — not baked into the deploy.
 
 ## Prerequisites
 
-- A PostgreSQL database + a **least-privilege role** for it (see *Database setup* below).
-  For a **new** database, generate a fresh `BROCH_MASTER_KEY`; to take over an
-  **existing** one, reuse its master key (cutover warning above).
-- A domain on **Cloudflare** + an API token (**Zone:Read + DNS:Edit**) for DNS-01.
-- An **IdP app** (Auth0 / Entra / Okta / OIDC). Register the callback URL
-  **`https://<wildcardHostname>/auth/callback`** before signing in.
+- An external PostgreSQL database + a **least-privilege role** that owns it (see *Database
+  setup*). Generate a strong `BROCH_MASTER_KEY` (`openssl rand -base64 48`); if you're
+  taking over a database an existing Broch instance already uses, reuse **its** master key
+  (see *Taking over an existing database*).
+- A domain on **Cloudflare** + an API token (**Zone:Read + DNS:Edit**) for DNS-01. (Other
+  DNS providers: swap the `dns` line in the Caddyfile and the plugin in Caddy.Dockerfile.)
+- An **IdP app** (Auth0 / Entra / Okta / OIDC). Register the callback
+  **`https://<wildcardHostname>/auth/callback`**.
 - An Azure resource group, an SSH keypair, and the Azure CLI.
 
 ## Database setup (run once)
 
-The VM connects as a **least-privilege role that owns only its own database** — never
-the server admin (which would hand the VM access to every database on the server). As
-the server admin, from a host allowed through the DB firewall:
+The VM connects as a **least-privilege role that owns only its own database** — never the
+server admin (which would hand the VM access to every database on the server). As the
+server admin, from a host allowed through the DB firewall:
 
 ```sql
 -- connected to the default 'postgres' database:
-CREATE ROLE broch_vm LOGIN PASSWORD '<generated>';
-ALTER DATABASE brochvm OWNER TO broch_vm;
+CREATE ROLE broch LOGIN PASSWORD '<generated>';
+ALTER DATABASE brochdb OWNER TO broch;
 
--- then connected to 'brochvm' — REQUIRED on PG15+: the database owner does NOT
+-- then connected to 'brochdb' — REQUIRED on PG15+: the database owner does NOT
 -- automatically get CREATE on the public schema, so migrations otherwise fail with
 -- "42501: permission denied for schema public":
-ALTER SCHEMA public OWNER TO broch_vm;
+ALTER SCHEMA public OWNER TO broch;
 ```
 
-Use `broch_vm` + that password in `databaseConnectionString`, and **pin `brochVersion`**
-(don't rely on `latest`).
+Use that role + password in `databaseConnectionString`, and **pin `brochVersion`** (don't
+rely on `latest`).
 
-## Deploy (local-first, by hand)
+## Deploy
 
 ```bash
 cp main.example.bicepparam main.bicepparam   # fill in non-secret values
 $EDITOR main.bicepparam
 
 az deployment group create \
-  -g broch-rg \
+  -g <your-resource-group> \
   --template-file main.bicep \
   --parameters main.bicepparam \
   --parameters \
-      brochMasterKey='<existing-master-key>' \
-      databaseConnectionString='Host=broch-postgres.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;Ssl Mode=Require' \
+      brochMasterKey='<master-key>' \
+      databaseConnectionString='Host=<db-host>;Database=<db>;Username=<user>;Password=<pw>;SSL Mode=Require' \
       cloudflareApiToken='<token>' \
       authClientSecret='<secret>'
 
-az deployment group show -g broch-rg -n main \
+az deployment group show -g <your-resource-group> -n main \
   --query properties.outputs.publicIpAddress.value -o tsv
 ```
 
@@ -112,19 +85,36 @@ Pass `brochMasterKey`, `databaseConnectionString`, `cloudflareApiToken`, and
 
 ## After deploy
 
-1. **TLS** — Caddy builds the custom image and provisions the apex + wildcard certs
-   via DNS-01. `ssh` in, `cd /opt/broch && docker compose logs -f caddy`.
-2. **DNS cutover** — when ready, point `wildcardHostname` (apex + `*`) at the output
-   IP, **DNS-only / grey-cloud** on Cloudflare. (DNS-01 issues the cert *before* this,
-   so you can validate the cert first and switch DNS last.)
-3. Sign in at `https://<wildcardHostname>`.
+1. **Firewall** — add the output IP to your database server's firewall.
+2. **TLS** — Caddy builds its image and mints the apex + wildcard certs via DNS-01 (this
+   works *before* DNS points at the VM). Watch it via `az vm run-command` (or SSH, if
+   enabled): `cd /opt/broch && docker compose logs -f caddy`.
+3. **DNS** — point `wildcardHostname` (apex + `*`) at the output IP, **DNS-only /
+   grey-cloud** on Cloudflare. DNS-01 issues the cert before this, so validate the cert
+   first and switch DNS last.
+4. Sign in at `https://<wildcardHostname>` — the first user holding an
+   `AUTHENTICATION__ADMINROLES` role becomes admin. Activate your license under
+   **Admin → License**.
+
+## Taking over an existing database
+
+Pointing this VM at a database another Broch instance already uses is a **migration, not a
+test**:
+
+- **One instance per database.** Broch does not cluster — do not run two instances against
+  the same DB at once. Stop the other instance first.
+- **Version match.** Broch runs EF migrations on boot; a different image version migrates
+  the schema. Pin `brochVersion` to the version the other instance runs.
+- **Master key must match** — a fresh key cannot decrypt stored state (Data Protection
+  keyring, IdP tokens, license).
+- **Back up** the database + master key, and validate against a restored copy first.
 
 ## Notes
 
-- **State lives in the external database**, not on the VM — the VM is stateless
-  (recreate it freely; back up the DB + master key).
-- **Upgrades:** `ssh` in, bump `BROCH_VERSION` in `/opt/broch/.env` (pin it),
-  `docker compose pull && docker compose up -d`. Mind the version/migration note above.
-- Secrets are injected into the VM's `customData` (base64) — visible to anyone with
-  VM read access. For production, prefer Key Vault references / a managed identity
-  over inline injection (a follow-up hardening item).
+- **State lives in the external database**, not the VM — the VM is stateless (recreate it
+  freely; back up the DB + master key).
+- **Upgrades:** bump `BROCH_VERSION` in `/opt/broch/.env` (pinned), then
+  `docker compose pull && docker compose up -d`.
+- Secrets are injected into the VM's `customData` (base64) — visible to anyone with VM
+  read access. For production, prefer Key Vault references / a managed identity over inline
+  injection (a follow-up hardening item).
