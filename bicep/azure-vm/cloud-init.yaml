@@ -1,0 +1,107 @@
+#cloud-config
+# Broch — Azure VM appliance bootstrap.
+# Copyright (c) 2026 Broch, LLC. All rights reserved.
+#
+# This does NOT hand-roll a compose stack. It deploys the CANONICAL
+# docker-compose/with-postgres-external assets (docker-compose.yml, Caddyfile,
+# Caddy.Dockerfile) VERBATIM — main.bicep base64-embeds them at deploy time via
+# loadTextContent() from that template dir, so this VM runs byte-for-byte the same
+# stack a docker-direct customer runs. There is no second copy to drift (notably:
+# ONE wildcard hostname, fanned out to both Caddy and broch inside the compose).
+#
+# Only /opt/broch/.env is templated, from that template's .env.example surface.
+# BROCH_MASTER_KEY is the EXISTING key the external DB was encrypted with —
+# injected here, NEVER generated (a fresh key can't decrypt stored state).
+# Telemetry/logging and the license are configured IN-APP (Admin UI), not here.
+#
+# Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
+# main.bicep before base64. The base64 blobs are pure base64 (no underscores), so
+# they never collide with a placeholder.
+
+package_update: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+
+write_files:
+  # Canonical assets, base64-embedded from docker-compose/with-postgres-external/.
+  - path: /opt/broch/docker-compose.yml
+    permissions: "0644"
+    encoding: b64
+    content: __COMPOSE_B64__
+
+  - path: /opt/broch/Caddyfile
+    permissions: "0644"
+    encoding: b64
+    content: __CADDYFILE_B64__
+
+  - path: /opt/broch/Caddy.Dockerfile
+    permissions: "0644"
+    encoding: b64
+    content: __CADDY_DOCKERFILE_B64__
+
+  - path: /opt/broch/.env
+    permissions: "0600"
+    content: |
+      # The compose maps BROCH_WILDCARD_HOSTNAME to BOTH Caddy's TLS host and
+      # broch's API__WILDCARDHOSTNAME — one knob, they cannot diverge. Likewise
+      # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__DefaultConnection. Do not
+      # add raw API__/ConnectionStrings__ keys here. Telemetry, logging, and the
+      # license are configured in-app (Admin UI); CentralServer URL defaults in code.
+      BROCH_VERSION=__BROCH_VERSION__
+      BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
+      BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
+      CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
+      CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
+      BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
+      AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
+      AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
+      AUTHENTICATION__CLIENTSECRET=__AUTH_CLIENT_SECRET__
+      AUTHENTICATION__ADMINROLES=__AUTH_ADMIN_ROLES__
+      AUTHENTICATION__DOMAIN=__AUTH_DOMAIN__
+      AUTHENTICATION__TENANTID=__AUTH_TENANT_ID__
+      AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
+      AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
+      AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
+
+  - path: /etc/systemd/system/broch.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Broch (Docker Compose)
+      Requires=docker.service
+      After=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/broch
+      ExecStart=/usr/bin/docker compose up -d --build
+      ExecStop=/usr/bin/docker compose down
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 2 GB swap so the one-time xcaddy (Go) build of the custom Caddy image isn't
+  # OOM-killed on small VM sizes. Idempotent.
+  - |
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+      chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+  - chmod 0600 /opt/broch/.env
+
+  # Docker Engine
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # systemd owns the stack (single start path for first boot AND reboots).
+  - systemctl daemon-reload
+  - systemctl enable --now broch.service
