@@ -93,10 +93,15 @@ resource "digitalocean_firewall" "broch" {
   name        = var.deployment_name
   droplet_ids = [digitalocean_droplet.broch.id]
 
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "22"
-    source_addresses = var.ssh_allowed_cidrs
+  # SSH is opt-in: no port-22 rule unless ssh_allowed_cidrs is set (default closed).
+  # Manage the droplet via the DO console / a bastion otherwise.
+  dynamic "inbound_rule" {
+    for_each = length(var.ssh_allowed_cidrs) > 0 ? [1] : []
+    content {
+      protocol         = "tcp"
+      port_range       = "22"
+      source_addresses = var.ssh_allowed_cidrs
+    }
   }
 
   inbound_rule {

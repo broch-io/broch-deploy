@@ -27,9 +27,9 @@ variable "ssh_key_fingerprint" {
 }
 
 variable "ssh_allowed_cidrs" {
-  description = "CIDRs allowed to reach SSH (port 22) on the droplet. Defaults to open for evaluation convenience — lock to your bastion / VPN CIDR before real production use (see the tradeoffs table in the README)."
+  description = "CIDRs allowed to reach SSH (port 22) on the droplet. Empty (default) creates NO SSH rule — manage the droplet via the DigitalOcean console / a bastion. Set your bastion / VPN CIDRs to allow break-glass SSH."
   type        = list(string)
-  default     = ["0.0.0.0/0", "::/0"]
+  default     = []
 }
 
 variable "deployment_name" {

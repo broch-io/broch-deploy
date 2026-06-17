@@ -129,6 +129,16 @@ Container Apps rolls out a new revision; the old one drains per the ingress traf
 
 ## Teardown
 
+If you deployed into a **dedicated resource group** (Embedded evaluation, nothing else in it), one line removes everything:
+
 ```sh
 az group delete --name broch-rg --yes
+```
+
+**In Shared mode — or any resource group that also holds your database or other resources** — do **not** delete the group; it takes them with it. Delete only what this template created:
+
+```sh
+az containerapp delete     -g broch-rg -n <containerAppName> --yes
+az containerapp env delete -g broch-rg -n <environmentName>  --yes
+# + the Log Analytics workspace / Application Insights, if the template created them
 ```
