@@ -32,9 +32,6 @@ param acmeEmail string
 @secure()
 param cloudflareApiToken string
 
-@description('Broch central server URL (license activation).')
-param centralServerUrl string = 'https://api.broch.io'
-
 @description('Broch server image tag. Pin in production.')
 param brochVersion string = 'latest'
 
@@ -62,45 +59,25 @@ param authTenantId string = ''
 param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
-@description('Comma-separated OAuth scopes (e.g. openid,profile,email,offline_access).')
-param authScopes string = ''
-
-// --- Telemetry / logging (optional). Leave the *Provider values '' to disable. ---
-// Mirrors the ACA template's params so a deployment carries the same observability.
-@description('Telemetry/APM provider: ApplicationInsights | DataDog | "" (disabled).')
-param telemetryProvider string = ''
-@description('Application Insights connection string (when telemetryProvider=ApplicationInsights).')
-@secure()
-param applicationInsightsConnectionString string = ''
-@description('Structured-logging provider: DataDog | "" (disabled).')
-param loggingProvider string = ''
-@description('DataDog API key (when loggingProvider=DataDog).')
-@secure()
-param datadogApiKey string = ''
-@description('DataDog application key (optional; enables the log/metric management APIs).')
-@secure()
-param datadogApplicationKey string = ''
-@description('DataDog service-name tag.')
-param datadogServiceName string = 'broch-server'
-@description('DataDog environment tag.')
-param datadogEnvironment string = 'production'
-@description('DataDog site/region domain, e.g. us5.datadoghq.com.')
-param datadogSite string = 'datadoghq.com'
-@description('OpenTelemetry service name for distributed tracing.')
-param otelServiceName string = 'broch'
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
-// Runtime ${VARS}/$(...) in the file are left untouched (they aren't __TOKEN__ form).
-// Token→value table folded over the file with reduce(), so adding a placeholder is a
-// one-line append rather than another level of a nested replace() chain.
+// Token→value table folded over the file with reduce(). The base64 blobs are pure
+// base64 (no underscores), so they never collide with a __TOKEN__ placeholder.
 var cloudInitTokens = [
+  // Canonical compose stack, embedded VERBATIM (base64) from the shared
+  // docker-compose/with-postgres-external template — single source of truth, so the
+  // VM runs the same bytes as a docker-direct customer and the two cannot drift.
+  ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
+  ['__CADDYFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddyfile'))]
+  ['__CADDY_DOCKERFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddy.Dockerfile'))]
+  // .env values — the template's .env.example surface (friendly names; the compose
+  // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
   ['__BROCH_VERSION__', brochVersion]
   ['__BROCH_MASTER_KEY__', brochMasterKey]
-  ['__DATABASE_CONNECTION_STRING__', databaseConnectionString]
-  ['__CENTRAL_SERVER_URL__', centralServerUrl]
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
+  ['__DATABASE_CONNECTION_STRING__', databaseConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
   ['__AUTH_CLIENT_SECRET__', authClientSecret]
@@ -110,16 +87,6 @@ var cloudInitTokens = [
   ['__AUTH_INSTANCE__', authInstance]
   ['__AUTH_AUTHORITY__', authAuthority]
   ['__AUTH_AUDIENCE__', authAudience]
-  ['__AUTH_SCOPES__', authScopes]
-  ['__TELEMETRY_PROVIDER__', telemetryProvider]
-  ['__APPINSIGHTS_CONNECTION_STRING__', applicationInsightsConnectionString]
-  ['__LOGGING_PROVIDER__', loggingProvider]
-  ['__DATADOG_SERVICE_NAME__', datadogServiceName]
-  ['__DATADOG_ENVIRONMENT__', datadogEnvironment]
-  ['__DATADOG_SITE__', datadogSite]
-  ['__DATADOG_API_KEY__', datadogApiKey]
-  ['__DATADOG_APPLICATION_KEY__', datadogApplicationKey]
-  ['__OTEL_SERVICE_NAME__', otelServiceName]
 ]
 var cloudInit = reduce(
   cloudInitTokens,

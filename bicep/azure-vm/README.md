@@ -44,14 +44,16 @@ and the substrate Broch's own production is meant to dogfood.
 - An Ubuntu 24.04 VM (default **x86** `Standard_B2s`; ARM64 is a one-line opt-in via
   `vmSize` + `imageSku` where Ampere capacity exists) with your SSH key.
 - A **static** Standard public IP — the address your wildcard DNS points at.
-- An NSG: SSH (22) from `sshAllowedCidr`; HTTP (80) + HTTPS (443) from the internet.
-- cloud-init that writes the compose stack + Caddy config, **injects `BROCH_MASTER_KEY`
-  and the external DB connection string**, installs Docker, and starts via systemd.
-  No embedded Postgres, no data disk.
-- **Optional observability** — set `telemetryProvider` (Application Insights) and/or
-  `loggingProvider=DataDog` (+ `datadogApiKey`, `datadogSite`, service/environment tags)
-  to wire `BROCHTELEMETRY__*` / `BROCHLOGGING__*` into the container. Leave the provider
-  params `''` to run without either.
+- An NSG: HTTP (80) + HTTPS (443) from the internet. SSH (22) is **closed by default** —
+  set `sshAllowedCidr` to a CIDR to open break-glass SSH; otherwise manage via
+  `az vm run-command` / Serial Console.
+- cloud-init that deploys the **canonical `docker-compose/with-postgres-external`
+  assets verbatim** (compose + Caddyfile + Caddy.Dockerfile — base64-embedded at deploy
+  time, so this VM runs byte-for-byte the same stack a docker-direct customer runs),
+  writes a templated `.env`, **injects `BROCH_MASTER_KEY` + the external DB connection
+  string**, installs Docker, and starts via systemd. No embedded Postgres, no data disk.
+- **Telemetry, logging, and the license are configured in-app** (Admin UI) after first
+  sign-in — not baked into the deploy. The central server URL defaults in code.
 - **Note:** the database server's firewall must allow the VM's public IP (the output
   address) — add a rule after deploy.
 

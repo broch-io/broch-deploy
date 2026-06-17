@@ -6,7 +6,9 @@ using 'main.bicep'
 
 // --- Networking / access ---
 param adminSshPublicKey = 'ssh-ed25519 AAAA...replace-with-your-public-key... you@example'
-param sshAllowedCidr = '203.0.113.0/24' // restrict to your admin network; '*' = open to the internet
+// SSH is closed by default (no inbound 22; manage via `az vm run-command` / Serial
+// Console). Uncomment + set a CIDR ONLY for break-glass SSH from your admin network:
+// param sshAllowedCidr = '203.0.113.0/24'
 
 // --- Existing database + master key (paired — see README's cutover warning) ---
 param brochMasterKey = '<existing-master-key>' // prefer --parameters over committing
@@ -26,15 +28,8 @@ param authDomain = 'your-tenant.auth0.com'
 // AzureAd/Entra: set authTenantId + authInstance instead of authDomain.
 // Generic OIDC: set authAuthority.
 
-// --- Telemetry / logging (optional — leave the *Provider values '' to disable) ---
-// param telemetryProvider = 'ApplicationInsights'
-// param applicationInsightsConnectionString = '<connection-string>' // prefer --parameters
-// param loggingProvider = 'DataDog'
-// param datadogApiKey = '<dd-api-key>'        // prefer --parameters
-// param datadogServiceName = 'broch-api'
-// param datadogEnvironment = 'production'
-// param datadogSite = 'us5.datadoghq.com'     // Broch uses the us5 region
-// param otelServiceName = 'broch-api'
+// Telemetry, logging, and the license are configured IN-APP (Admin UI) after first
+// sign-in — not here. The central server URL defaults to https://api.broch.io in code.
 
 // --- Optional ---
 // param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region

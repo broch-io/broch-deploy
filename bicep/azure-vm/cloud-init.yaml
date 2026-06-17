@@ -1,20 +1,24 @@
 #cloud-config
-# Broch — Azure VM appliance bootstrap (Docker Compose: broch + Caddy).
-# Connects to an EXISTING external PostgreSQL (e.g. Azure Database for PostgreSQL
-# Flexible Server). No embedded Postgres, no data disk — the database is managed
-# elsewhere and passed in as a connection string.
+# Broch — Azure VM appliance bootstrap.
 # Copyright (c) 2026 Broch, LLC. All rights reserved.
 #
-# DRAFT — not yet validated end-to-end on Azure. See README.md.
+# This does NOT hand-roll a compose stack. It deploys the CANONICAL
+# docker-compose/with-postgres-external assets (docker-compose.yml, Caddyfile,
+# Caddy.Dockerfile) VERBATIM — main.bicep base64-embeds them at deploy time via
+# loadTextContent() from that template dir, so this VM runs byte-for-byte the same
+# stack a docker-direct customer runs. There is no second copy to drift (notably:
+# ONE wildcard hostname, fanned out to both Caddy and broch inside the compose).
 #
-# Placeholders __LIKE_THIS__ are substituted by main.bicep before base64. Unlike
-# an embedded-DB variant, BROCH_MASTER_KEY is INJECTED, not generated: it MUST be
-# the same key the existing database was encrypted with, or broch cannot decrypt
-# its stored state (Data Protection keyring, IdP tokens, license). Runtime ${VARS}
-# are resolved on the VM, not by Bicep.
+# Only /opt/broch/.env is templated, from that template's .env.example surface.
+# BROCH_MASTER_KEY is the EXISTING key the external DB was encrypted with —
+# injected here, NEVER generated (a fresh key can't decrypt stored state).
+# Telemetry/logging and the license are configured IN-APP (Admin UI), not here.
+#
+# Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
+# main.bicep before base64. The base64 blobs are pure base64 (no underscores), so
+# they never collide with a placeholder.
 
 package_update: true
-package_upgrade: true
 
 packages:
   - ca-certificates
@@ -22,100 +26,36 @@ packages:
   - gnupg
 
 write_files:
+  # Canonical assets, base64-embedded from docker-compose/with-postgres-external/.
   - path: /opt/broch/docker-compose.yml
     permissions: "0644"
-    content: |
-      # broch (HTTP, behind Caddy) + Caddy (TLS). Database is external — see .env.
-      services:
-        broch:
-          # Tag comes from BROCH_VERSION in .env (compose interpolates it). Upgrades are
-          # an in-place edit of that one line + `docker compose pull && up -d` — the same
-          # path the README documents for customers and CI runs against this VM.
-          image: ghcr.io/broch-io/broch:${BROCH_VERSION}
-          restart: unless-stopped
-          env_file: [.env]
-          environment:
-            ASPNETCORE_URLS: http://0.0.0.0:8080
-            DATABASE__PROVIDER: PostgreSQL
-          expose: ["8080"]
-          logging:
-            driver: json-file
-            options: { max-size: "10m", max-file: "3" }
-
-        caddy:
-          build: { context: ., dockerfile: Caddy.Dockerfile }
-          image: broch-deploy/caddy:dns-cloudflare
-          restart: unless-stopped
-          depends_on: [broch]
-          environment:
-            BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
-            CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
-            CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
-          ports: ["80:80", "443:443", "443:443/udp"]
-          volumes:
-            - ./Caddyfile:/etc/caddy/Caddyfile:ro
-            - caddy_data:/data
-            - caddy_config:/config
-          logging:
-            driver: json-file
-            options: { max-size: "5m", max-file: "3" }
-
-      volumes:
-        caddy_data:
-        caddy_config:
-
-      networks:
-        default:
-          name: broch-network
+    encoding: b64
+    content: __COMPOSE_B64__
 
   - path: /opt/broch/Caddyfile
     permissions: "0644"
-    content: |
-      # Wildcard TLS via Let's Encrypt DNS-01 (Cloudflare): mints the apex and the
-      # *.<hostname> wildcard. Swap the dns line + Caddy.Dockerfile for another
-      # provider (route53, googleclouddns, ...).
-      {
-        email {env.CADDY_ACME_EMAIL}
-      }
-
-      {env.BROCH_WILDCARD_HOSTNAME}, *.{env.BROCH_WILDCARD_HOSTNAME} {
-        tls {
-          dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-        }
-        reverse_proxy broch:8080 {
-          header_up Host {host}
-          lb_try_duration 30s
-          lb_try_interval 250ms
-        }
-      }
+    encoding: b64
+    content: __CADDYFILE_B64__
 
   - path: /opt/broch/Caddy.Dockerfile
     permissions: "0644"
-    content: |
-      FROM caddy:2-builder AS builder
-      RUN xcaddy build \
-          --with github.com/caddy-dns/cloudflare \
-          --with github.com/caddy-dns/route53 \
-          --with github.com/caddy-dns/googleclouddns
-      FROM caddy:2-alpine
-      COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+    encoding: b64
+    content: __CADDY_DOCKERFILE_B64__
 
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
-      # Image tag for the broch service. compose interpolates ${BROCH_VERSION} from
-      # this file; bump it here + `docker compose pull && up -d` to upgrade in place.
+      # The compose maps BROCH_WILDCARD_HOSTNAME to BOTH Caddy's TLS host and
+      # broch's API__WILDCARDHOSTNAME — one knob, they cannot diverge. Likewise
+      # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__DefaultConnection. Do not
+      # add raw API__/ConnectionStrings__ keys here. Telemetry, logging, and the
+      # license are configured in-app (Admin UI); CentralServer URL defaults in code.
       BROCH_VERSION=__BROCH_VERSION__
-      # BROCH_MASTER_KEY is the EXISTING key the database was encrypted with —
-      # injected here, NEVER generated (a fresh key can't decrypt stored state).
       BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
-      # External database (e.g. Azure Database for PostgreSQL Flexible Server).
-      ConnectionStrings__DefaultConnection=__DATABASE_CONNECTION_STRING__
-      CentralServer__ApiUrl=__CENTRAL_SERVER_URL__
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
-      API__WILDCARDHOSTNAME=__WILDCARD_HOSTNAME__
       CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
       CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
+      BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
       AUTHENTICATION__CLIENTSECRET=__AUTH_CLIENT_SECRET__
@@ -125,19 +65,6 @@ write_files:
       AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
       AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
       AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
-      AUTHENTICATION__SCOPES=__AUTH_SCOPES__
-      # Telemetry/APM (BROCHTELEMETRY__*) and structured logging (BROCHLOGGING__*).
-      # Leave PROVIDER values empty to disable. DataDog APIKEY / AppInsights conn string
-      # are secrets — this file is 0600. Site is the regional domain (Broch uses us5).
-      BROCHTELEMETRY__PROVIDER=__TELEMETRY_PROVIDER__
-      BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING=__APPINSIGHTS_CONNECTION_STRING__
-      BROCHLOGGING__PROVIDER=__LOGGING_PROVIDER__
-      BROCHLOGGING__DATADOG__SERVICENAME=__DATADOG_SERVICE_NAME__
-      BROCHLOGGING__DATADOG__ENVIRONMENT=__DATADOG_ENVIRONMENT__
-      BROCHLOGGING__DATADOG__SITE=__DATADOG_SITE__
-      BROCHLOGGING__DATADOG__APIKEY=__DATADOG_API_KEY__
-      BROCHLOGGING__DATADOG__APPLICATIONKEY=__DATADOG_APPLICATION_KEY__
-      OTEL_SERVICE_NAME=__OTEL_SERVICE_NAME__
 
   - path: /etc/systemd/system/broch.service
     permissions: "0644"
@@ -175,7 +102,6 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  # Start
+  # systemd owns the stack (single start path for first boot AND reboots).
   - systemctl daemon-reload
-  - systemctl enable broch.service
-  - cd /opt/broch && docker compose up -d --build
+  - systemctl enable --now broch.service
