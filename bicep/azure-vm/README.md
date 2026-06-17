@@ -146,8 +146,23 @@ Pointing this VM at a database another Broch instance already uses is a **migrat
 
 ## Teardown
 
+The VM holds no state — your external database is separate and is **not** part of this deployment, so the box is disposable (back up the DB + master key, not the VM).
+
+If you deployed into a **dedicated resource group**, teardown is one line:
+
 ```sh
-az group delete --name broch-rg --yes
+az group delete --name <dedicated-rg> --yes
 ```
 
-State lives in the external database, so the VM itself is disposable — back up the DB + master key, not the box.
+**If the VM shares a resource group with your database** (or anything else you want to keep), do **not** delete the group — it takes the DB with it. Delete only this deployment's resources (default `vmName` is `broch`):
+
+```sh
+RG=broch-rg VM=broch
+az vm delete         -g $RG -n $VM --yes
+az network nic delete        -g $RG -n $VM-nic
+az network public-ip delete  -g $RG -n $VM-pip
+az network vnet delete       -g $RG -n $VM-vnet
+az network nsg delete        -g $RG -n $VM-nsg
+# az vm delete leaves the OS disk — remove it too:
+az disk list -g $RG --query "[?starts_with(name, '$VM')].id" -o tsv | xargs -r az disk delete --yes --ids
+```
