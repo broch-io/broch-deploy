@@ -30,4 +30,4 @@ postgres_password   = "<strong-random-password>"
 # dns_provider        = "cloudflare"
 # auth_provider       = "AzureAd"
 # auth_instance       = "https://login.microsoftonline.com/"
-# ssh_allowed_cidrs   = ["0.0.0.0/0", "::/0"]   # lock to your bastion/VPN CIDRs for real prod
+# ssh_allowed_cidrs   = ["203.0.113.0/24"]   # break-glass SSH; default [] = no port-22 rule
