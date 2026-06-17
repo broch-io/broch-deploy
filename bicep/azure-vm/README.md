@@ -11,12 +11,23 @@ and the substrate Broch's own production is meant to dogfood.
 > **⚠️ DRAFT — partially validated (2026-06-17).** Deployed on Azure (x86
 > `Standard_B2s`, eastus): the VM provisioned, cloud-init installed Docker + built the
 > custom Caddy, **broch booted against a fresh `brochvm` database and migrated**, and
-> **Caddy obtained real apex + `*.` wildcard certs via DNS-01**. **Still unvalidated:**
-> SSO sign-in (needs an IdP app + the VM's callback URL registered + DNS pointing at the
-> VM) and the prod-DB cutover. Not yet wired to CI.
+> **Caddy obtained real apex + `*.` wildcard certs via DNS-01**. **Entra (AzureAd) SSO
+> wiring validated**: with `AUTHENTICATION__*` set, `/auth/login` 302-redirects to the
+> tenant's `oauth2/authorize` with the right `client_id`, the VM's `/auth/callback`
+> `redirect_uri`, and PKCE — once the callback URL is registered on the IdP app. **Still
+> unvalidated:** the full interactive browser sign-in loop and the prod-DB cutover. Not
+> yet wired to CI.
+>
+> **Gotcha:** `AUTHENTICATION__*` is read from the `.env` via Compose `env_file`, which
+> is only evaluated at container **create** time. After editing `/opt/broch/.env`, run
+> `docker compose up -d` (recreate) — a plain `docker restart` reuses the old environment
+> and the new values are silently ignored.
+
+<!-- two distinct callouts; comment separates the blockquotes (MD028) -->
 
 > **🚨 PRODUCTION CUTOVER — read before pointing this at a live database.**
 > Connecting this VM to an existing Broch database is a **migration, not a test**:
+>
 > - **One instance per database.** Broch does not cluster — do **not** run this VM
 >   against the live DB while the current instance (ACA) is also connected. Stop the
 >   old instance first (maintenance window).
@@ -37,6 +48,10 @@ and the substrate Broch's own production is meant to dogfood.
 - cloud-init that writes the compose stack + Caddy config, **injects `BROCH_MASTER_KEY`
   and the external DB connection string**, installs Docker, and starts via systemd.
   No embedded Postgres, no data disk.
+- **Optional observability** — set `telemetryProvider` (Application Insights) and/or
+  `loggingProvider=DataDog` (+ `datadogApiKey`, `datadogSite`, service/environment tags)
+  to wire `BROCHTELEMETRY__*` / `BROCHLOGGING__*` into the container. Leave the provider
+  params `''` to run without either.
 - **Note:** the database server's firewall must allow the VM's public IP (the output
   address) — add a rule after deploy.
 

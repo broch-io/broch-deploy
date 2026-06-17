@@ -26,6 +26,16 @@ param authDomain = 'your-tenant.auth0.com'
 // AzureAd/Entra: set authTenantId + authInstance instead of authDomain.
 // Generic OIDC: set authAuthority.
 
+// --- Telemetry / logging (optional — leave the *Provider values '' to disable) ---
+// param telemetryProvider = 'ApplicationInsights'
+// param applicationInsightsConnectionString = '<connection-string>' // prefer --parameters
+// param loggingProvider = 'DataDog'
+// param datadogApiKey = '<dd-api-key>'        // prefer --parameters
+// param datadogServiceName = 'broch-api'
+// param datadogEnvironment = 'production'
+// param datadogSite = 'us5.datadoghq.com'     // Broch uses the us5 region
+// param otelServiceName = 'broch-api'
+
 // --- Optional ---
 // param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region
 // param brochVersion = 'latest'      // pin to the running version before any prod cutover

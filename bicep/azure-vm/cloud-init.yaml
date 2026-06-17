@@ -28,7 +28,10 @@ write_files:
       # broch (HTTP, behind Caddy) + Caddy (TLS). Database is external — see .env.
       services:
         broch:
-          image: ghcr.io/broch-io/broch:__BROCH_VERSION__
+          # Tag comes from BROCH_VERSION in .env (compose interpolates it). Upgrades are
+          # an in-place edit of that one line + `docker compose pull && up -d` — the same
+          # path the README documents for customers and CI runs against this VM.
+          image: ghcr.io/broch-io/broch:${BROCH_VERSION}
           restart: unless-stopped
           env_file: [.env]
           environment:
@@ -100,6 +103,9 @@ write_files:
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
+      # Image tag for the broch service. compose interpolates ${BROCH_VERSION} from
+      # this file; bump it here + `docker compose pull && up -d` to upgrade in place.
+      BROCH_VERSION=__BROCH_VERSION__
       # BROCH_MASTER_KEY is the EXISTING key the database was encrypted with —
       # injected here, NEVER generated (a fresh key can't decrypt stored state).
       BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
@@ -119,6 +125,19 @@ write_files:
       AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
       AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
       AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
+      AUTHENTICATION__SCOPES=__AUTH_SCOPES__
+      # Telemetry/APM (BROCHTELEMETRY__*) and structured logging (BROCHLOGGING__*).
+      # Leave PROVIDER values empty to disable. DataDog APIKEY / AppInsights conn string
+      # are secrets — this file is 0600. Site is the regional domain (Broch uses us5).
+      BROCHTELEMETRY__PROVIDER=__TELEMETRY_PROVIDER__
+      BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING=__APPINSIGHTS_CONNECTION_STRING__
+      BROCHLOGGING__PROVIDER=__LOGGING_PROVIDER__
+      BROCHLOGGING__DATADOG__SERVICENAME=__DATADOG_SERVICE_NAME__
+      BROCHLOGGING__DATADOG__ENVIRONMENT=__DATADOG_ENVIRONMENT__
+      BROCHLOGGING__DATADOG__SITE=__DATADOG_SITE__
+      BROCHLOGGING__DATADOG__APIKEY=__DATADOG_API_KEY__
+      BROCHLOGGING__DATADOG__APPLICATIONKEY=__DATADOG_APPLICATION_KEY__
+      OTEL_SERVICE_NAME=__OTEL_SERVICE_NAME__
 
   - path: /etc/systemd/system/broch.service
     permissions: "0644"

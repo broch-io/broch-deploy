@@ -38,8 +38,8 @@ param centralServerUrl string = 'https://api.broch.io'
 @description('Broch server image tag. Pin in production.')
 param brochVersion string = 'latest'
 
-@description('CIDR allowed to reach SSH (port 22). Default * = open to the internet — restrict this.')
-param sshAllowedCidr string = '*'
+@description('CIDR allowed to reach SSH (port 22). Empty (default) creates NO inbound SSH rule — the box is managed via `az vm run-command` / Azure Serial Console, the secure default. Set a CIDR (e.g. your admin network) to allow SSH break-glass.')
+param sshAllowedCidr string = ''
 
 @description('The EXISTING Broch master key the target database was encrypted with. A fresh key cannot decrypt existing state (Data Protection keyring, IdP tokens, license) — reuse the current one.')
 @secure()
@@ -62,46 +62,93 @@ param authTenantId string = ''
 param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
+@description('Comma-separated OAuth scopes (e.g. openid,profile,email,offline_access).')
+param authScopes string = ''
+
+// --- Telemetry / logging (optional). Leave the *Provider values '' to disable. ---
+// Mirrors the ACA template's params so a deployment carries the same observability.
+@description('Telemetry/APM provider: ApplicationInsights | DataDog | "" (disabled).')
+param telemetryProvider string = ''
+@description('Application Insights connection string (when telemetryProvider=ApplicationInsights).')
+@secure()
+param applicationInsightsConnectionString string = ''
+@description('Structured-logging provider: DataDog | "" (disabled).')
+param loggingProvider string = ''
+@description('DataDog API key (when loggingProvider=DataDog).')
+@secure()
+param datadogApiKey string = ''
+@description('DataDog application key (optional; enables the log/metric management APIs).')
+@secure()
+param datadogApplicationKey string = ''
+@description('DataDog service-name tag.')
+param datadogServiceName string = 'broch-server'
+@description('DataDog environment tag.')
+param datadogEnvironment string = 'production'
+@description('DataDog site/region domain, e.g. us5.datadoghq.com.')
+param datadogSite string = 'datadoghq.com'
+@description('OpenTelemetry service name for distributed tracing.')
+param otelServiceName string = 'broch'
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Runtime ${VARS}/$(...) in the file are left untouched (they aren't __TOKEN__ form).
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+// Token→value table folded over the file with reduce(), so adding a placeholder is a
+// one-line append rather than another level of a nested replace() chain.
+var cloudInitTokens = [
+  ['__BROCH_VERSION__', brochVersion]
+  ['__BROCH_MASTER_KEY__', brochMasterKey]
+  ['__DATABASE_CONNECTION_STRING__', databaseConnectionString]
+  ['__CENTRAL_SERVER_URL__', centralServerUrl]
+  ['__WILDCARD_HOSTNAME__', wildcardHostname]
+  ['__CADDY_ACME_EMAIL__', acmeEmail]
+  ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
+  ['__AUTH_PROVIDER__', authProvider]
+  ['__AUTH_CLIENT_ID__', authClientId]
+  ['__AUTH_CLIENT_SECRET__', authClientSecret]
+  ['__AUTH_ADMIN_ROLES__', authAdminRoles]
+  ['__AUTH_DOMAIN__', authDomain]
+  ['__AUTH_TENANT_ID__', authTenantId]
+  ['__AUTH_INSTANCE__', authInstance]
+  ['__AUTH_AUTHORITY__', authAuthority]
+  ['__AUTH_AUDIENCE__', authAudience]
+  ['__AUTH_SCOPES__', authScopes]
+  ['__TELEMETRY_PROVIDER__', telemetryProvider]
+  ['__APPINSIGHTS_CONNECTION_STRING__', applicationInsightsConnectionString]
+  ['__LOGGING_PROVIDER__', loggingProvider]
+  ['__DATADOG_SERVICE_NAME__', datadogServiceName]
+  ['__DATADOG_ENVIRONMENT__', datadogEnvironment]
+  ['__DATADOG_SITE__', datadogSite]
+  ['__DATADOG_API_KEY__', datadogApiKey]
+  ['__DATADOG_APPLICATION_KEY__', datadogApplicationKey]
+  ['__OTEL_SERVICE_NAME__', otelServiceName]
+]
+var cloudInit = reduce(
+  cloudInitTokens,
   loadTextContent('cloud-init.yaml'),
-  '__BROCH_VERSION__', brochVersion),
-  '__BROCH_MASTER_KEY__', brochMasterKey),
-  '__DATABASE_CONNECTION_STRING__', databaseConnectionString),
-  '__CENTRAL_SERVER_URL__', centralServerUrl),
-  '__WILDCARD_HOSTNAME__', wildcardHostname),
-  '__CADDY_ACME_EMAIL__', acmeEmail),
-  '__CLOUDFLARE_API_TOKEN__', cloudflareApiToken),
-  '__AUTH_PROVIDER__', authProvider),
-  '__AUTH_CLIENT_ID__', authClientId),
-  '__AUTH_CLIENT_SECRET__', authClientSecret),
-  '__AUTH_ADMIN_ROLES__', authAdminRoles),
-  '__AUTH_DOMAIN__', authDomain),
-  '__AUTH_TENANT_ID__', authTenantId),
-  '__AUTH_INSTANCE__', authInstance),
-  '__AUTH_AUTHORITY__', authAuthority),
-  '__AUTH_AUDIENCE__', authAudience)
+  (cur, t) => replace(string(cur), t[0], t[1]))
+
+// SSH is opt-in: only when sshAllowedCidr is set. Empty (default) = no inbound 22 at all
+// (manage via `az vm run-command` / Serial Console). Default-closed beats the old `*`.
+var sshRules = empty(sshAllowedCidr) ? [] : [
+  {
+    name: 'SSH'
+    properties: {
+      priority: 1000
+      direction: 'Inbound'
+      access: 'Allow'
+      protocol: 'Tcp'
+      sourceAddressPrefix: sshAllowedCidr
+      sourcePortRange: '*'
+      destinationAddressPrefix: '*'
+      destinationPortRange: '22'
+    }
+  }
+]
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
   name: '${vmName}-nsg'
   location: location
   properties: {
-    securityRules: [
-      {
-        name: 'SSH'
-        properties: {
-          priority: 1000
-          direction: 'Inbound'
-          access: 'Allow'
-          protocol: 'Tcp'
-          sourceAddressPrefix: sshAllowedCidr
-          sourcePortRange: '*'
-          destinationAddressPrefix: '*'
-          destinationPortRange: '22'
-        }
-      }
+    securityRules: concat(sshRules, [
       {
         name: 'HTTP'
         properties: {
@@ -128,7 +175,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
           destinationPortRange: '443'
         }
       }
-    ]
+    ])
   }
 }
 
