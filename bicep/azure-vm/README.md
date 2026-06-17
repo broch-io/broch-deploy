@@ -8,10 +8,12 @@ external PostgreSQL** (e.g. Azure Database for PostgreSQL Flexible Server) — t
 This is the VM path for Azure, alongside the [ACA Bicep](../azure-container-apps/),
 and the substrate Broch's own production is meant to dogfood.
 
-> **⚠️ DRAFT — not validated end-to-end.** Compiles (`az bicep build`); not yet
-> run on Azure. Not wired to CI; not a supported path until a run-through passes.
-> Likeliest adjustments: the Ubuntu ARM image reference, VM size/quota by region,
-> and SSL settings in the connection string.
+> **⚠️ DRAFT — partially validated (2026-06-17).** Deployed on Azure (x86
+> `Standard_B2s`, eastus): the VM provisioned, cloud-init installed Docker + built the
+> custom Caddy, **broch booted against a fresh `brochvm` database and migrated**, and
+> **Caddy obtained real apex + `*.` wildcard certs via DNS-01**. **Still unvalidated:**
+> SSO sign-in (needs an IdP app + the VM's callback URL registered + DNS pointing at the
+> VM) and the prod-DB cutover. Not yet wired to CI.
 
 > **🚨 PRODUCTION CUTOVER — read before pointing this at a live database.**
 > Connecting this VM to an existing Broch database is a **migration, not a test**:
@@ -28,22 +30,45 @@ and the substrate Broch's own production is meant to dogfood.
 
 ## What it provisions
 
-- An Ubuntu 24.04 **ARM64** VM (default `Standard_B2ps_v2`; size availability varies
-  by region/quota — this sub had `Dpsv6` quota) with your SSH key.
+- An Ubuntu 24.04 VM (default **x86** `Standard_B2s`; ARM64 is a one-line opt-in via
+  `vmSize` + `imageSku` where Ampere capacity exists) with your SSH key.
 - A **static** Standard public IP — the address your wildcard DNS points at.
 - An NSG: SSH (22) from `sshAllowedCidr`; HTTP (80) + HTTPS (443) from the internet.
-- cloud-init that writes the compose stack + Caddy config, **injects the existing
-  `BROCH_MASTER_KEY` and the external DB connection string**, installs Docker
-  (arm64), and starts via systemd. No embedded Postgres, no data disk.
+- cloud-init that writes the compose stack + Caddy config, **injects `BROCH_MASTER_KEY`
+  and the external DB connection string**, installs Docker, and starts via systemd.
+  No embedded Postgres, no data disk.
+- **Note:** the database server's firewall must allow the VM's public IP (the output
+  address) — add a rule after deploy.
 
 ## Prerequisites
 
-- The **existing PostgreSQL** connection string (Npgsql format, incl. `Ssl Mode=Require`).
-- The **existing `BROCH_MASTER_KEY`** (paired with that database).
+- A PostgreSQL database + a **least-privilege role** for it (see *Database setup* below).
+  For a **new** database, generate a fresh `BROCH_MASTER_KEY`; to take over an
+  **existing** one, reuse its master key (cutover warning above).
 - A domain on **Cloudflare** + an API token (**Zone:Read + DNS:Edit**) for DNS-01.
 - An **IdP app** (Auth0 / Entra / Okta / OIDC). Register the callback URL
   **`https://<wildcardHostname>/auth/callback`** before signing in.
 - An Azure resource group, an SSH keypair, and the Azure CLI.
+
+## Database setup (run once)
+
+The VM connects as a **least-privilege role that owns only its own database** — never
+the server admin (which would hand the VM access to every database on the server). As
+the server admin, from a host allowed through the DB firewall:
+
+```sql
+-- connected to the default 'postgres' database:
+CREATE ROLE broch_vm LOGIN PASSWORD '<generated>';
+ALTER DATABASE brochvm OWNER TO broch_vm;
+
+-- then connected to 'brochvm' — REQUIRED on PG15+: the database owner does NOT
+-- automatically get CREATE on the public schema, so migrations otherwise fail with
+-- "42501: permission denied for schema public":
+ALTER SCHEMA public OWNER TO broch_vm;
+```
+
+Use `broch_vm` + that password in `databaseConnectionString`, and **pin `brochVersion`**
+(don't rely on `latest`).
 
 ## Deploy (local-first, by hand)
 
