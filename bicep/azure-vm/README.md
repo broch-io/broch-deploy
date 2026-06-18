@@ -126,16 +126,18 @@ Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTIC
 
 ## Observability
 
-All optional. Broch ships logs to **Datadog**; **Application Insights** telemetry is **EXPERIMENTAL / WIP — not yet fully supported**. Both are normally set in the in-app **Admin → Settings** UI, which is authoritative: those settings are stored in the database (secrets encrypted with your master key) and **override** any deploy-time values on the next server restart, so they persist across upgrades and re-provisions.
+All optional. **Logging (Datadog)** is supported; **Application Insights** telemetry is **EXPERIMENTAL / WIP — not yet fully supported, and not configurable in-app**.
 
-You can also **seed** them at deploy via parameters (handy for an unattended bootstrap). The server mirrors them into the database on first boot; after that, in-app changes win:
+**Logging (Datadog)** is normally set in the in-app **Admin → Settings** UI, which is authoritative: those settings are stored in the database (secrets encrypted with your master key) and **override** any deploy-time value on the next server restart. Because the config lives in the DB, it persists across upgrades and re-provisions.
 
-- **Logging — Datadog (supported):** `loggingProvider=DataDog` plus `datadogApiKey`, `datadogServiceName`, `datadogEnvironment`, `datadogSite`.
-- **Telemetry — Application Insights (EXPERIMENTAL / WIP, not yet fully supported):** `telemetryProvider=ApplicationInsights` plus `applicationInsightsConnectionString`. Prefer leaving these empty.
+You can also **seed** values at deploy via parameters (handy for an unattended bootstrap). The server mirrors them into the database on first boot:
+
+- **Logging — Datadog (supported):** `loggingProvider=DataDog` plus `datadogApiKey`, `datadogServiceName`, `datadogEnvironment`, `datadogSite`. Set these only to bootstrap — the in-app UI overrides them afterward.
+- **Telemetry — Application Insights (EXPERIMENTAL / WIP — not yet fully supported; deploy-time only, NOT configurable in-app):** `telemetryProvider=ApplicationInsights` plus `applicationInsightsConnectionString`. Prefer leaving these empty.
 - **`otelServiceName`** sets the OpenTelemetry `service.name` the server reports.
 - **`centralServerUrl`** points the VM at the Broch central (license/management) server — defaults to `https://api.broch.io`; override only for a self-hosted central.
 
-Leave every observability parameter empty to configure it entirely in-app.
+Leave the logging parameters empty to configure logging entirely in-app.
 
 ## How secrets flow at runtime
 

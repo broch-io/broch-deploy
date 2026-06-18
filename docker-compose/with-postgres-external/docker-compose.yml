@@ -44,10 +44,10 @@ services:
       # standard for managed services; relax to Prefer or Disable if your
       # provider doesn't support TLS to the server.
       ConnectionStrings__DefaultConnection: ${BROCH_DB_CONNECTION_STRING}
-      # Observability (all optional). SEED values only: the server mirrors them into its DB on
-      # first boot, after which the in-app Admin -> Settings UI overrides them (and persists them
-      # across re-provisions). Logging (Datadog) is supported; telemetry (Application Insights) is
-      # EXPERIMENTAL / WIP. Leave empty to configure observability in-app.
+      # Observability (all optional). SEED values mirrored into the DB on first boot (so they
+      # survive a re-provision). Logging (Datadog) is supported AND configurable in-app (Admin ->
+      # Settings overrides it on the next restart). Telemetry (Application Insights) is
+      # EXPERIMENTAL / WIP and NOT configurable in-app — deploy-time only; prefer leaving it empty.
       BROCHTELEMETRY__PROVIDER: ${BROCHTELEMETRY__PROVIDER:-}
       BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING: ${BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING:-}
       BROCHLOGGING__PROVIDER: ${BROCHLOGGING__PROVIDER:-}

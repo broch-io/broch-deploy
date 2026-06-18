@@ -113,22 +113,22 @@ param authAudience string = ''
 param authScopes string = ''
 
 // --- Observability (ALL OPTIONAL) ---------------------------------------------------------
-// These are deploy-time SEED values. On first boot the server mirrors them into its database
-// (the InstanceConfigs row); from then on the in-app Admin → Settings UI is AUTHORITATIVE and
-// OVERRIDES anything set here (non-null DB columns win, applied on the next server restart — see
-// the server's InstanceConfigConfigurationOverlay). Two consequences worth knowing:
-//   • Because the live config lives in the DB, it SURVIVES a VM re-provision (the database and
-//     master key are preserved), so you don't need to re-supply these to keep observability.
-//   • Set them only to bootstrap a fresh deploy; otherwise leave empty and configure in-app.
-// Logging (Datadog) is supported. Telemetry (Application Insights) is EXPERIMENTAL / WIP and
-// not yet fully supported — prefer leaving the telemetry params empty.
+// Deploy-time SEED values. On first boot the server mirrors them into its database; the config
+// then lives in the DB, so it SURVIVES a VM re-provision (the database + master key are preserved)
+// and you don't need to re-supply it.
+//   • Logging (Datadog) is supported AND configurable in-app: the Admin → Settings UI is
+//     authoritative and overrides these on the next server restart (see the server's
+//     InstanceConfigConfigurationOverlay). Set them here only to bootstrap a fresh deploy;
+//     otherwise leave empty and configure logging in-app.
+//   • Telemetry (Application Insights) is EXPERIMENTAL / WIP and is NOT configurable in-app — it
+//     can only be set here (deploy-time). Prefer leaving the telemetry params empty.
 @description('Central (license/management) server URL. Defaults to the public Broch central server; override only for a self-hosted central.')
 param centralServerUrl string = 'https://api.broch.io'
 
-@description('EXPERIMENTAL / WIP — App Insights telemetry is not yet fully supported. Seed value (in-app Settings overrides). e.g. ApplicationInsights, or leave empty.')
+@description('EXPERIMENTAL / WIP — App Insights telemetry is not yet fully supported and is NOT configurable in-app (deploy-time only). e.g. ApplicationInsights, or leave empty.')
 param telemetryProvider string = ''
 
-@description('EXPERIMENTAL / WIP — Application Insights connection string (telemetryProvider=ApplicationInsights). Seed only; in-app Settings overrides.')
+@description('EXPERIMENTAL / WIP — Application Insights connection string (telemetryProvider=ApplicationInsights). Deploy-time only; not configurable in-app.')
 @secure()
 param applicationInsightsConnectionString string = ''
 

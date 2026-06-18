@@ -45,9 +45,10 @@ param authDomain = 'your-tenant.auth0.com'
 // param authScopes = ''   // extra OAuth scopes, only if your IdP requires them
 
 // --- Observability (all optional) ---
-// SEED values only: the server copies them into its database on first boot, after which the
-// in-app Admin -> Settings UI is AUTHORITATIVE and overrides them (and the values persist
-// across a re-provision, since they live in the DB). Leave empty to configure in-app instead.
+// SEED values: copied into the database on first boot, so they survive a re-provision.
+// Logging (Datadog) is configurable in-app (Admin -> Settings overrides these on the next
+// restart) — set them here only to bootstrap. Telemetry (App Insights) is EXPERIMENTAL / WIP
+// and NOT configurable in-app (deploy-time only). Leave logging empty to configure it in-app.
 // Logging (Datadog) is supported:
 // param loggingProvider       = 'DataDog'
 // param datadogApiKey         = '<datadog-api-key>'   // prefer --parameters
@@ -55,7 +56,7 @@ param authDomain = 'your-tenant.auth0.com'
 // param datadogEnvironment    = 'production'
 // param datadogSite           = 'us5.datadoghq.com'
 // param otelServiceName       = 'broch'
-// Telemetry (Application Insights) is EXPERIMENTAL / WIP — not yet fully supported:
+// Telemetry (Application Insights) is EXPERIMENTAL / WIP — not yet fully supported, deploy-time only:
 // param telemetryProvider                   = 'ApplicationInsights'
 // param applicationInsightsConnectionString = '<app-insights-connection-string>'  // prefer --parameters
 // The license is activated IN-APP (Admin UI) after first sign-in.

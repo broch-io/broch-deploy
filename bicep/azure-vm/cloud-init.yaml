@@ -88,10 +88,10 @@ write_files:
       AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
       AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
       AUTHENTICATION__SCOPES=__AUTH_SCOPES__
-      # Observability (all optional). These SEED the server on first boot; afterward the in-app
-      # Admin -> Settings UI is authoritative and OVERRIDES them on the next restart (values persist
-      # in the database, so they also survive a re-provision). Logging (Datadog) is supported;
-      # telemetry (Application Insights) is EXPERIMENTAL / WIP. Leave empty to configure in-app.
+      # Observability (all optional). SEED values mirrored into the DB on first boot, so they
+      # survive a re-provision. Logging (Datadog) is supported AND configurable in-app (Admin ->
+      # Settings overrides it on the next restart). Telemetry (Application Insights) is
+      # EXPERIMENTAL / WIP and NOT configurable in-app — deploy-time only; prefer leaving it empty.
       BROCHTELEMETRY__PROVIDER=__TELEMETRY_PROVIDER__
       BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING=__APPLICATION_INSIGHTS_CONNECTION_STRING__
       BROCHLOGGING__PROVIDER=__LOGGING_PROVIDER__
