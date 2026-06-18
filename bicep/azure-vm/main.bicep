@@ -1,7 +1,8 @@
-// Broch — Azure VM appliance (Bicep). DRAFT / local-first — see README.md.
-// Boots the with-postgres + Caddy Docker Compose stack on an Ubuntu 24.04 VM:
-// the VM path for Azure (alongside the existing ACA Bicep), and the substrate
-// Broch's own prod dogfoods.
+// Broch — Azure VM (Bicep). Boots the canonical with-postgres-external + Caddy compose
+// stack on an Ubuntu 24.04 VM. The VM path for Azure (alongside the ACA Bicep), for both
+// self-hosting (databaseMode=Existing, bring your own PostgreSQL) and the marketplace
+// one-click offer (databaseMode=Managed, provisions a PostgreSQL Flexible Server here).
+// See README.md.
 // Copyright (c) 2026 Broch, LLC. All rights reserved.
 
 @description('Azure region. Defaults to the resource group location.')
@@ -42,9 +43,31 @@ param sshAllowedCidr string = ''
 @secure()
 param brochMasterKey string
 
-@description('Connection string for the existing external PostgreSQL (e.g. Azure Database for PostgreSQL Flexible Server). Npgsql format, including SSL mode.')
+// --- Database. Existing = connect to your own PostgreSQL; Managed = provision an Azure
+// Database for PostgreSQL Flexible Server in this deployment (the marketplace one-click). ---
+@allowed([
+  'Existing'
+  'Managed'
+])
+@description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment.')
+param databaseMode string = 'Existing'
+
+@description('Npgsql connection string for your existing PostgreSQL (Existing mode). Ignored when databaseMode=Managed.')
 @secure()
-param databaseConnectionString string
+param databaseConnectionString string = ''
+
+@description('Admin password for the provisioned PostgreSQL (Managed mode). 8-128 chars; at least 3 of lower/upper/digit/symbol.')
+@secure()
+param postgresAdminPassword string = ''
+
+@allowed([
+  'Standard_B1ms'
+  'Standard_B2s'
+  'Standard_D2ds_v5'
+  'Standard_D4ds_v5'
+])
+@description('Compute size for the provisioned PostgreSQL (Managed mode).')
+param postgresSkuName string = 'Standard_B1ms'
 
 // --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. ---
 @description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
@@ -59,6 +82,14 @@ param authTenantId string = ''
 param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
+
+// Managed mode provisions the Flex Server below; its connection string is built from the
+// deterministic FQDN (no resource reference, so this stays valid even when Managed is off).
+var pgServerName = '${vmName}-pg'
+var pgAdminUser = 'brochadmin'
+var pgDatabaseName = 'brochdb'
+var managedConnectionString = 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
+var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
@@ -77,7 +108,7 @@ var cloudInitTokens = [
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
-  ['__DATABASE_CONNECTION_STRING__', databaseConnectionString]
+  ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
   ['__AUTH_CLIENT_SECRET__', authClientSecret]
@@ -187,6 +218,41 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
   }
 }
 
+// --- Managed database (databaseMode=Managed only): a PostgreSQL Flexible Server, a
+// 'brochdb' database, and a firewall rule for the VM's public egress IP. broch connects to
+// it over SSL as the server admin — the same "external Postgres" the compose expects. ---
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = if (databaseMode == 'Managed') {
+  name: pgServerName
+  location: location
+  sku: {
+    name: postgresSkuName
+    tier: startsWith(postgresSkuName, 'Standard_B') ? 'Burstable' : 'GeneralPurpose'
+  }
+  properties: {
+    version: '16'
+    administratorLogin: pgAdminUser
+    administratorLoginPassword: postgresAdminPassword
+    storage: { storageSizeGB: 32 }
+    backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
+    highAvailability: { mode: 'Disabled' }
+    network: { publicNetworkAccess: 'Enabled' }
+  }
+}
+
+resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = if (databaseMode == 'Managed') {
+  parent: postgres
+  name: pgDatabaseName
+}
+
+resource postgresFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = if (databaseMode == 'Managed') {
+  parent: postgres
+  name: 'allow-broch-vm-egress'
+  properties: {
+    startIpAddress: publicIp.properties.ipAddress
+    endIpAddress: publicIp.properties.ipAddress
+  }
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
@@ -222,8 +288,12 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
   }
+  // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
+  // the server + database + firewall rule to exist before the VM starts.
+  dependsOn: databaseMode == 'Managed' ? [postgresDatabase, postgresFirewall] : []
 }
 
 output publicIpAddress string = publicIp.properties.ipAddress
 output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
+output databaseHost string = databaseMode == 'Managed' ? '${pgServerName}.postgres.database.azure.com' : 'external (you supplied the connection string)'
