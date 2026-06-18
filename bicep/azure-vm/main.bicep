@@ -115,8 +115,8 @@ param authScopes string = ''
 // --- Observability (ALL OPTIONAL) ---------------------------------------------------------
 // These are deploy-time SEED values. On first boot the server mirrors them into its database
 // (the InstanceConfigs row); from then on the in-app Admin → Settings UI is AUTHORITATIVE and
-// OVERRIDES anything set here (non-null DB columns win — see the server's
-// InstanceConfigConfigurationOverlay). Two consequences worth knowing:
+// OVERRIDES anything set here (non-null DB columns win, applied on the next server restart — see
+// the server's InstanceConfigConfigurationOverlay). Two consequences worth knowing:
 //   • Because the live config lives in the DB, it SURVIVES a VM re-provision (the database and
 //     master key are preserved), so you don't need to re-supply these to keep observability.
 //   • Set them only to bootstrap a fresh deploy; otherwise leave empty and configure in-app.
@@ -138,10 +138,6 @@ param loggingProvider string = ''
 @description('Datadog API key (loggingProvider=DataDog). Seed value; in-app Settings overrides. Stored encrypted in the DB at rest.')
 @secure()
 param datadogApiKey string = ''
-
-@description('Datadog application key (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
-@secure()
-param datadogApplicationKey string = ''
 
 @description('Datadog service name tag (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
 param datadogServiceName string = ''
@@ -218,7 +214,6 @@ var cloudInitTokens = [
   ['__APPLICATION_INSIGHTS_CONNECTION_STRING__', applicationInsightsConnectionString]
   ['__LOGGING_PROVIDER__', loggingProvider]
   ['__DATADOG_API_KEY__', datadogApiKey]
-  ['__DATADOG_APPLICATION_KEY__', datadogApplicationKey]
   ['__DATADOG_SERVICE_NAME__', datadogServiceName]
   ['__DATADOG_ENVIRONMENT__', datadogEnvironment]
   ['__DATADOG_SITE__', datadogSite]

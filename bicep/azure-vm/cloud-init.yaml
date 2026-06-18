@@ -77,7 +77,7 @@ write_files:
       AZURE_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
       AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
       BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
-      CentralServer__ApiUrl=__CENTRAL_SERVER_URL__
+      CENTRALSERVER__APIURL=__CENTRAL_SERVER_URL__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
       AUTHENTICATION__CLIENTSECRET=__AUTH_CLIENT_SECRET__
@@ -89,14 +89,13 @@ write_files:
       AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
       AUTHENTICATION__SCOPES=__AUTH_SCOPES__
       # Observability (all optional). These SEED the server on first boot; afterward the in-app
-      # Admin -> Settings UI is authoritative and OVERRIDES them (values persist in the database,
-      # so they also survive a re-provision). Logging (Datadog) is supported; telemetry
-      # (Application Insights) is EXPERIMENTAL / WIP. Leave empty to configure observability in-app.
+      # Admin -> Settings UI is authoritative and OVERRIDES them on the next restart (values persist
+      # in the database, so they also survive a re-provision). Logging (Datadog) is supported;
+      # telemetry (Application Insights) is EXPERIMENTAL / WIP. Leave empty to configure in-app.
       BROCHTELEMETRY__PROVIDER=__TELEMETRY_PROVIDER__
       BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING=__APPLICATION_INSIGHTS_CONNECTION_STRING__
       BROCHLOGGING__PROVIDER=__LOGGING_PROVIDER__
       BROCHLOGGING__DATADOG__APIKEY=__DATADOG_API_KEY__
-      BROCHLOGGING__DATADOG__APPLICATIONKEY=__DATADOG_APPLICATION_KEY__
       BROCHLOGGING__DATADOG__SERVICENAME=__DATADOG_SERVICE_NAME__
       BROCHLOGGING__DATADOG__ENVIRONMENT=__DATADOG_ENVIRONMENT__
       BROCHLOGGING__DATADOG__SITE=__DATADOG_SITE__

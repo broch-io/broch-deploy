@@ -51,7 +51,6 @@ param authDomain = 'your-tenant.auth0.com'
 // Logging (Datadog) is supported:
 // param loggingProvider       = 'DataDog'
 // param datadogApiKey         = '<datadog-api-key>'   // prefer --parameters
-// param datadogApplicationKey = '<datadog-app-key>'   // prefer --parameters
 // param datadogServiceName    = 'broch'
 // param datadogEnvironment    = 'production'
 // param datadogSite           = 'us5.datadoghq.com'

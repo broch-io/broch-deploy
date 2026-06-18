@@ -44,7 +44,7 @@ services:
       AUTHENTICATION__AUDIENCE: ${AUTHENTICATION__AUDIENCE:-}
       AUTHENTICATION__SCOPES: ${AUTHENTICATION__SCOPES:-}
       # Central (license/management) server. Defaults to the public Broch central server.
-      CentralServer__ApiUrl: ${CentralServer__ApiUrl:-https://api.broch.io}
+      CENTRALSERVER__APIURL: ${CENTRALSERVER__APIURL:-https://api.broch.io}
       DATABASE__PROVIDER: PostgreSQL
       ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
       # Observability (all optional). SEED values only: the server mirrors them into its DB on
@@ -55,7 +55,6 @@ services:
       BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING: ${BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING:-}
       BROCHLOGGING__PROVIDER: ${BROCHLOGGING__PROVIDER:-}
       BROCHLOGGING__DATADOG__APIKEY: ${BROCHLOGGING__DATADOG__APIKEY:-}
-      BROCHLOGGING__DATADOG__APPLICATIONKEY: ${BROCHLOGGING__DATADOG__APPLICATIONKEY:-}
       BROCHLOGGING__DATADOG__SERVICENAME: ${BROCHLOGGING__DATADOG__SERVICENAME:-}
       BROCHLOGGING__DATADOG__ENVIRONMENT: ${BROCHLOGGING__DATADOG__ENVIRONMENT:-}
       BROCHLOGGING__DATADOG__SITE: ${BROCHLOGGING__DATADOG__SITE:-}

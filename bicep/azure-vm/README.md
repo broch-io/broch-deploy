@@ -126,12 +126,14 @@ Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTIC
 
 ## Observability
 
-All optional. Broch ships logs to **Datadog** and (experimental) telemetry to **Application Insights**. Both are normally set in the in-app **Admin → Settings** UI, which is authoritative: those settings are stored in the database (secrets encrypted with your master key) and **override** any deploy-time values, so they persist across upgrades and re-provisions.
+All optional. Broch ships logs to **Datadog**; **Application Insights** telemetry is **EXPERIMENTAL / WIP — not yet fully supported**. Both are normally set in the in-app **Admin → Settings** UI, which is authoritative: those settings are stored in the database (secrets encrypted with your master key) and **override** any deploy-time values on the next server restart, so they persist across upgrades and re-provisions.
 
 You can also **seed** them at deploy via parameters (handy for an unattended bootstrap). The server mirrors them into the database on first boot; after that, in-app changes win:
 
-- **Logging — Datadog (supported):** `loggingProvider=DataDog` plus `datadogApiKey`, `datadogApplicationKey`, `datadogServiceName`, `datadogEnvironment`, `datadogSite`. `otelServiceName` sets the OpenTelemetry `service.name`.
+- **Logging — Datadog (supported):** `loggingProvider=DataDog` plus `datadogApiKey`, `datadogServiceName`, `datadogEnvironment`, `datadogSite`.
 - **Telemetry — Application Insights (EXPERIMENTAL / WIP, not yet fully supported):** `telemetryProvider=ApplicationInsights` plus `applicationInsightsConnectionString`. Prefer leaving these empty.
+- **`otelServiceName`** sets the OpenTelemetry `service.name` the server reports.
+- **`centralServerUrl`** points the VM at the Broch central (license/management) server — defaults to `https://api.broch.io`; override only for a self-hosted central.
 
 Leave every observability parameter empty to configure it entirely in-app.
 
@@ -143,6 +145,7 @@ cloud-init writes `/opt/broch/.env` (mode `0600`) from your parameters; the comp
 - `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__DefaultConnection` (mapped in compose)
 - `AUTHENTICATION__CLIENTSECRET` → the IdP client secret
 - `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential
+- `BROCHLOGGING__DATADOG__APIKEY` / `BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING` → optional observability secrets, only when seeded at deploy
 
 Rotate by editing `/opt/broch/.env` and running `docker compose up -d` (a **recreate** — `env_file` is only read at container create time, so a plain `docker restart` silently keeps the old values).
 
