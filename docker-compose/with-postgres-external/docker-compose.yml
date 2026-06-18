@@ -63,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: Caddy.Dockerfile
-    image: broch-deploy/caddy:dns-cloudflare
+    image: broch-deploy/caddy:dns
     restart: unless-stopped
     depends_on:
       broch:

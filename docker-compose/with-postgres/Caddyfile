@@ -20,9 +20,7 @@
 
 # Apex: the API endpoint customers and the CLI talk to.
 {env.BROCH_WILDCARD_HOSTNAME} {
-	tls {
-		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-	}
+	import /etc/caddy/tls.caddy
 
 	# Forward absolutely everything to broch. The server handles its own
 	# routing — REST API, WebSocket tunnel upgrades, healthchecks, etc.
@@ -44,9 +42,7 @@
 # Wildcard: every tunnel subdomain (one per tunnel). Broch maps these to
 # the right tunnel based on the subdomain, so Caddy just passes through.
 *.{env.BROCH_WILDCARD_HOSTNAME} {
-	tls {
-		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-	}
+	import /etc/caddy/tls.caddy
 
 	reverse_proxy broch:8080 {
 		header_up Host {host}
