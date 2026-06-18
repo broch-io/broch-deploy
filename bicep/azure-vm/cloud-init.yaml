@@ -37,6 +37,24 @@ write_files:
     encoding: b64
     content: __CADDYFILE_B64__
 
+  # TLS issuance config the Caddyfile imports. Default is the canonical Cloudflare
+  # DNS-01 fragment; the DNS-provider choice substitutes a different one here.
+  - path: /opt/broch/tls.caddy
+    permissions: "0644"
+    encoding: b64
+    content: __TLS_CADDY_B64__
+
+  # BYO-cert mode: the supplied wildcard cert + key. Empty in Auto mode (Caddy ignores them).
+  - path: /opt/broch/certs/fullchain.pem
+    permissions: "0644"
+    encoding: b64
+    content: __TLS_CERT_B64__
+
+  - path: /opt/broch/certs/privkey.pem
+    permissions: "0600"
+    encoding: b64
+    content: __TLS_KEY_B64__
+
   - path: /opt/broch/Caddy.Dockerfile
     permissions: "0644"
     encoding: b64
@@ -55,6 +73,8 @@ write_files:
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
       CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
       CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
+      AZURE_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
+      AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
       BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__

@@ -1,7 +1,8 @@
-// Broch — Azure VM appliance (Bicep). DRAFT / local-first — see README.md.
-// Boots the with-postgres + Caddy Docker Compose stack on an Ubuntu 24.04 VM:
-// the VM path for Azure (alongside the existing ACA Bicep), and the substrate
-// Broch's own prod dogfoods.
+// Broch — Azure VM (Bicep). Boots the canonical with-postgres-external + Caddy compose
+// stack on an Ubuntu 24.04 VM. The VM path for Azure (alongside the ACA Bicep), for both
+// self-hosting (databaseMode=Existing, bring your own PostgreSQL) and the marketplace
+// one-click offer (databaseMode=Managed, provisions a PostgreSQL Flexible Server here).
+// See README.md.
 // Copyright (c) 2026 Broch, LLC. All rights reserved.
 
 @description('Azure region. Defaults to the resource group location.')
@@ -25,12 +26,39 @@ param adminSshPublicKey string
 @description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
 param wildcardHostname string
 
-@description('Email Let\'s Encrypt notifies about cert-renewal failures.')
-param acmeEmail string
+// --- TLS. Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a
+// dnsProvider). Byo = you supply the wildcard cert + key, no ACME. ---
+@allowed([
+  'Auto'
+  'Byo'
+])
+@description('Auto: Caddy auto-issues the wildcard via ACME DNS-01 (set dnsProvider). Byo: supply your own wildcard cert + key.')
+param certMode string = 'Auto'
 
-@description('Cloudflare API token (Zone:Read + DNS:Edit) for the zone hosting wildcardHostname. Used by Caddy for ACME DNS-01.')
+@allowed([
+  'Cloudflare'
+  'AzureDns'
+])
+@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity (no secret) — grant it DNS Zone Contributor on the zone after deploy.')
+param dnsProvider string = 'Cloudflare'
+
+@description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
+param acmeEmail string = ''
+
+@description('Cloudflare API token (Zone:Read + DNS:Edit) — certMode=Auto + dnsProvider=Cloudflare.')
 @secure()
-param cloudflareApiToken string
+param cloudflareApiToken string = ''
+
+@description('Resource group of the Azure DNS zone — certMode=Auto + dnsProvider=AzureDns (zone in this deployment\'s subscription).')
+param dnsZoneResourceGroup string = ''
+
+@description('Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — certMode=Byo.')
+@secure()
+param tlsCertificate string = ''
+
+@description('Base64-encoded PEM private key for the wildcard cert — certMode=Byo.')
+@secure()
+param tlsCertificateKey string = ''
 
 @description('Broch server image tag. Pin in production.')
 param brochVersion string = 'latest'
@@ -42,9 +70,31 @@ param sshAllowedCidr string = ''
 @secure()
 param brochMasterKey string
 
-@description('Connection string for the existing external PostgreSQL (e.g. Azure Database for PostgreSQL Flexible Server). Npgsql format, including SSL mode.')
+// --- Database. Existing = connect to your own PostgreSQL; Managed = provision an Azure
+// Database for PostgreSQL Flexible Server in this deployment (the marketplace one-click). ---
+@allowed([
+  'Existing'
+  'Managed'
+])
+@description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment.')
+param databaseMode string = 'Existing'
+
+@description('Npgsql connection string for your existing PostgreSQL (Existing mode). Ignored when databaseMode=Managed.')
 @secure()
-param databaseConnectionString string
+param databaseConnectionString string = ''
+
+@description('Admin password for the provisioned PostgreSQL (Managed mode). 8-128 chars; at least 3 of lower/upper/digit/symbol.')
+@secure()
+param postgresAdminPassword string = ''
+
+@allowed([
+  'Standard_B1ms'
+  'Standard_B2s'
+  'Standard_D2ds_v5'
+  'Standard_D4ds_v5'
+])
+@description('Compute size for the provisioned PostgreSQL (Managed mode).')
+param postgresSkuName string = 'Standard_B1ms'
 
 // --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. ---
 @description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
@@ -60,6 +110,29 @@ param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
 
+// Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
+// the deterministic private-DNS FQDN (no resource reference, so it stays valid when Managed
+// is off). The private DNS zone is named to match, so the VM resolves it inside the VNet.
+var pgServerName = '${vmName}-pg'
+var pgAdminUser = 'brochadmin'
+var pgDatabaseName = 'brochdb'
+// The private DNS zone is named independently of the server. A VNet-integrated Flex Server
+// registers an A record for <serverName> INSIDE the zone, so the resolvable FQDN is
+// <serverName>.<zone> — the connection Host must include the server label.
+var pgDnsZone = '${vmName}-db.private.postgres.database.azure.com'
+var pgHost = '${pgServerName}.${pgDnsZone}'
+var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
+var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
+
+// --- TLS config selection ---
+// Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
+// Byo mode: the canonical BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from
+// /etc/caddy/certs; tls.caddy is unused. Both Caddyfiles come from broch-deploy (single source).
+var azureTlsCaddy = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
+var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : (dnsProvider == 'AzureDns' ? azureTlsCaddy : loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))
+var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile')
+var azureSubscriptionId = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? subscription().subscriptionId : ''
+
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
 // base64 (no underscores), so they never collide with a __TOKEN__ placeholder.
@@ -68,7 +141,10 @@ var cloudInitTokens = [
   // docker-compose/with-postgres-external template — single source of truth, so the
   // VM runs the same bytes as a docker-direct customer and the two cannot drift.
   ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
-  ['__CADDYFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddyfile'))]
+  ['__CADDYFILE_B64__', base64(caddyfileContent)]
+  ['__TLS_CADDY_B64__', base64(tlsCaddyContent)]
+  ['__TLS_CERT_B64__', tlsCertificate]
+  ['__TLS_KEY_B64__', tlsCertificateKey]
   ['__CADDY_DOCKERFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddy.Dockerfile'))]
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
@@ -77,7 +153,9 @@ var cloudInitTokens = [
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
-  ['__DATABASE_CONNECTION_STRING__', databaseConnectionString]
+  ['__AZURE_SUBSCRIPTION_ID__', azureSubscriptionId]
+  ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
+  ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
   ['__AUTH_CLIENT_SECRET__', authClientSecret]
@@ -159,6 +237,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
           networkSecurityGroup: { id: nsg.id }
         }
       }
+      {
+        // Delegated to PostgreSQL Flexible Server for VNet injection (Managed DB mode).
+        // Unused in Existing mode. The VM (default subnet) reaches the DB intra-VNet.
+        name: 'postgres'
+        properties: {
+          addressPrefix: '10.0.1.0/24'
+          delegations: [
+            {
+              name: 'pgflex'
+              properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -187,9 +279,60 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
   }
 }
 
+// --- Managed database (databaseMode=Managed only): a PRIVATE Azure PostgreSQL Flexible
+// Server, VNet-injected into the delegated subnet with a private DNS zone — NO public
+// endpoint; only the VM (same VNet) can reach it. broch connects over SSL as the server
+// admin to a provisioned 'brochdb' — the "external Postgres" the compose expects. ---
+resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (databaseMode == 'Managed') {
+  name: pgDnsZone
+  location: 'global'
+}
+
+resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (databaseMode == 'Managed') {
+  parent: postgresDnsZone
+  name: '${vmName}-pg-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = if (databaseMode == 'Managed') {
+  name: pgServerName
+  location: location
+  sku: {
+    name: postgresSkuName
+    tier: startsWith(postgresSkuName, 'Standard_B') ? 'Burstable' : 'GeneralPurpose'
+  }
+  properties: {
+    version: '16'
+    administratorLogin: pgAdminUser
+    administratorLoginPassword: postgresAdminPassword
+    storage: { storageSizeGB: 32 }
+    backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
+    highAvailability: { mode: 'Disabled' }
+    // Private access: injected into the delegated subnet + resolvable via the private DNS
+    // zone. No public endpoint (publicNetworkAccess can't be Enabled with a delegated subnet).
+    network: {
+      delegatedSubnetResourceId: vnet.properties.subnets[1].id
+      privateDnsZoneArmResourceId: postgresDnsZone.id
+    }
+  }
+  dependsOn: [ postgresDnsLink ]
+}
+
+resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = if (databaseMode == 'Managed') {
+  parent: postgres
+  name: pgDatabaseName
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
+  // Azure-DNS auth uses the VM's managed identity (no secret to store); other TLS modes
+  // need no identity. Grant this identity "DNS Zone Contributor" on the zone post-deploy.
+  identity: (certMode == 'Auto' && dnsProvider == 'AzureDns') ? { type: 'SystemAssigned' } : null
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
@@ -222,8 +365,14 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
   }
+  // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
+  // the server + database (and, via the chain, the private DNS link) to exist first.
+  dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
 }
 
 output publicIpAddress string = publicIp.properties.ipAddress
 output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
+output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
+output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
+output dnsRoleGrantHint string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? 'Grant the VM managed identity (managedIdentityPrincipalId) the "DNS Zone Contributor" role on your Azure DNS zone so Caddy can complete the DNS-01 challenge.' : '(not using Azure DNS)'

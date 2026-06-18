@@ -63,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: Caddy.Dockerfile
-    image: broch-deploy/caddy:dns-cloudflare
+    image: broch-deploy/caddy:dns
     restart: unless-stopped
     depends_on:
       broch:
@@ -71,13 +71,21 @@ services:
     environment:
       BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
       CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # DNS-01 credentials — set whichever your tls.caddy provider needs (the rest stay
+      # empty). Azure DNS uses the VM's managed identity, so it needs no secret here.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      AZURE_SUBSCRIPTION_ID: ${AZURE_SUBSCRIPTION_ID:-}
+      AZURE_DNS_RESOURCE_GROUP: ${AZURE_DNS_RESOURCE_GROUP:-}
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"   # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tls.caddy:/etc/caddy/tls.caddy:ro
+      # BYO-cert deployments place their wildcard cert+key here and use a Caddyfile that
+      # references them (auto-TLS deployments leave this empty).
+      - ./certs:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
 

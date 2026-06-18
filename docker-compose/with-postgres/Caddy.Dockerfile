@@ -1,23 +1,22 @@
-# Caddy with the Cloudflare DNS provider module compiled in.
+# Caddy with the major DNS-provider modules compiled in (for ACME DNS-01).
 #
-# The stock caddy:2 image only ships with the HTTP-01 ACME challenge, which
-# can't issue wildcard certs. Broch needs wildcard TLS for tunnel subdomains,
-# so we use DNS-01 — which means baking the DNS provider module into the
-# Caddy binary via xcaddy.
+# The stock caddy:2 image only ships the HTTP-01 challenge, which can't issue
+# wildcard certs. Broch needs wildcard TLS for tunnel subdomains, so we use
+# DNS-01 — which means baking the DNS-provider modules into the binary via
+# xcaddy. The ACTIVE provider is selected at runtime in tls.caddy, so one image
+# serves any of these without a rebuild.
 #
-# To use a different DNS provider, replace `caddy-dns/cloudflare` with the
-# module for your provider:
-#   - github.com/caddy-dns/route53      (AWS)
-#   - github.com/caddy-dns/googleclouddns
-#   - github.com/caddy-dns/gandi
-#   - github.com/caddy-dns/digitalocean
-#   - github.com/caddy-dns/hetzner
-# Full list: https://github.com/orgs/caddy-dns/repositories
+# Need a provider not listed here? Add it from
+# https://github.com/orgs/caddy-dns/repositories and rebuild.
 
 FROM caddy:2-builder AS builder
 
 RUN xcaddy build \
-    --with github.com/caddy-dns/cloudflare
+    --with github.com/caddy-dns/cloudflare \
+    --with github.com/caddy-dns/azure \
+    --with github.com/caddy-dns/route53 \
+    --with github.com/caddy-dns/googleclouddns \
+    --with github.com/caddy-dns/digitalocean
 
 FROM caddy:2
 

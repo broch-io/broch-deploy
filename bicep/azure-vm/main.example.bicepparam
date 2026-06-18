@@ -10,14 +10,29 @@ param adminSshPublicKey = 'ssh-ed25519 AAAA...replace-with-your-public-key... yo
 // Console). Uncomment + set a CIDR ONLY for break-glass SSH from your admin network:
 // param sshAllowedCidr = '203.0.113.0/24'
 
-// --- Existing database + master key (paired — see README's cutover warning) ---
-param brochMasterKey = '<existing-master-key>' // prefer --parameters over committing
-param databaseConnectionString = 'Host=broch-postgres.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;Ssl Mode=Require' // prefer --parameters
+param brochMasterKey = '<master-key>' // openssl rand -base64 48; prefer --parameters; reuse the DB's existing key if taking one over
+
+// --- Database: Existing (bring your own) or Managed (provision a private Flex Server) ---
+param databaseMode = 'Existing'
+// Existing:
+param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;SSL Mode=Require' // prefer --parameters
+// Managed (set databaseMode = 'Managed' above, then):
+// param postgresAdminPassword = '<strong-password>'  // prefer --parameters
+// param postgresSkuName       = 'Standard_B1ms'      // B1ms | B2s | D2ds_v5 | D4ds_v5
 
 // --- Domain + TLS (bring your own domain) ---
 param wildcardHostname = 'tunnels.example.com'
+param certMode = 'Auto' // Auto (Let's Encrypt) | Byo (your own cert)
 param acmeEmail = 'ops@example.com'
-param cloudflareApiToken = '<cloudflare-zone-dns-token>' // Zone:Read + DNS:Edit; prefer --parameters over committing
+// Auto + Cloudflare:
+param dnsProvider = 'Cloudflare'
+param cloudflareApiToken = '<cloudflare-zone-dns-token>' // Zone:Read + DNS:Edit; prefer --parameters
+// Auto + Azure DNS (no secret — grant the VM identity "DNS Zone Contributor" post-deploy):
+// param dnsProvider          = 'AzureDns'
+// param dnsZoneResourceGroup = '<dns-zone-resource-group>'
+// Byo cert (set certMode = 'Byo'):
+// param tlsCertificate    = '<base64 PEM fullchain>'   // prefer --parameters
+// param tlsCertificateKey = '<base64 PEM private key>' // prefer --parameters
 
 // --- Identity provider (boot floor — set what your provider needs) ---
 param authProvider = 'Auth0'
