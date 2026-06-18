@@ -186,7 +186,6 @@ var cloudInitTokens = [
   ['__TLS_CADDY_B64__', base64(tlsCaddyContent)]
   ['__TLS_CERT_B64__', tlsCertificate]
   ['__TLS_KEY_B64__', tlsCertificateKey]
-  ['__CADDY_DOCKERFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddy.Dockerfile'))]
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
   ['__BROCH_VERSION__', brochVersion]
