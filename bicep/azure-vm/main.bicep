@@ -26,12 +26,39 @@ param adminSshPublicKey string
 @description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
 param wildcardHostname string
 
-@description('Email Let\'s Encrypt notifies about cert-renewal failures.')
-param acmeEmail string
+// --- TLS. Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a
+// dnsProvider). Byo = you supply the wildcard cert + key, no ACME. ---
+@allowed([
+  'Auto'
+  'Byo'
+])
+@description('Auto: Caddy auto-issues the wildcard via ACME DNS-01 (set dnsProvider). Byo: supply your own wildcard cert + key.')
+param certMode string = 'Auto'
 
-@description('Cloudflare API token (Zone:Read + DNS:Edit) for the zone hosting wildcardHostname. Used by Caddy for ACME DNS-01.')
+@allowed([
+  'Cloudflare'
+  'AzureDns'
+])
+@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity (no secret) — grant it DNS Zone Contributor on the zone after deploy.')
+param dnsProvider string = 'Cloudflare'
+
+@description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
+param acmeEmail string = ''
+
+@description('Cloudflare API token (Zone:Read + DNS:Edit) — certMode=Auto + dnsProvider=Cloudflare.')
 @secure()
-param cloudflareApiToken string
+param cloudflareApiToken string = ''
+
+@description('Resource group of the Azure DNS zone — certMode=Auto + dnsProvider=AzureDns (zone in this deployment\'s subscription).')
+param dnsZoneResourceGroup string = ''
+
+@description('Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — certMode=Byo.')
+@secure()
+param tlsCertificate string = ''
+
+@description('Base64-encoded PEM private key for the wildcard cert — certMode=Byo.')
+@secure()
+param tlsCertificateKey string = ''
 
 @description('Broch server image tag. Pin in production.')
 param brochVersion string = 'latest'
@@ -93,6 +120,15 @@ var pgPrivateZone = '${pgServerName}.private.postgres.database.azure.com'
 var managedConnectionString = 'Host=${pgPrivateZone};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
+// --- TLS config selection ---
+// Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
+// Byo mode: the canonical BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from
+// /etc/caddy/certs; tls.caddy is unused. Both Caddyfiles come from broch-deploy (single source).
+var azureTlsCaddy = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
+var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : (dnsProvider == 'AzureDns' ? azureTlsCaddy : loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))
+var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile')
+var azureSubscriptionId = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? subscription().subscriptionId : ''
+
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
 // base64 (no underscores), so they never collide with a __TOKEN__ placeholder.
@@ -101,8 +137,10 @@ var cloudInitTokens = [
   // docker-compose/with-postgres-external template — single source of truth, so the
   // VM runs the same bytes as a docker-direct customer and the two cannot drift.
   ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
-  ['__CADDYFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddyfile'))]
-  ['__TLS_CADDY_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))]
+  ['__CADDYFILE_B64__', base64(caddyfileContent)]
+  ['__TLS_CADDY_B64__', base64(tlsCaddyContent)]
+  ['__TLS_CERT_B64__', tlsCertificate]
+  ['__TLS_KEY_B64__', tlsCertificateKey]
   ['__CADDY_DOCKERFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddy.Dockerfile'))]
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
@@ -111,6 +149,8 @@ var cloudInitTokens = [
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
+  ['__AZURE_SUBSCRIPTION_ID__', azureSubscriptionId]
+  ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
   ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
@@ -286,6 +326,9 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
+  // Azure-DNS auth uses the VM's managed identity (no secret to store); other TLS modes
+  // need no identity. Grant this identity "DNS Zone Contributor" on the zone post-deploy.
+  identity: (certMode == 'Auto' && dnsProvider == 'AzureDns') ? { type: 'SystemAssigned' } : null
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
@@ -326,4 +369,6 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
 output publicIpAddress string = publicIp.properties.ipAddress
 output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
-output databaseHost string = databaseMode == 'Managed' ? '${pgServerName}.postgres.database.azure.com' : 'external (you supplied the connection string)'
+output databaseHost string = databaseMode == 'Managed' ? pgPrivateZone : 'external (you supplied the connection string)'
+output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
+output dnsRoleGrantHint string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? 'Grant the VM managed identity (managedIdentityPrincipalId) the "DNS Zone Contributor" role on your Azure DNS zone so Caddy can complete the DNS-01 challenge.' : '(not using Azure DNS)'
