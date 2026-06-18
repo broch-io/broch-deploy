@@ -1,0 +1,22 @@
+# TLS issuance config, imported by each site block in the Caddyfile.
+#
+# Default: ACME DNS-01 via Cloudflare. The provider modules are all compiled into
+# the image (see Caddy.Dockerfile), so switching providers is just editing this
+# file — no rebuild. Examples:
+#
+#   Azure DNS (managed identity — no secret; grant the VM "DNS Zone Contributor"):
+#     tls {
+#       dns azure {
+#         subscription_id {env.AZURE_SUBSCRIPTION_ID}
+#         resource_group_name {env.AZURE_DNS_RESOURCE_GROUP}
+#       }
+#     }
+#
+#   AWS Route 53:
+#     tls { dns route53 { access_key_id {env.AWS_ACCESS_KEY_ID} secret_access_key {env.AWS_SECRET_ACCESS_KEY} } }
+#
+#   DigitalOcean:
+#     tls { dns digitalocean {env.DO_AUTH_TOKEN} }
+tls {
+	dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}

@@ -37,6 +37,13 @@ write_files:
     encoding: b64
     content: __CADDYFILE_B64__
 
+  # TLS issuance config the Caddyfile imports. Default is the canonical Cloudflare
+  # DNS-01 fragment; the DNS-provider choice substitutes a different one here.
+  - path: /opt/broch/tls.caddy
+    permissions: "0644"
+    encoding: b64
+    content: __TLS_CADDY_B64__
+
   - path: /opt/broch/Caddy.Dockerfile
     permissions: "0644"
     encoding: b64

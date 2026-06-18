@@ -83,12 +83,14 @@ param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
 
-// Managed mode provisions the Flex Server below; its connection string is built from the
-// deterministic FQDN (no resource reference, so this stays valid even when Managed is off).
+// Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
+// the deterministic private-DNS FQDN (no resource reference, so it stays valid when Managed
+// is off). The private DNS zone is named to match, so the VM resolves it inside the VNet.
 var pgServerName = '${vmName}-pg'
 var pgAdminUser = 'brochadmin'
 var pgDatabaseName = 'brochdb'
-var managedConnectionString = 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
+var pgPrivateZone = '${pgServerName}.private.postgres.database.azure.com'
+var managedConnectionString = 'Host=${pgPrivateZone};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
@@ -100,6 +102,7 @@ var cloudInitTokens = [
   // VM runs the same bytes as a docker-direct customer and the two cannot drift.
   ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
   ['__CADDYFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddyfile'))]
+  ['__TLS_CADDY_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))]
   ['__CADDY_DOCKERFILE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/Caddy.Dockerfile'))]
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
@@ -190,6 +193,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
           networkSecurityGroup: { id: nsg.id }
         }
       }
+      {
+        // Delegated to PostgreSQL Flexible Server for VNet injection (Managed DB mode).
+        // Unused in Existing mode. The VM (default subnet) reaches the DB intra-VNet.
+        name: 'postgres'
+        properties: {
+          addressPrefix: '10.0.1.0/24'
+          delegations: [
+            {
+              name: 'pgflex'
+              properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -218,9 +235,25 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
   }
 }
 
-// --- Managed database (databaseMode=Managed only): a PostgreSQL Flexible Server, a
-// 'brochdb' database, and a firewall rule for the VM's public egress IP. broch connects to
-// it over SSL as the server admin — the same "external Postgres" the compose expects. ---
+// --- Managed database (databaseMode=Managed only): a PRIVATE Azure PostgreSQL Flexible
+// Server, VNet-injected into the delegated subnet with a private DNS zone — NO public
+// endpoint; only the VM (same VNet) can reach it. broch connects over SSL as the server
+// admin to a provisioned 'brochdb' — the "external Postgres" the compose expects. ---
+resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (databaseMode == 'Managed') {
+  name: pgPrivateZone
+  location: 'global'
+}
+
+resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (databaseMode == 'Managed') {
+  parent: postgresDnsZone
+  name: '${vmName}-pg-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = if (databaseMode == 'Managed') {
   name: pgServerName
   location: location
@@ -235,22 +268,19 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
     storage: { storageSizeGB: 32 }
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
     highAvailability: { mode: 'Disabled' }
-    network: { publicNetworkAccess: 'Enabled' }
+    // Private access: injected into the delegated subnet + resolvable via the private DNS
+    // zone. No public endpoint (publicNetworkAccess can't be Enabled with a delegated subnet).
+    network: {
+      delegatedSubnetResourceId: vnet.properties.subnets[1].id
+      privateDnsZoneArmResourceId: postgresDnsZone.id
+    }
   }
+  dependsOn: [ postgresDnsLink ]
 }
 
 resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = if (databaseMode == 'Managed') {
   parent: postgres
   name: pgDatabaseName
-}
-
-resource postgresFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = if (databaseMode == 'Managed') {
-  parent: postgres
-  name: 'allow-broch-vm-egress'
-  properties: {
-    startIpAddress: publicIp.properties.ipAddress
-    endIpAddress: publicIp.properties.ipAddress
-  }
 }
 
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
@@ -290,7 +320,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   }
   // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
   // the server + database + firewall rule to exist before the VM starts.
-  dependsOn: databaseMode == 'Managed' ? [postgresDatabase, postgresFirewall] : []
+  dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
 }
 
 output publicIpAddress string = publicIp.properties.ipAddress
