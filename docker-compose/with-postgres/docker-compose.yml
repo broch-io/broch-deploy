@@ -46,7 +46,7 @@ services:
       # Central (license/management) server. Defaults to the public Broch central server.
       CENTRALSERVER__APIURL: ${CENTRALSERVER__APIURL:-https://api.broch.io}
       DATABASE__PROVIDER: PostgreSQL
-      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+      CONNECTIONSTRINGS__BROCHCONNECTION: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
       # Observability (all optional). SEED values mirrored into the DB on first boot (so they
       # survive a re-provision). Logging (Datadog) is supported AND configurable in-app (Admin ->
       # Settings overrides it on the next restart). Telemetry (Application Insights) is

@@ -99,7 +99,7 @@ jobs:
       - name: Provision external Postgres (external)
         if: matrix.variant == 'with-postgres-external'
         run: |
-          sed -i "s|^BROCH_DB_CONNECTION_STRING=.*|BROCH_DB_CONNECTION_STRING=Host=pg-external;Port=5432;Database=brochdb;Username=broch;Password=boot-test-pg-password;SSL Mode=Disable|" .env
+          sed -i "s|^CONNECTIONSTRINGS__BROCHCONNECTION=.*|CONNECTIONSTRINGS__BROCHCONNECTION=Host=pg-external;Port=5432;Database=brochdb;Username=broch;Password=boot-test-pg-password;SSL Mode=Disable|" .env
           docker run -d --name pg-external \
             -e POSTGRES_DB=brochdb \
             -e POSTGRES_USER=broch \

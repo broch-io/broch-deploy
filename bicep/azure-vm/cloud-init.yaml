@@ -63,12 +63,11 @@ write_files:
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
-      # The compose maps BROCH_WILDCARD_HOSTNAME to BOTH Caddy's TLS host and
-      # broch's API__WILDCARDHOSTNAME — one knob, they cannot diverge. Likewise
-      # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__DefaultConnection. Keep using
-      # these friendly names; the compose fans them out to the raw API__/ConnectionStrings__
-      # keys. Observability (telemetry/logging/OTEL) is OPTIONAL: leave the values empty to
-      # configure it in-app (Admin UI) instead, or set them to ship telemetry from first boot.
+      # BROCH_WILDCARD_HOSTNAME is the one knob fanned out to BOTH Caddy's TLS host and broch's
+      # API__WILDCARDHOSTNAME (they cannot diverge). Every other broch setting below uses the
+      # server's own config key directly — CONNECTIONSTRINGS__BROCHCONNECTION, AUTHENTICATION__*,
+      # CENTRALSERVER__APIURL, BROCHLOGGING__* — the same names the dev environment uses.
+      # Observability is OPTIONAL (see the note above those keys below).
       BROCH_VERSION=__BROCH_VERSION__
       BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
@@ -76,7 +75,7 @@ write_files:
       CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
       AZURE_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
       AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
-      BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
+      CONNECTIONSTRINGS__BROCHCONNECTION=__DATABASE_CONNECTION_STRING__
       CENTRALSERVER__APIURL=__CENTRAL_SERVER_URL__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__

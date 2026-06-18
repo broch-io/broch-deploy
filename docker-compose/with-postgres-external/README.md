@@ -45,7 +45,7 @@ Same as [`../with-postgres/`](../with-postgres/), plus:
 # 1. Copy + fill the env template
 cp .env.example .env
 $EDITOR .env   # Set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*,
-               # CADDY_ACME_EMAIL, CLOUDFLARE_API_TOKEN, and BROCH_DB_CONNECTION_STRING.
+               # CADDY_ACME_EMAIL, CLOUDFLARE_API_TOKEN, and CONNECTIONSTRINGS__BROCHCONNECTION.
 
 # 2. Start
 docker compose up -d --build

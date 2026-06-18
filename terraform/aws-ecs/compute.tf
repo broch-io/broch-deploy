@@ -222,7 +222,7 @@ resource "aws_ecs_task_definition" "broch" {
         valueFrom = aws_secretsmanager_secret.master_key.arn
       },
       {
-        name      = "ConnectionStrings__DefaultConnection"
+        name      = "CONNECTIONSTRINGS__BROCHCONNECTION"
         valueFrom = aws_secretsmanager_secret.connection_string.arn
       },
       {

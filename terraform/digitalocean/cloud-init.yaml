@@ -28,7 +28,7 @@ write_files:
             - ASPNETCORE_ENVIRONMENT=Production
             - ASPNETCORE_URLS=http://+:8080
             - DATABASE__PROVIDER=PostgreSQL
-            - ConnectionStrings__DefaultConnection=Host=postgres;Database=brochdb;Username=broch;Password=${postgres_password}
+            - CONNECTIONSTRINGS__BROCHCONNECTION=Host=postgres;Database=brochdb;Username=broch;Password=${postgres_password}
           depends_on:
             postgres:
               condition: service_healthy

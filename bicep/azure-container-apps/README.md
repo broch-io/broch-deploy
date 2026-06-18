@@ -98,7 +98,7 @@ Re-run the deploy once DNS has propagated and the cert/binding will complete.
 This template keeps secrets **inline in the Container App configuration** (the `secrets` block), referenced from env via `secretRef` — there's no Key Vault. The values are written once at deploy time from your parameters:
 
 - `master-key` → `BROCH_MASTER_KEY`
-- `db-connection` → `ConnectionStrings__DefaultConnection`
+- `db-connection` → `CONNECTIONSTRINGS__BROCHCONNECTION`
 - `postgres-password` → the sidecar's `POSTGRES_PASSWORD` (Embedded mode)
 - `auth-client-secret` → `AUTHENTICATION__CLIENTSECRET`
 

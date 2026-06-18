@@ -144,7 +144,7 @@ Leave the logging parameters empty to configure logging entirely in-app.
 cloud-init writes `/opt/broch/.env` (mode `0600`) from your parameters; the compose reads it. There is no Key Vault — the values are injected once at deploy time:
 
 - `BROCH_MASTER_KEY` → broch's at-rest encryption root
-- `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__DefaultConnection` (mapped in compose)
+- `CONNECTIONSTRINGS__BROCHCONNECTION` → the broch server's database connection (binds `ConnectionStrings:BrochConnection`)
 - `AUTHENTICATION__CLIENTSECRET` → the IdP client secret
 - `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential
 - `BROCHLOGGING__DATADOG__APIKEY` / `BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING` → optional observability secrets, only when seeded at deploy
