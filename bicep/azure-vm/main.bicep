@@ -116,8 +116,12 @@ param authAudience string = ''
 var pgServerName = '${vmName}-pg'
 var pgAdminUser = 'brochadmin'
 var pgDatabaseName = 'brochdb'
-var pgPrivateZone = '${pgServerName}.private.postgres.database.azure.com'
-var managedConnectionString = 'Host=${pgPrivateZone};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
+// The private DNS zone is named independently of the server. A VNet-integrated Flex Server
+// registers an A record for <serverName> INSIDE the zone, so the resolvable FQDN is
+// <serverName>.<zone> — the connection Host must include the server label.
+var pgDnsZone = '${vmName}-db.private.postgres.database.azure.com'
+var pgHost = '${pgServerName}.${pgDnsZone}'
+var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
 // --- TLS config selection ---
@@ -280,7 +284,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
 // endpoint; only the VM (same VNet) can reach it. broch connects over SSL as the server
 // admin to a provisioned 'brochdb' — the "external Postgres" the compose expects. ---
 resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (databaseMode == 'Managed') {
-  name: pgPrivateZone
+  name: pgDnsZone
   location: 'global'
 }
 
@@ -362,13 +366,13 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
   }
   // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
-  // the server + database + firewall rule to exist before the VM starts.
+  // the server + database (and, via the chain, the private DNS link) to exist first.
   dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
 }
 
 output publicIpAddress string = publicIp.properties.ipAddress
 output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
-output databaseHost string = databaseMode == 'Managed' ? pgPrivateZone : 'external (you supplied the connection string)'
+output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
 output dnsRoleGrantHint string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? 'Grant the VM managed identity (managedIdentityPrincipalId) the "DNS Zone Contributor" role on your Azure DNS zone so Caddy can complete the DNS-01 challenge.' : '(not using Azure DNS)'
