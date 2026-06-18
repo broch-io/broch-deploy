@@ -42,9 +42,25 @@ param authAdminRoles = 'broch_admin'
 param authDomain = 'your-tenant.auth0.com'
 // AzureAd/Entra: set authTenantId + authInstance instead of authDomain.
 // Generic OIDC: set authAuthority.
+// param authScopes = ''   // extra OAuth scopes, only if your IdP requires them
 
-// Telemetry, logging, and the license are configured IN-APP (Admin UI) after first
-// sign-in — not here. The central server URL defaults to https://api.broch.io in code.
+// --- Observability (all optional) ---
+// SEED values only: the server copies them into its database on first boot, after which the
+// in-app Admin -> Settings UI is AUTHORITATIVE and overrides them (and the values persist
+// across a re-provision, since they live in the DB). Leave empty to configure in-app instead.
+// Logging (Datadog) is supported:
+// param loggingProvider       = 'DataDog'
+// param datadogApiKey         = '<datadog-api-key>'   // prefer --parameters
+// param datadogApplicationKey = '<datadog-app-key>'   // prefer --parameters
+// param datadogServiceName    = 'broch'
+// param datadogEnvironment    = 'production'
+// param datadogSite           = 'us5.datadoghq.com'
+// param otelServiceName       = 'broch'
+// Telemetry (Application Insights) is EXPERIMENTAL / WIP — not yet fully supported:
+// param telemetryProvider                   = 'ApplicationInsights'
+// param applicationInsightsConnectionString = '<app-insights-connection-string>'  // prefer --parameters
+// The license is activated IN-APP (Admin UI) after first sign-in.
+// param centralServerUrl = 'https://api.broch.io'   // override only for a self-hosted central
 
 // --- Optional ---
 // param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region

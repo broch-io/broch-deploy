@@ -109,6 +109,51 @@ param authTenantId string = ''
 param authInstance string = ''
 param authAuthority string = ''
 param authAudience string = ''
+@description('Space- or comma-separated OAuth scopes the IdP must grant (provider-dependent; usually leave empty).')
+param authScopes string = ''
+
+// --- Observability (ALL OPTIONAL) ---------------------------------------------------------
+// These are deploy-time SEED values. On first boot the server mirrors them into its database
+// (the InstanceConfigs row); from then on the in-app Admin → Settings UI is AUTHORITATIVE and
+// OVERRIDES anything set here (non-null DB columns win — see the server's
+// InstanceConfigConfigurationOverlay). Two consequences worth knowing:
+//   • Because the live config lives in the DB, it SURVIVES a VM re-provision (the database and
+//     master key are preserved), so you don't need to re-supply these to keep observability.
+//   • Set them only to bootstrap a fresh deploy; otherwise leave empty and configure in-app.
+// Logging (Datadog) is supported. Telemetry (Application Insights) is EXPERIMENTAL / WIP and
+// not yet fully supported — prefer leaving the telemetry params empty.
+@description('Central (license/management) server URL. Defaults to the public Broch central server; override only for a self-hosted central.')
+param centralServerUrl string = 'https://api.broch.io'
+
+@description('EXPERIMENTAL / WIP — App Insights telemetry is not yet fully supported. Seed value (in-app Settings overrides). e.g. ApplicationInsights, or leave empty.')
+param telemetryProvider string = ''
+
+@description('EXPERIMENTAL / WIP — Application Insights connection string (telemetryProvider=ApplicationInsights). Seed only; in-app Settings overrides.')
+@secure()
+param applicationInsightsConnectionString string = ''
+
+@description('Logging provider, e.g. DataDog. Seed value — the in-app Settings UI overrides it. Empty = configure logging in-app.')
+param loggingProvider string = ''
+
+@description('Datadog API key (loggingProvider=DataDog). Seed value; in-app Settings overrides. Stored encrypted in the DB at rest.')
+@secure()
+param datadogApiKey string = ''
+
+@description('Datadog application key (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
+@secure()
+param datadogApplicationKey string = ''
+
+@description('Datadog service name tag (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
+param datadogServiceName string = ''
+
+@description('Datadog environment tag, e.g. production (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
+param datadogEnvironment string = ''
+
+@description('Datadog intake site, e.g. us5.datadoghq.com (loggingProvider=DataDog). Seed value; in-app Settings overrides.')
+param datadogSite string = ''
+
+@description('OpenTelemetry service.name reported by the broch server. Empty leaves the server default.')
+param otelServiceName string = ''
 
 // Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
 // the deterministic private-DNS FQDN (no resource reference, so it stays valid when Managed
@@ -165,6 +210,19 @@ var cloudInitTokens = [
   ['__AUTH_INSTANCE__', authInstance]
   ['__AUTH_AUTHORITY__', authAuthority]
   ['__AUTH_AUDIENCE__', authAudience]
+  ['__AUTH_SCOPES__', authScopes]
+  // Observability — friendly .env names; the compose maps them to the broch server's
+  // BROCHTELEMETRY__/BROCHLOGGING__/OTEL keys. Empty values leave the feature off.
+  ['__CENTRAL_SERVER_URL__', centralServerUrl]
+  ['__TELEMETRY_PROVIDER__', telemetryProvider]
+  ['__APPLICATION_INSIGHTS_CONNECTION_STRING__', applicationInsightsConnectionString]
+  ['__LOGGING_PROVIDER__', loggingProvider]
+  ['__DATADOG_API_KEY__', datadogApiKey]
+  ['__DATADOG_APPLICATION_KEY__', datadogApplicationKey]
+  ['__DATADOG_SERVICE_NAME__', datadogServiceName]
+  ['__DATADOG_ENVIRONMENT__', datadogEnvironment]
+  ['__DATADOG_SITE__', datadogSite]
+  ['__OTEL_SERVICE_NAME__', otelServiceName]
 ]
 var cloudInit = reduce(
   cloudInitTokens,

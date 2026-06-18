@@ -36,11 +36,27 @@ services:
       AUTHENTICATION__INSTANCE: ${AUTHENTICATION__INSTANCE:-}
       AUTHENTICATION__AUTHORITY: ${AUTHENTICATION__AUTHORITY:-}
       AUTHENTICATION__AUDIENCE: ${AUTHENTICATION__AUDIENCE:-}
+      AUTHENTICATION__SCOPES: ${AUTHENTICATION__SCOPES:-}
+      # Central (license/management) server. Defaults to the public Broch central server.
+      CentralServer__ApiUrl: ${CentralServer__ApiUrl:-https://api.broch.io}
       DATABASE__PROVIDER: PostgreSQL
       # Connection string points at your external DB. SSL Mode=Require is
       # standard for managed services; relax to Prefer or Disable if your
       # provider doesn't support TLS to the server.
       ConnectionStrings__DefaultConnection: ${BROCH_DB_CONNECTION_STRING}
+      # Observability (all optional). SEED values only: the server mirrors them into its DB on
+      # first boot, after which the in-app Admin -> Settings UI overrides them (and persists them
+      # across re-provisions). Logging (Datadog) is supported; telemetry (Application Insights) is
+      # EXPERIMENTAL / WIP. Leave empty to configure observability in-app.
+      BROCHTELEMETRY__PROVIDER: ${BROCHTELEMETRY__PROVIDER:-}
+      BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING: ${BROCHTELEMETRY__APPLICATIONINSIGHTSCONNECTIONSTRING:-}
+      BROCHLOGGING__PROVIDER: ${BROCHLOGGING__PROVIDER:-}
+      BROCHLOGGING__DATADOG__APIKEY: ${BROCHLOGGING__DATADOG__APIKEY:-}
+      BROCHLOGGING__DATADOG__APPLICATIONKEY: ${BROCHLOGGING__DATADOG__APPLICATIONKEY:-}
+      BROCHLOGGING__DATADOG__SERVICENAME: ${BROCHLOGGING__DATADOG__SERVICENAME:-}
+      BROCHLOGGING__DATADOG__ENVIRONMENT: ${BROCHLOGGING__DATADOG__ENVIRONMENT:-}
+      BROCHLOGGING__DATADOG__SITE: ${BROCHLOGGING__DATADOG__SITE:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
     expose:
       - "8080"
     healthcheck:

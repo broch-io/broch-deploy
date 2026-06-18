@@ -36,7 +36,7 @@ internet ─ 80/443/443udp ───────▶ │ Azure VM — static publ
 - An NSG: HTTP (80) + HTTPS/HTTP-3 (443 tcp+udp) from the internet. SSH (22) is **closed by default**; set `sshAllowedCidr` to a CIDR for break-glass SSH.
 - cloud-init that drops in the canonical compose + Caddyfile + Caddy.Dockerfile, writes `.env`, injects `BROCH_MASTER_KEY` + the DB connection string, installs Docker, and starts the stack via systemd. No embedded Postgres, no data disk.
 
-Telemetry, logging, and the license are configured **in-app** (Admin → …) after first sign-in — not in the deploy.
+Observability (logging/telemetry) is normally configured **in-app** (Admin → Settings) after first sign-in, but can optionally be **seeded** at deploy — see [Observability](#observability). The license is activated in-app (Admin → License).
 
 ## Prerequisites
 
@@ -123,6 +123,17 @@ A   *.tunnels.example.com  → <public-ip>
 ```
 
 Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
+
+## Observability
+
+All optional. Broch ships logs to **Datadog** and (experimental) telemetry to **Application Insights**. Both are normally set in the in-app **Admin → Settings** UI, which is authoritative: those settings are stored in the database (secrets encrypted with your master key) and **override** any deploy-time values, so they persist across upgrades and re-provisions.
+
+You can also **seed** them at deploy via parameters (handy for an unattended bootstrap). The server mirrors them into the database on first boot; after that, in-app changes win:
+
+- **Logging — Datadog (supported):** `loggingProvider=DataDog` plus `datadogApiKey`, `datadogApplicationKey`, `datadogServiceName`, `datadogEnvironment`, `datadogSite`. `otelServiceName` sets the OpenTelemetry `service.name`.
+- **Telemetry — Application Insights (EXPERIMENTAL / WIP, not yet fully supported):** `telemetryProvider=ApplicationInsights` plus `applicationInsightsConnectionString`. Prefer leaving these empty.
+
+Leave every observability parameter empty to configure it entirely in-app.
 
 ## How secrets flow at runtime
 
