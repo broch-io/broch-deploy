@@ -2,7 +2,12 @@
 
 Broch on a single Azure VM, deployed with Bicep. **This is the same template Broch, LLC runs for its own production deployment** — what you deploy here is what we run.
 
-The VM runs the canonical [`with-postgres-external` + Caddy compose stack](../../docker-compose/with-postgres-external/) **verbatim** (cloud-init embeds it at deploy time, so the box runs the same bytes as a docker-direct deploy), against an **existing external PostgreSQL** (Azure Database for PostgreSQL Flexible Server, RDS, Neon, … — anything reachable). Caddy issues apex + wildcard TLS via Let's Encrypt DNS-01. **Bring your own domain.**
+The VM runs the canonical [`with-postgres-external` + Caddy compose stack](../../docker-compose/with-postgres-external/) **verbatim** (cloud-init embeds it at deploy time, so the box runs the same bytes as a docker-direct deploy). You choose:
+
+- **Database** — `databaseMode=Existing` (bring your own reachable PostgreSQL 14+ via a connection string) or `databaseMode=Managed` (the template provisions a **private** Azure Database for PostgreSQL Flexible Server — VNet-injected, no public endpoint).
+- **TLS** — `certMode=Auto` (Caddy issues + auto-renews the apex + wildcard via ACME DNS-01; `dnsProvider=Cloudflare` with an API token, or `AzureDns` with the VM's managed identity — **no secret**) or `certMode=Byo` (supply your own wildcard cert + key).
+
+**Bring your own domain.**
 
 For the click-to-evaluate path with no VM to manage, see the [ACA Bicep](../azure-container-apps/) instead.
 
@@ -36,12 +41,14 @@ Telemetry, logging, and the license are configured **in-app** (Admin → …) af
 ## Prerequisites
 
 - Azure CLI logged in (`az login`), Contributor on the target resource group.
-- An external **PostgreSQL 14+** reachable from the VM, plus a **least-privilege role that owns its own database** (see [Database setup](#database-setup)). Broch runs EF migrations on startup, so the role needs full DDL on that database.
-- DNS control for your wildcard hostname's parent domain, on **Cloudflare**, plus an API token (**Zone:Read + DNS:Edit**) for DNS-01. (Other providers: swap the `dns` line in the Caddyfile and the plugin in Caddy.Dockerfile.)
+- A database — **either** an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)), **or** nothing to pre-arrange and let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`).
+- For `certMode=Auto`, DNS for your wildcard hostname on a supported provider: **Cloudflare** (API token, Zone:Read + DNS:Edit) **or** **Azure DNS** (no secret — uses the VM's managed identity; you grant it *DNS Zone Contributor* on the zone after deploy). For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
 - An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<wildcardHostname>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Database setup
+
+*Only for `databaseMode=Existing`. With `databaseMode=Managed` the template provisions the private Flex Server, the `brochdb` database, and the admin role for you — skip this section.*
 
 The VM connects as a least-privilege role that owns **only its own database** — never the server admin (which would expose every database on the server). As the server admin, from a host allowed through the DB firewall:
 
@@ -90,24 +97,32 @@ az deployment group show -g broch-rg -n main \
 
 > **The master key is yours to keep.** `brochMasterKey` is the at-rest encryption root — Broch, LLC never sees it. Generate it with `openssl rand -base64 48`, store it in your own secret store, and supply the same value on every redeploy. Rotating it invalidates anything DataProtection-wrapped in the database (refresh tokens, persisted license, usage blob). Taking over an existing Broch database? Reuse **its** master key.
 
-## Custom domain + wildcard TLS
+## TLS — certificate & DNS
 
-Broch issues tunnels on `*.<wildcardHostname>`, so Caddy mints **both** the apex and the wildcard via ACME DNS-01 (the only ACME challenge that can issue wildcards). DNS-01 issues the certs against Cloudflare's API *before* any DNS points at the VM, so you can validate first and cut DNS over last:
+Broch serves tunnels on `*.<wildcardHostname>`, so it needs a **wildcard** cert covering the apex + `*.`. `certMode` / `dnsProvider` decide how Caddy gets it:
+
+**`certMode=Auto` — Let's Encrypt, auto-renewing.** Caddy issues + renews the apex + wildcard via ACME DNS-01 (the only ACME challenge that issues wildcards), minting the cert against the DNS provider's API *before* any DNS points at the VM — so you validate first, cut DNS over last.
+
+- `dnsProvider=Cloudflare` — set `cloudflareApiToken` (Zone:Read + DNS:Edit).
+- `dnsProvider=AzureDns` — **no secret.** Set `dnsZoneResourceGroup`; the VM gets a system-assigned managed identity. After deploy, grant that identity (its `managedIdentityPrincipalId` is a deployment output) the **DNS Zone Contributor** role on your Azure DNS zone — Caddy can't issue the cert until then.
+
+**`certMode=Byo` — your own cert.** Supply `tlsCertificate` + `tlsCertificateKey` (base64 PEM covering apex + wildcard). No ACME / DNS-01 — but **renewal is yours** (replace the files, then recreate Caddy).
+
+Watch issuance:
 
 ```sh
-# Watch Caddy issue the certs (run-command, or SSH if you opened it):
 az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript \
   --scripts 'cd /opt/broch && docker compose logs --tail 50 caddy'
 ```
 
-When the certs are issued, point DNS at the public IP, **DNS-only / grey-cloud** on Cloudflare:
+Then point DNS at the public IP, **DNS-only / grey-cloud**:
 
 ```text
 A   tunnels.example.com    → <public-ip>
 A   *.tunnels.example.com  → <public-ip>
 ```
 
-Then sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
+Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
 
 ## How secrets flow at runtime
 
