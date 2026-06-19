@@ -80,14 +80,15 @@ services:
       retries: 5
 
   caddy:
-    # Built from Caddy.Dockerfile — the stock caddy:2 image lacks DNS provider
-    # modules, and broch needs DNS-01 for wildcard tunnel certs. The Dockerfile
-    # uses xcaddy to compile in the Cloudflare module by default; swap providers
-    # there if your DNS isn't on Cloudflare.
-    build:
-      context: .
-      dockerfile: Caddy.Dockerfile
-    image: broch-deploy/caddy:dns
+    # Caddy with the DNS-01 provider modules baked in — the stock caddy:2 image
+    # lacks them and broch needs DNS-01 for wildcard tunnel certs. Published by
+    # broch at the matching release version, so boot just pulls (no per-boot
+    # xcaddy build). Escape hatch for an unlisted DNS provider: comment out
+    # `image:` and uncomment the `build:` block to compile from Caddy.Dockerfile.
+    image: ghcr.io/broch-io/broch-caddy:${BROCH_VERSION:-latest}
+    # build:
+    #   context: .
+    #   dockerfile: Caddy.Dockerfile
     restart: unless-stopped
     depends_on:
       broch:
