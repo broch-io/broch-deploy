@@ -143,11 +143,20 @@ var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionStr
 // valid only in param defaults, so the entropy comes from the *Seed params above. Both are
 // also written to the customer's Key Vault below so they survive VM recreation / redeploys. ---
 var generatedMasterKey = base64('${masterKeySeed}-${masterKeySeed2}')
-var effectiveMasterKey = empty(brochMasterKey) ? generatedMasterKey : brochMasterKey
+// Generate a master key ONLY for a brand-new Managed database — it has no existing state to
+// decrypt, so a fresh key is safe. In Existing mode the database may already hold Broch data,
+// so the key MUST be supplied; empty there yields an empty key and Broch fails loudly on boot
+// rather than silently deploying a wrong key it can never decrypt with. (This is what keeps
+// the prod dogfood — Existing + a supplied key — byte-for-byte unchanged.)
+var generateMasterKey = empty(brochMasterKey) && databaseMode == 'Managed'
+var effectiveMasterKey = !empty(brochMasterKey) ? brochMasterKey : (generateMasterKey ? generatedMasterKey : '')
 // No SSH key supplied => provision a generated password (break-glass via Serial Console).
 // The 'Aa1!' prefix guarantees Azure's complexity policy (upper + lower + digit + symbol).
 var usePassword = empty(adminSshPublicKey)
 var generatedVmPassword = 'Aa1!${vmPasswordSeed}'
+// Only stand up a Key Vault when there's a generated secret to store. A deploy that supplies
+// its own master key AND an SSH key (e.g. prod) creates no Key Vault and no new resources.
+var needsKeyVault = generateMasterKey || usePassword
 
 // --- TLS config selection ---
 // Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
@@ -351,15 +360,15 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
   name: pgDatabaseName
 }
 
-// --- Customer-owned secret store. Holds the (possibly generated) Broch master key so it
-// survives VM recreation and is retrievable for redeploys, plus the generated break-glass VM
-// password. RBAC mode; this deployment writes the secrets via the control plane (the deployer's
-// Contributor on the vault). To READ them, grant yourself — or set adminObjectId — the
-// "Key Vault Secrets User" role. The master key is born here, in your subscription; Broch never
-// sees it. ---
+// --- Customer-owned secret store. Created ONLY when this deploy generates a secret (a
+// Managed-mode master key and/or a break-glass VM password) — a deploy that brings its own
+// master key and SSH key (e.g. prod) creates none of this. RBAC mode; this deployment writes
+// the secrets via the control plane (the deployer's Contributor on the vault). To READ them,
+// grant yourself — or set adminObjectId — the "Key Vault Secrets User" role. Generated secrets
+// are born here, in your subscription; Broch never sees them. ---
 var kvName = take('${vmName}-kv-${uniqueString(resourceGroup().id, vmName)}', 24)
 
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (needsKeyVault) {
   name: kvName
   location: location
   properties: {
@@ -371,7 +380,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource kvMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+resource kvMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (generateMasterKey) {
   parent: keyVault
   name: 'broch-master-key'
   properties: { value: effectiveMasterKey }
@@ -384,7 +393,7 @@ resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePa
 }
 
 // Optional: let the deployer read the secrets (Key Vault Secrets User).
-resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId)) {
+resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId) && needsKeyVault) {
   scope: keyVault
   name: guid(keyVault.id, adminObjectId, 'kv-secrets-user')
   properties: {
@@ -459,8 +468,8 @@ module dnsRoleAssignment 'dns-role.bicep' = if (certMode == 'Auto' && dnsProvide
 output publicIpAddress string = publicIp.properties.ipAddress
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
 output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
-output keyVaultName string = keyVault.name
-output masterKeySecretUri string = kvMasterKey.properties.secretUri
+output keyVaultName string = keyVault.?name ?? ''
+output masterKeySecretUri string = kvMasterKey.?properties.secretUri ?? ''
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
 output dnsRoleAssignment string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(not using Azure DNS)'
 output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${empty(sshAllowedCidr) ? 'closed' : 'limited to ${sshAllowedCidr}'}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to use it)' : 'limited to ${sshAllowedCidr}'}.'

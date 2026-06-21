@@ -13,10 +13,11 @@ using 'main.bicep'
 // Optional: AAD object ID to grant Key Vault Secrets User (read the generated secrets):
 // param adminObjectId = '<your-user-or-group-object-id>'
 
-// New deploy: leave brochMasterKey unset — the template generates one and stores it in the
-// created Key Vault (secret 'broch-master-key'). Set it ONLY when taking over a database that
-// already holds Broch data (reuse THAT database's key); prefer passing it via --parameters.
-// param brochMasterKey = '<existing-master-key>'
+// Master key. With databaseMode='Managed' (a brand-new DB) you may leave this unset — the
+// template generates one and stores it in the Key Vault it creates (secret 'broch-master-key').
+// With databaseMode='Existing' (this example's default) it is REQUIRED — supply that database's
+// key (a fresh key can't decrypt data it already holds). Prefer passing via --parameters.
+param brochMasterKey = '<master-key>' // openssl rand -base64 48 for a fresh DB; reuse the existing DB's key
 
 // --- Database: Existing (bring your own) or Managed (provision a private Flex Server) ---
 param databaseMode = 'Existing'
