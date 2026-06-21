@@ -31,12 +31,29 @@ param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database
 param wildcardHostname = 'tunnels.example.com'
 param certMode = 'Auto' // Auto (Let's Encrypt) | Byo (your own cert)
 param acmeEmail = 'ops@example.com'
-// Auto + Cloudflare:
+// DNS-01 provider (certMode=Auto). Pick one and set its credentials:
 param dnsProvider = 'Cloudflare'
 param cloudflareApiToken = '<cloudflare-zone-dns-token>' // Zone:Read + DNS:Edit; prefer --parameters
-// Auto + Azure DNS (no secret — grant the VM identity "DNS Zone Contributor" post-deploy):
+// Azure DNS — managed identity (template auto-grants DNS Zone Contributor; needs Owner/UAA):
 // param dnsProvider          = 'AzureDns'
 // param dnsZoneResourceGroup = '<dns-zone-resource-group>'
+// Azure DNS — service principal (Contributor is enough; pre-grant the SP on the zone):
+// param dnsProvider       = 'AzureDnsServicePrincipal'
+// param dnsZoneResourceGroup = '<dns-zone-resource-group>'
+// param azureTenantId     = '<tenant-id>'
+// param azureClientId     = '<app-client-id>'
+// param azureClientSecret = '<app-client-secret>'      // prefer --parameters
+// AWS Route 53:
+// param dnsProvider        = 'Route53'
+// param awsAccessKeyId     = '<aws-access-key-id>'
+// param awsSecretAccessKey = '<aws-secret-access-key>' // prefer --parameters
+// Google Cloud DNS:
+// param dnsProvider        = 'GoogleCloudDns'
+// param gcpProject         = '<gcp-project-id>'
+// param gcpCredentialsJson = '<base64 service-account JSON>' // prefer --parameters
+// DigitalOcean:
+// param dnsProvider = 'DigitalOcean'
+// param doAuthToken = '<do-api-token>'                 // prefer --parameters
 // Byo cert (set certMode = 'Byo'):
 // param tlsCertificate    = '<base64 PEM fullchain>'   // prefer --parameters
 // param tlsCertificateKey = '<base64 PEM private key>' // prefer --parameters

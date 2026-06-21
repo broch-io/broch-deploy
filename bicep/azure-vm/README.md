@@ -108,8 +108,14 @@ Broch serves tunnels on `*.<wildcardHostname>`, so it needs a **wildcard** cert 
 
 **`certMode=Auto` — Let's Encrypt, auto-renewing.** Caddy issues + renews the apex + wildcard via ACME DNS-01 (the only ACME challenge that issues wildcards), minting the cert against the DNS provider's API *before* any DNS points at the VM — so you validate first, cut DNS over last.
 
+All provider modules are compiled into the broch-caddy image, so the choice is pure config:
+
+- `dnsProvider=AzureDns` — Azure DNS via the VM's **managed identity** (no secret). Set `dnsZoneResourceGroup`; the template **grants the identity *DNS Zone Contributor* on that resource group automatically** (no manual step). The role assignment needs the deployer to have **Owner / User Access Administrator** on the zone's RG; with only Contributor, use `AzureDnsServicePrincipal` instead, or leave `dnsZoneResourceGroup` empty and grant the identity (`managedIdentityPrincipalId` is a deployment output) the role by hand. RBAC propagation is eventual — Caddy retries until it lands.
+- `dnsProvider=AzureDnsServicePrincipal` — Azure DNS via a **service principal** you supply (`azureTenantId` + `azureClientId` + `azureClientSecret`), pre-granted DNS Zone Contributor on the zone. No deploy-time role assignment, so **Contributor is enough to deploy**. Also set `dnsZoneResourceGroup`.
 - `dnsProvider=Cloudflare` — set `cloudflareApiToken` (Zone:Read + DNS:Edit).
-- `dnsProvider=AzureDns` — **no secret.** Set `dnsZoneResourceGroup`; the VM gets a system-assigned managed identity and the template **grants it *DNS Zone Contributor* on that resource group automatically** (no manual step), so Caddy can complete the DNS-01 challenge. This role assignment needs the deployer to have Owner/User Access Administrator on the zone's RG; if you only have Contributor, leave `dnsZoneResourceGroup` empty and grant the identity (its `managedIdentityPrincipalId` is a deployment output) the role by hand. RBAC propagation is eventual — Caddy retries until it lands.
+- `dnsProvider=Route53` — set `awsAccessKeyId` + `awsSecretAccessKey` (Route 53 list+change rights on the zone).
+- `dnsProvider=GoogleCloudDns` — set `gcpProject` + `gcpCredentialsJson` (base64 service-account key, roles/dns.admin).
+- `dnsProvider=DigitalOcean` — set `doAuthToken` (DNS write scope).
 
 **`certMode=Byo` — your own cert.** Supply `tlsCertificate` + `tlsCertificateKey` (base64 PEM covering apex + wildcard). No ACME / DNS-01 — but **renewal is yours** (replace the files, then recreate Caddy).
 

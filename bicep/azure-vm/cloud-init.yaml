@@ -11,9 +11,10 @@
 # Caddy is the prebuilt ghcr.io/broch-io/broch-caddy image (pulled, not built).
 #
 # Only /opt/broch/.env is templated, from that template's .env.example surface.
-# BROCH_MASTER_KEY is the EXISTING key the external DB was encrypted with —
-# injected here, NEVER generated (a fresh key can't decrypt stored state).
-# Telemetry/logging and the license are configured IN-APP (Admin UI), not here.
+# BROCH_MASTER_KEY is the at-rest encryption root: for an Existing DB it's the key
+# that DB was encrypted with (a fresh key can't decrypt stored state); for a brand-new
+# Managed DB main.bicep may generate one and store it in Key Vault. Either way it's
+# injected here. Telemetry/logging and the license are configured IN-APP (Admin UI).
 #
 # Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
 # main.bicep before base64. The base64 blobs are pure base64 (no underscores), so
@@ -56,6 +57,13 @@ write_files:
     encoding: b64
     content: __TLS_KEY_B64__
 
+  # GoogleCloudDns mode: the service-account JSON Caddy reads via GOOGLE_APPLICATION_CREDENTIALS.
+  # Empty for every other provider. Lives in the certs dir already mounted into the Caddy container.
+  - path: /opt/broch/certs/gcp-sa.json
+    permissions: "0600"
+    encoding: b64
+    content: __GCP_SA_JSON_B64__
+
   - path: /opt/broch/.env
     permissions: "0600"
     content: |
@@ -71,6 +79,14 @@ write_files:
       CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
       AZURE_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
       AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
+      AZURE_TENANT_ID=__AZURE_TENANT_ID__
+      AZURE_CLIENT_ID=__AZURE_CLIENT_ID__
+      AZURE_CLIENT_SECRET=__AZURE_CLIENT_SECRET__
+      AWS_ACCESS_KEY_ID=__AWS_ACCESS_KEY_ID__
+      AWS_SECRET_ACCESS_KEY=__AWS_SECRET_ACCESS_KEY__
+      DO_AUTH_TOKEN=__DO_AUTH_TOKEN__
+      GCP_PROJECT=__GCP_PROJECT__
+      GOOGLE_APPLICATION_CREDENTIALS=__GOOGLE_APP_CREDS_PATH__
       BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__

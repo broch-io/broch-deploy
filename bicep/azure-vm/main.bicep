@@ -41,19 +41,51 @@ param certMode string = 'Auto'
 @allowed([
   'Cloudflare'
   'AzureDns'
+  'AzureDnsServicePrincipal'
+  'Route53'
+  'GoogleCloudDns'
+  'DigitalOcean'
 ])
-@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity (no secret) — grant it DNS Zone Contributor on the zone after deploy.')
+@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity and the template auto-grants it DNS Zone Contributor (needs Owner/UAA on the zone RG). Every other provider authenticates with a credential you supply — no role assignment, so Contributor is enough to deploy.')
 param dnsProvider string = 'Cloudflare'
 
 @description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
 param acmeEmail string = ''
 
-@description('Cloudflare API token (Zone:Read + DNS:Edit) — certMode=Auto + dnsProvider=Cloudflare.')
+@description('Cloudflare API token (Zone:Read + DNS:Edit) — dnsProvider=Cloudflare.')
 @secure()
 param cloudflareApiToken string = ''
 
-@description('Resource group of the Azure DNS zone — certMode=Auto + dnsProvider=AzureDns (zone in this deployment\'s subscription).')
+@description('Resource group of the Azure DNS zone — dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
 param dnsZoneResourceGroup string = ''
+
+@description('Azure AD tenant ID of the service principal — dnsProvider=AzureDnsServicePrincipal.')
+param azureTenantId string = ''
+
+@description('Service-principal (app registration) client ID, pre-granted DNS Zone Contributor on the zone — dnsProvider=AzureDnsServicePrincipal.')
+param azureClientId string = ''
+
+@description('Service-principal client secret — dnsProvider=AzureDnsServicePrincipal.')
+@secure()
+param azureClientSecret string = ''
+
+@description('AWS access key ID for a principal with Route 53 list+change rights on the zone — dnsProvider=Route53.')
+param awsAccessKeyId string = ''
+
+@description('AWS secret access key — dnsProvider=Route53.')
+@secure()
+param awsSecretAccessKey string = ''
+
+@description('GCP project ID hosting the Cloud DNS zone — dnsProvider=GoogleCloudDns.')
+param gcpProject string = ''
+
+@description('Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone) — dnsProvider=GoogleCloudDns.')
+@secure()
+param gcpCredentialsJson string = ''
+
+@description('DigitalOcean API token with DNS write scope — dnsProvider=DigitalOcean.')
+@secure()
+param doAuthToken string = ''
 
 @description('Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — certMode=Byo.')
 @secure()
@@ -159,13 +191,30 @@ var generatedVmPassword = 'Aa1!${vmPasswordSeed}'
 var needsKeyVault = generateMasterKey || usePassword
 
 // --- TLS config selection ---
-// Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
-// Byo mode: the canonical BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from
-// /etc/caddy/certs; tls.caddy is unused. Both Caddyfiles come from broch-deploy (single source).
-var azureTlsCaddy = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
-var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : (dnsProvider == 'AzureDns' ? azureTlsCaddy : loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))
+// Auto mode: build the tls.caddy fragment the Caddyfile imports, per DNS provider. All provider
+// modules are compiled into the broch-caddy image (see Caddy.Dockerfile), so this is just config.
+// Byo mode: the BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from /etc/caddy/certs;
+// tls.caddy is unused. Caddyfiles come from broch-deploy (single source).
+// Azure managed identity = omit tenant/client/secret; service principal = include them.
+var tlsCloudflare = 'tls {\n\tdns cloudflare {env.CLOUDFLARE_API_TOKEN}\n}\n'
+var tlsAzureMi = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
+var tlsAzureSpn = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t\ttenant_id {env.AZURE_TENANT_ID}\n\t\tclient_id {env.AZURE_CLIENT_ID}\n\t\tclient_secret {env.AZURE_CLIENT_SECRET}\n\t}\n}\n'
+var tlsRoute53 = 'tls {\n\tdns route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}\n}\n'
+var tlsGoogle = 'tls {\n\tdns googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}\n}\n'
+var tlsDigitalOcean = 'tls {\n\tdns digitalocean {env.DO_AUTH_TOKEN}\n}\n'
+var autoTlsCaddy = dnsProvider == 'Cloudflare' ? tlsCloudflare : (dnsProvider == 'AzureDns' ? tlsAzureMi : (dnsProvider == 'AzureDnsServicePrincipal' ? tlsAzureSpn : (dnsProvider == 'Route53' ? tlsRoute53 : (dnsProvider == 'GoogleCloudDns' ? tlsGoogle : tlsDigitalOcean))))
+var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : autoTlsCaddy
 var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile')
-var azureSubscriptionId = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? subscription().subscriptionId : ''
+
+// Both Azure DNS modes need the subscription id. Only the managed-identity mode gets a VM
+// identity + the auto role grant; the service-principal mode (and every non-Azure provider)
+// authenticates with the supplied credential, so no identity and no role assignment.
+var usesAzureDns = certMode == 'Auto' && (dnsProvider == 'AzureDns' || dnsProvider == 'AzureDnsServicePrincipal')
+var azureDnsManagedIdentity = certMode == 'Auto' && dnsProvider == 'AzureDns'
+var azureSubscriptionId = usesAzureDns ? subscription().subscriptionId : ''
+// GCP Cloud DNS: Caddy reads the service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (ADC);
+// cloud-init writes it (base64) into the certs dir already mounted into the Caddy container.
+var gcpCredsPath = (certMode == 'Auto' && dnsProvider == 'GoogleCloudDns') ? '/etc/caddy/certs/gcp-sa.json' : ''
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
@@ -188,6 +237,15 @@ var cloudInitTokens = [
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
   ['__AZURE_SUBSCRIPTION_ID__', azureSubscriptionId]
   ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
+  ['__AZURE_TENANT_ID__', azureTenantId]
+  ['__AZURE_CLIENT_ID__', azureClientId]
+  ['__AZURE_CLIENT_SECRET__', azureClientSecret]
+  ['__AWS_ACCESS_KEY_ID__', awsAccessKeyId]
+  ['__AWS_SECRET_ACCESS_KEY__', awsSecretAccessKey]
+  ['__DO_AUTH_TOKEN__', doAuthToken]
+  ['__GCP_PROJECT__', gcpProject]
+  ['__GOOGLE_APP_CREDS_PATH__', gcpCredsPath]
+  ['__GCP_SA_JSON_B64__', gcpCredentialsJson]
   ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
@@ -406,9 +464,10 @@ resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
-  // Azure-DNS auth uses the VM's managed identity (no secret to store); other TLS modes
-  // need no identity. Grant this identity "DNS Zone Contributor" on the zone post-deploy.
-  identity: (certMode == 'Auto' && dnsProvider == 'AzureDns') ? { type: 'SystemAssigned' } : null
+  // Azure-DNS managed-identity mode uses the VM's identity (the template auto-grants it the DNS
+  // role below). The service-principal mode and every other provider authenticate with a supplied
+  // credential, so no identity is attached.
+  identity: azureDnsManagedIdentity ? { type: 'SystemAssigned' } : null
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
@@ -445,6 +504,9 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
       }
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
+    // Managed boot diagnostics — REQUIRED for Azure Serial Console, the break-glass path when no
+    // SSH key is set (the generated password is only reachable via Serial Console).
+    diagnosticsProfile: { bootDiagnostics: { enabled: true } }
   }
   // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
   // the server + database (and, via the chain, the private DNS link) to exist first.
@@ -457,7 +519,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
 // the deployer to have Owner / User Access Administrator on that RG; if they don't, leave
 // dnsZoneResourceGroup empty and grant the role by hand instead. RBAC propagation is eventual —
 // Caddy retries issuance until the grant lands.
-module dnsRoleAssignment 'dns-role.bicep' = if (certMode == 'Auto' && dnsProvider == 'AzureDns' && !empty(dnsZoneResourceGroup)) {
+module dnsRoleAssignment 'dns-role.bicep' = if (azureDnsManagedIdentity && !empty(dnsZoneResourceGroup)) {
   name: 'broch-dns-role'
   scope: resourceGroup(dnsZoneResourceGroup)
   params: {
@@ -471,5 +533,5 @@ output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you
 output keyVaultName string = keyVault.?name ?? ''
 output masterKeySecretUri string = kvMasterKey.?properties.secretUri ?? ''
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
-output dnsRoleAssignment string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(not using Azure DNS)'
+output dnsRoleAssignment string = azureDnsManagedIdentity ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(provider authenticates with a supplied credential; no role assignment)'
 output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${empty(sshAllowedCidr) ? 'closed' : 'limited to ${sshAllowedCidr}'}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to use it)' : 'limited to ${sshAllowedCidr}'}.'
