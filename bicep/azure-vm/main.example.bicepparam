@@ -5,12 +5,18 @@
 using 'main.bicep'
 
 // --- Networking / access ---
-param adminSshPublicKey = 'ssh-ed25519 AAAA...replace-with-your-public-key... you@example'
-// SSH is closed by default (no inbound 22; manage via `az vm run-command` / Serial
-// Console). Uncomment + set a CIDR ONLY for break-glass SSH from your admin network:
-// param sshAllowedCidr = '203.0.113.0/24'
+// SSH is closed by default (no inbound 22) and the VM is provisioned with a generated
+// break-glass password — manage via `az vm run-command` / Serial Console. No SSH key
+// required. Uncomment ONLY if you specifically want key-based SSH (then also set a CIDR):
+// param adminSshPublicKey = 'ssh-ed25519 AAAA...your-public-key... you@example'
+// param sshAllowedCidr    = '203.0.113.0/24'
+// Optional: AAD object ID to grant Key Vault Secrets User (read the generated secrets):
+// param adminObjectId = '<your-user-or-group-object-id>'
 
-param brochMasterKey = '<master-key>' // openssl rand -base64 48; prefer --parameters; reuse the DB's existing key if taking one over
+// New deploy: leave brochMasterKey unset — the template generates one and stores it in the
+// created Key Vault (secret 'broch-master-key'). Set it ONLY when taking over a database that
+// already holds Broch data (reuse THAT database's key); prefer passing it via --parameters.
+// param brochMasterKey = '<existing-master-key>'
 
 // --- Database: Existing (bring your own) or Managed (provision a private Flex Server) ---
 param databaseMode = 'Existing'

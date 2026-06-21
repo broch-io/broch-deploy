@@ -17,11 +17,14 @@ param vmSize string = 'Standard_B2s'
 @description('Ubuntu image SKU — must match the VM architecture: "server" for x86 sizes, "server-arm64" for ARM (Ampere) sizes.')
 param imageSku string = 'server'
 
-@description('Admin username for SSH.')
+@description('Admin username for the VM.')
 param adminUsername string = 'broch'
 
-@description('SSH public key for the admin user.')
-param adminSshPublicKey string
+@description('Optional, advanced. BYO SSH public key for break-glass access. Leave empty (default) and the VM is provisioned with a generated password instead — Broch is managed via `az vm run-command` / Azure Serial Console and needs no SSH. Setting a key switches the VM to key-only auth.')
+param adminSshPublicKey string = ''
+
+@description('Optional. AAD object ID of a user/group to grant read access (Key Vault Secrets User) on the created Key Vault, so you can retrieve the generated master key / break-glass password. Empty (default) grants no data-plane access — grant yourself later.')
+param adminObjectId string = ''
 
 @description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
 param wildcardHostname string
@@ -66,9 +69,21 @@ param brochVersion string = 'latest'
 @description('CIDR allowed to reach SSH (port 22). Empty (default) creates NO inbound SSH rule — the box is managed via `az vm run-command` / Azure Serial Console, the secure default. Set a CIDR (e.g. your admin network) to allow SSH break-glass.')
 param sshAllowedCidr string = ''
 
-@description('The EXISTING Broch master key the target database was encrypted with. A fresh key cannot decrypt existing state (Data Protection keyring, IdP tokens, license) — reuse the current one.')
+@description('Optional. The EXISTING Broch master key the target database was encrypted with — REQUIRED when pointing at a database that already holds Broch data (a fresh key cannot decrypt the Data Protection keyring, IdP tokens, or license). Leave empty on a brand-new deploy: the template generates one and stores it in the created Key Vault. On any redeploy, supply the same key (read it from that Key Vault).')
 @secure()
-param brochMasterKey string
+param brochMasterKey string = ''
+
+@description('Internal — do not set. Entropy for the generated master key (used only when brochMasterKey is empty). newGuid() is valid only in a param default.')
+@secure()
+param masterKeySeed string = newGuid()
+
+@description('Internal — do not set. Second entropy source for the generated master key.')
+@secure()
+param masterKeySeed2 string = newGuid()
+
+@description('Internal — do not set. Entropy for the generated break-glass VM password (used only when no SSH key is supplied).')
+@secure()
+param vmPasswordSeed string = newGuid()
 
 // --- Database. Existing = connect to your own PostgreSQL; Managed = provision an Azure
 // Database for PostgreSQL Flexible Server in this deployment (the marketplace one-click). ---
@@ -124,6 +139,16 @@ var pgHost = '${pgServerName}.${pgDnsZone}'
 var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
+// --- Generated secrets (used only when the corresponding input is empty). newGuid() is
+// valid only in param defaults, so the entropy comes from the *Seed params above. Both are
+// also written to the customer's Key Vault below so they survive VM recreation / redeploys. ---
+var generatedMasterKey = base64('${masterKeySeed}-${masterKeySeed2}')
+var effectiveMasterKey = empty(brochMasterKey) ? generatedMasterKey : brochMasterKey
+// No SSH key supplied => provision a generated password (break-glass via Serial Console).
+// The 'Aa1!' prefix guarantees Azure's complexity policy (upper + lower + digit + symbol).
+var usePassword = empty(adminSshPublicKey)
+var generatedVmPassword = 'Aa1!${vmPasswordSeed}'
+
 // --- TLS config selection ---
 // Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
 // Byo mode: the canonical BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from
@@ -148,7 +173,7 @@ var cloudInitTokens = [
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
   ['__BROCH_VERSION__', brochVersion]
-  ['__BROCH_MASTER_KEY__', brochMasterKey]
+  ['__BROCH_MASTER_KEY__', effectiveMasterKey]
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
@@ -326,6 +351,49 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
   name: pgDatabaseName
 }
 
+// --- Customer-owned secret store. Holds the (possibly generated) Broch master key so it
+// survives VM recreation and is retrievable for redeploys, plus the generated break-glass VM
+// password. RBAC mode; this deployment writes the secrets via the control plane (the deployer's
+// Contributor on the vault). To READ them, grant yourself — or set adminObjectId — the
+// "Key Vault Secrets User" role. The master key is born here, in your subscription; Broch never
+// sees it. ---
+var kvName = take('${vmName}-kv-${uniqueString(resourceGroup().id, vmName)}', 24)
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: kvName
+  location: location
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+  }
+}
+
+resource kvMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'broch-master-key'
+  properties: { value: effectiveMasterKey }
+}
+
+resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
+  parent: keyVault
+  name: 'vm-admin-password'
+  properties: { value: generatedVmPassword }
+}
+
+// Optional: let the deployer read the secrets (Key Vault Secrets User).
+resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId)) {
+  scope: keyVault
+  name: guid(keyVault.id, adminObjectId, 'kv-secrets-user')
+  properties: {
+    principalId: adminObjectId
+    // Key Vault Secrets User
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+  }
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
@@ -338,9 +406,14 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
       computerName: vmName
       adminUsername: adminUsername
       customData: base64(cloudInit)
+      // No SSH key => generated password (break-glass via Serial Console; inbound SSH stays
+      // closed by default). BYO key => key-only auth, no password. The password derives from a
+      // @secure() seed param; the var loses the secure flag, hence the suppression.
+      #disable-next-line use-secure-value-for-secure-inputs
+      adminPassword: usePassword ? generatedVmPassword : null
       linuxConfiguration: {
-        disablePasswordAuthentication: true
-        ssh: {
+        disablePasswordAuthentication: !usePassword
+        ssh: usePassword ? null : {
           publicKeys: [
             {
               path: '/home/${adminUsername}/.ssh/authorized_keys'
@@ -369,9 +442,25 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
 }
 
+// Auto-grant the VM's managed identity "DNS Zone Contributor" on the DNS zone's resource group,
+// so Caddy's ACME DNS-01 works with NO manual post-deploy step. Scoped to the RG (Caddy is
+// configured with the RG, not a single zone — it finds the zone matching the hostname). Requires
+// the deployer to have Owner / User Access Administrator on that RG; if they don't, leave
+// dnsZoneResourceGroup empty and grant the role by hand instead. RBAC propagation is eventual —
+// Caddy retries issuance until the grant lands.
+module dnsRoleAssignment 'dns-role.bicep' = if (certMode == 'Auto' && dnsProvider == 'AzureDns' && !empty(dnsZoneResourceGroup)) {
+  name: 'broch-dns-role'
+  scope: resourceGroup(dnsZoneResourceGroup)
+  params: {
+    principalId: vm.identity!.principalId
+  }
+}
+
 output publicIpAddress string = publicIp.properties.ipAddress
-output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
 output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
+output keyVaultName string = keyVault.name
+output masterKeySecretUri string = kvMasterKey.properties.secretUri
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
-output dnsRoleGrantHint string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? 'Grant the VM managed identity (managedIdentityPrincipalId) the "DNS Zone Contributor" role on your Azure DNS zone so Caddy can complete the DNS-01 challenge.' : '(not using Azure DNS)'
+output dnsRoleAssignment string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(not using Azure DNS)'
+output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${empty(sshAllowedCidr) ? 'closed' : 'limited to ${sshAllowedCidr}'}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to use it)' : 'limited to ${sshAllowedCidr}'}.'

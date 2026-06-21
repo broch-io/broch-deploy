@@ -40,10 +40,11 @@ Telemetry, logging, and the license are configured **in-app** (Admin → …) af
 
 ## Prerequisites
 
-- Azure CLI logged in (`az login`), Contributor on the target resource group.
+- Azure CLI logged in (`az login`), Contributor on the target resource group. **Owner or User Access Administrator** is needed only if you let the template auto-grant the Azure-DNS role (below) or set `adminObjectId` — both create role assignments.
 - A database — **either** an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)), **or** nothing to pre-arrange and let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`).
-- For `certMode=Auto`, DNS for your wildcard hostname on a supported provider: **Cloudflare** (API token, Zone:Read + DNS:Edit) **or** **Azure DNS** (no secret — uses the VM's managed identity; you grant it *DNS Zone Contributor* on the zone after deploy). For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
+- For `certMode=Auto`, DNS for your wildcard hostname on a supported provider: **Cloudflare** (API token, Zone:Read + DNS:Edit) **or** **Azure DNS** (no secret — uses the VM's managed identity). With Azure DNS, set `dnsZoneResourceGroup` and the template **grants the identity *DNS Zone Contributor* on that resource group automatically** (needs Owner/UAA there); if you only have Contributor, leave it empty and grant the role by hand. For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
 - An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<wildcardHostname>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
+- **No SSH key or master key to prepare.** SSH is closed by default and the VM is provisioned with a generated break-glass password (`adminSshPublicKey` is an optional advanced override). On a brand-new deploy, leave `brochMasterKey` empty and the template generates one. Both land in a Key Vault created in your resource group — see [Secrets & break-glass](#secrets--break-glass).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Database setup
@@ -80,22 +81,26 @@ cp main.example.bicepparam main.bicepparam
 $EDITOR main.bicepparam   # gitignored — non-secret values; pass secrets on the CLI below
 
 # 4. Deploy (secrets via --parameters, never committed)
+# New deploy: omit brochMasterKey — the template generates one and stores it in the
+# created Key Vault. Add `brochMasterKey='<existing-key>'` ONLY when taking over a
+# database that already holds Broch data. No SSH key needed (generated password).
 az deployment group create \
   --resource-group broch-rg \
   --template-file main.bicep \
   --parameters main.bicepparam \
   --parameters \
-      brochMasterKey='<master-key>' \
       databaseConnectionString='Host=broch.postgres.database.azure.com;Database=brochdb;Username=broch;Password=<pw>;SSL Mode=Require' \
       cloudflareApiToken='<token>' \
       authClientSecret='<secret>'
 
-# 5. Read the public IP
+# 5. Read the public IP (and where the master key was stored)
 az deployment group show -g broch-rg -n main \
   --query properties.outputs.publicIpAddress.value -o tsv
+az deployment group show -g broch-rg -n main \
+  --query properties.outputs.masterKeySecretUri.value -o tsv
 ```
 
-> **The master key is yours to keep.** `brochMasterKey` is the at-rest encryption root — Broch, LLC never sees it. Generate it with `openssl rand -base64 48`, store it in your own secret store, and supply the same value on every redeploy. Rotating it invalidates anything DataProtection-wrapped in the database (refresh tokens, persisted license, usage blob). Taking over an existing Broch database? Reuse **its** master key.
+> **The master key is yours to keep.** `brochMasterKey` is the at-rest encryption root — Broch, LLC never sees it. On a new deploy, leave it empty: the template generates one **in your subscription** and writes it to the Key Vault it creates (secret `broch-master-key`). Record it from there — you must supply the **same** value on every redeploy. Rotating it invalidates anything DataProtection-wrapped in the database (refresh tokens, persisted license, usage blob). Taking over an existing Broch database? Pass **its** master key explicitly.
 
 ## TLS — certificate & DNS
 
@@ -104,7 +109,7 @@ Broch serves tunnels on `*.<wildcardHostname>`, so it needs a **wildcard** cert 
 **`certMode=Auto` — Let's Encrypt, auto-renewing.** Caddy issues + renews the apex + wildcard via ACME DNS-01 (the only ACME challenge that issues wildcards), minting the cert against the DNS provider's API *before* any DNS points at the VM — so you validate first, cut DNS over last.
 
 - `dnsProvider=Cloudflare` — set `cloudflareApiToken` (Zone:Read + DNS:Edit).
-- `dnsProvider=AzureDns` — **no secret.** Set `dnsZoneResourceGroup`; the VM gets a system-assigned managed identity. After deploy, grant that identity (its `managedIdentityPrincipalId` is a deployment output) the **DNS Zone Contributor** role on your Azure DNS zone — Caddy can't issue the cert until then.
+- `dnsProvider=AzureDns` — **no secret.** Set `dnsZoneResourceGroup`; the VM gets a system-assigned managed identity and the template **grants it *DNS Zone Contributor* on that resource group automatically** (no manual step), so Caddy can complete the DNS-01 challenge. This role assignment needs the deployer to have Owner/User Access Administrator on the zone's RG; if you only have Contributor, leave `dnsZoneResourceGroup` empty and grant the identity (its `managedIdentityPrincipalId` is a deployment output) the role by hand. RBAC propagation is eventual — Caddy retries until it lands.
 
 **`certMode=Byo` — your own cert.** Supply `tlsCertificate` + `tlsCertificateKey` (base64 PEM covering apex + wildcard). No ACME / DNS-01 — but **renewal is yours** (replace the files, then recreate Caddy).
 
@@ -124,18 +129,27 @@ A   *.tunnels.example.com  → <public-ip>
 
 Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
 
-## How secrets flow at runtime
+## Secrets & break-glass
 
-cloud-init writes `/opt/broch/.env` (mode `0600`) from your parameters; the compose reads it. There is no Key Vault — the values are injected once at deploy time:
+**Key Vault.** The deployment creates a Key Vault (RBAC mode) in your resource group as a durable store for the secrets it generates:
+
+- `broch-master-key` — the at-rest encryption root (the value you supplied, or the generated one). Record this; you supply the same value on every redeploy.
+- `vm-admin-password` — the generated break-glass password (only when no SSH key was supplied).
+
+The deployment writes these via the control plane (your Contributor on the vault). To **read** them, grant yourself **Key Vault Secrets User** on the vault — or set `adminObjectId` at deploy time and the template grants it for you.
+
+**VM access.** Inbound SSH is closed by default. The box is managed via `az vm run-command` (Azure RBAC — no SSH) and **Azure Serial Console** (sign in as `broch` with the `vm-admin-password` above). Supply `adminSshPublicKey` only if you specifically want key-based SSH (then also open `sshAllowedCidr`).
+
+**Runtime config.** cloud-init writes `/opt/broch/.env` (mode `0600`) from the deploy parameters; the compose reads it:
 
 - `BROCH_MASTER_KEY` → broch's at-rest encryption root
 - `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__DefaultConnection` (mapped in compose)
 - `AUTHENTICATION__CLIENTSECRET` → the IdP client secret
-- `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential
+- `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential (Cloudflare mode)
 
 Rotate by editing `/opt/broch/.env` and running `docker compose up -d` (a **recreate** — `env_file` is only read at container create time, so a plain `docker restart` silently keeps the old values).
 
-> Secrets are injected through the VM's `customData` (base64, not encrypted) — readable by anyone with VM read access. For stricter posture, prefer Key Vault references / a managed identity over inline injection (a follow-up hardening item).
+> Secrets are still injected into the running container through the VM's `customData` (base64, not encrypted) — readable by anyone with VM read access. The Key Vault is the durable record of the generated secrets; wiring the compose to pull from Key Vault at runtime (instead of inline `.env`) remains a follow-up hardening item.
 
 ## Pulling a new Broch image
 
