@@ -17,11 +17,22 @@ param vmSize string = 'Standard_B2s'
 @description('Ubuntu image SKU — must match the VM architecture: "server" for x86 sizes, "server-arm64" for ARM (Ampere) sizes.')
 param imageSku string = 'server'
 
-@description('Admin username for SSH.')
+@description('Admin username for the VM.')
 param adminUsername string = 'broch'
 
-@description('SSH public key for the admin user.')
-param adminSshPublicKey string
+@description('Optional, advanced. BYO SSH public key for break-glass access. Leave empty (default) and the VM is provisioned with a generated password instead — Broch is managed via `az vm run-command` / Azure Serial Console and needs no SSH. Setting a key switches the VM to key-only auth.')
+param adminSshPublicKey string = ''
+
+@description('Optional. AAD object ID of a user/group to grant Key Vault Secrets User on the created Key Vault, so you can read the generated break-glass VM password without a manual role grant. Empty (default) grants no data-plane access — grant yourself later. (The master key is never stored in the vault — it is customer-supplied.)')
+param adminObjectId string = ''
+
+@description('Principal type of adminObjectId — set Group if it is an AAD group, or ServicePrincipal for a CI/CD managed identity / service principal. Lets ARM skip a type lookup that can race AAD replication and fail the role assignment.')
+@allowed([
+  'User'
+  'Group'
+  'ServicePrincipal'
+])
+param adminObjectType string = 'User'
 
 @description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
 param wildcardHostname string
@@ -38,19 +49,52 @@ param certMode string = 'Auto'
 @allowed([
   'Cloudflare'
   'AzureDns'
+  'AzureDnsServicePrincipal'
+  'Route53'
+  'GoogleCloudDns'
+  'DigitalOcean'
 ])
-@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity (no secret) — grant it DNS Zone Contributor on the zone after deploy.')
+@description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity and the template auto-grants it DNS Zone Contributor (needs Owner/UAA on the zone RG). Every other provider authenticates with a credential you supply — no role assignment, so Contributor is enough to deploy.')
 param dnsProvider string = 'Cloudflare'
 
 @description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
 param acmeEmail string = ''
 
-@description('Cloudflare API token (Zone:Read + DNS:Edit) — certMode=Auto + dnsProvider=Cloudflare.')
+@description('Cloudflare API token (Zone:Read + DNS:Edit) — dnsProvider=Cloudflare.')
 @secure()
 param cloudflareApiToken string = ''
 
-@description('Resource group of the Azure DNS zone — certMode=Auto + dnsProvider=AzureDns (zone in this deployment\'s subscription).')
+@description('Resource group of the Azure DNS zone — dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
 param dnsZoneResourceGroup string = ''
+
+@description('Azure AD tenant ID of the service principal — dnsProvider=AzureDnsServicePrincipal.')
+param azureTenantId string = ''
+
+@description('Service-principal (app registration) client ID, pre-granted DNS Zone Contributor on the zone — dnsProvider=AzureDnsServicePrincipal.')
+param azureClientId string = ''
+
+@description('Service-principal client secret — dnsProvider=AzureDnsServicePrincipal.')
+@secure()
+param azureClientSecret string = ''
+
+@description('AWS access key ID for a principal with Route 53 list+change rights on the zone — dnsProvider=Route53.')
+@secure()
+param awsAccessKeyId string = ''
+
+@description('AWS secret access key — dnsProvider=Route53.')
+@secure()
+param awsSecretAccessKey string = ''
+
+@description('GCP project ID hosting the Cloud DNS zone — dnsProvider=GoogleCloudDns.')
+param gcpProject string = ''
+
+@description('Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone) — dnsProvider=GoogleCloudDns.')
+@secure()
+param gcpCredentialsJson string = ''
+
+@description('DigitalOcean API token with DNS write scope — dnsProvider=DigitalOcean.')
+@secure()
+param doAuthToken string = ''
 
 @description('Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — certMode=Byo.')
 @secure()
@@ -63,12 +107,30 @@ param tlsCertificateKey string = ''
 @description('Broch server image tag. Pin in production.')
 param brochVersion string = 'latest'
 
+@description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
+param brochImage string = 'ghcr.io/broch-io/broch'
+
+@description('Container registry host — defaults to ghcr.io (where Broch images live). Only used when registryPassword is set.')
+param registryServer string = 'ghcr.io'
+
+@description('Registry login username — defaults to a value GHCR accepts with a valid token. Only used when registryPassword is set.')
+param registryUsername string = 'broch'
+
+@description('Registry token/password. Empty (default) = the image is public, no login. Set this (only this) to pull a private pre-release/beta image — the server/username already default to GHCR.')
+@secure()
+param registryPassword string = ''
+
 @description('CIDR allowed to reach SSH (port 22). Empty (default) creates NO inbound SSH rule — the box is managed via `az vm run-command` / Azure Serial Console, the secure default. Set a CIDR (e.g. your admin network) to allow SSH break-glass.')
 param sshAllowedCidr string = ''
 
-@description('The EXISTING Broch master key the target database was encrypted with. A fresh key cannot decrypt existing state (Data Protection keyring, IdP tokens, license) — reuse the current one.')
+@description('REQUIRED. The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). The server also rejects values under 32 bytes at boot.')
+@minLength(32)
 @secure()
 param brochMasterKey string
+
+@description('Internal — do not set. Entropy for the generated break-glass VM password (used only when no SSH key is supplied).')
+@secure()
+param vmPasswordSeed string = newGuid()
 
 // --- Database. Existing = connect to your own PostgreSQL; Managed = provision an Azure
 // Database for PostgreSQL Flexible Server in this deployment (the marketplace one-click). ---
@@ -124,14 +186,44 @@ var pgHost = '${pgServerName}.${pgDnsZone}'
 var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
+// The master key is always customer-supplied (required + @minLength) — never generated. So a
+// (re)deploy can't mint a different key that fails to decrypt an existing database.
+// No SSH key supplied => provision a generated break-glass password (Serial Console).
+// Azure complexity needs >=3 of upper/lower/digit/special. The GUID seed always supplies
+// lowercase/digit plus hyphens (which Azure counts as special); appending an uppercase letter
+// and a digit guarantees the third class — without a password-shaped literal that trips
+// secret scanners (the entropy is the GUID, not the suffix).
+var usePassword = empty(adminSshPublicKey)
+var generatedVmPassword = '${vmPasswordSeed}X9'
+// The Key Vault now exists only to hold the generated break-glass password — so a deploy that
+// brings its own SSH key (e.g. prod) creates no Key Vault and no new resources.
+var needsKeyVault = usePassword
+
 // --- TLS config selection ---
-// Auto mode: the canonical Caddyfile imports a tls.caddy fragment (Cloudflare or Azure).
-// Byo mode: the canonical BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from
-// /etc/caddy/certs; tls.caddy is unused. Both Caddyfiles come from broch-deploy (single source).
-var azureTlsCaddy = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
-var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : (dnsProvider == 'AzureDns' ? azureTlsCaddy : loadTextContent('../../docker-compose/with-postgres-external/tls.caddy'))
+// Auto mode: build the tls.caddy fragment the Caddyfile imports, per DNS provider. All provider
+// modules are compiled into the broch-caddy image (see Caddy.Dockerfile), so this is just config.
+// Byo mode: the BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from /etc/caddy/certs;
+// tls.caddy is unused. Caddyfiles come from broch-deploy (single source).
+// Azure managed identity = omit tenant/client/secret; service principal = include them.
+var tlsCloudflare = 'tls {\n\tdns cloudflare {env.CLOUDFLARE_API_TOKEN}\n}\n'
+var tlsAzureMi = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
+var tlsAzureSpn = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t\ttenant_id {env.AZURE_DNS_TENANT_ID}\n\t\tclient_id {env.AZURE_DNS_CLIENT_ID}\n\t\tclient_secret {env.AZURE_DNS_CLIENT_SECRET}\n\t}\n}\n'
+var tlsRoute53 = 'tls {\n\tdns route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}\n}\n'
+var tlsGoogle = 'tls {\n\tdns googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}\n}\n'
+var tlsDigitalOcean = 'tls {\n\tdns digitalocean {env.DO_AUTH_TOKEN}\n}\n'
+var autoTlsCaddy = dnsProvider == 'Cloudflare' ? tlsCloudflare : (dnsProvider == 'AzureDns' ? tlsAzureMi : (dnsProvider == 'AzureDnsServicePrincipal' ? tlsAzureSpn : (dnsProvider == 'Route53' ? tlsRoute53 : (dnsProvider == 'GoogleCloudDns' ? tlsGoogle : tlsDigitalOcean))))
+var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : autoTlsCaddy
 var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile')
-var azureSubscriptionId = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? subscription().subscriptionId : ''
+
+// Both Azure DNS modes need the subscription id. Only the managed-identity mode gets a VM
+// identity + the auto role grant; the service-principal mode (and every non-Azure provider)
+// authenticates with the supplied credential, so no identity and no role assignment.
+var usesAzureDns = certMode == 'Auto' && (dnsProvider == 'AzureDns' || dnsProvider == 'AzureDnsServicePrincipal')
+var azureDnsManagedIdentity = certMode == 'Auto' && dnsProvider == 'AzureDns'
+var azureSubscriptionId = usesAzureDns ? subscription().subscriptionId : ''
+// GCP Cloud DNS: Caddy reads the service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (ADC);
+// cloud-init writes it (base64) into the certs dir already mounted into the Caddy container.
+var gcpCredsPath = (certMode == 'Auto' && dnsProvider == 'GoogleCloudDns') ? '/etc/caddy/certs/gcp-sa.json' : ''
 
 // cloud-init.yaml carries __TOKEN__ placeholders; substitute them before base64.
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
@@ -143,17 +235,41 @@ var cloudInitTokens = [
   ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
   ['__CADDYFILE_B64__', base64(caddyfileContent)]
   ['__TLS_CADDY_B64__', base64(tlsCaddyContent)]
-  ['__TLS_CERT_B64__', tlsCertificate]
-  ['__TLS_KEY_B64__', tlsCertificateKey]
+  // Same null-render guard as __GCP_SA_JSON_B64__ below: tlsCertificate/tlsCertificateKey are
+  // empty in the DEFAULT certMode=Auto path, which would render `content:` (YAML null) and can
+  // abort the whole write_files step. 'e30=' (base64 '{}') keeps the entry a valid scalar; the
+  // files are inert in Auto mode (Caddy auto-issues and never reads them).
+  ['__TLS_CERT_B64__', empty(tlsCertificate) ? 'e30=' : tlsCertificate]
+  ['__TLS_KEY_B64__', empty(tlsCertificateKey) ? 'e30=' : tlsCertificateKey]
   // .env values — the template's .env.example surface (friendly names; the compose
   // fans BROCH_WILDCARD_HOSTNAME out to both Caddy and broch's API__WILDCARDHOSTNAME).
   ['__BROCH_VERSION__', brochVersion]
+  ['__BROCH_IMAGE__', brochImage]
+  ['__REGISTRY_SERVER__', registryServer]
+  ['__REGISTRY_USERNAME__', registryUsername]
+  ['__REGISTRY_PASSWORD__', registryPassword]
   ['__BROCH_MASTER_KEY__', brochMasterKey]
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
   ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
+  // The __AZURE_*__ token names are intentionally NOT renamed — they are internal
+  // substitution placeholders. The .env var NAMES they populate were renamed to
+  // AZURE_DNS_* in cloud-init.yaml; "correcting" this apparent mismatch breaks substitution.
   ['__AZURE_SUBSCRIPTION_ID__', azureSubscriptionId]
   ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
+  ['__AZURE_TENANT_ID__', azureTenantId]
+  ['__AZURE_CLIENT_ID__', azureClientId]
+  ['__AZURE_CLIENT_SECRET__', azureClientSecret]
+  ['__AWS_ACCESS_KEY_ID__', awsAccessKeyId]
+  ['__AWS_SECRET_ACCESS_KEY__', awsSecretAccessKey]
+  ['__DO_AUTH_TOKEN__', doAuthToken]
+  ['__GCP_PROJECT__', gcpProject]
+  ['__GOOGLE_APP_CREDS_PATH__', gcpCredsPath]
+  // 'e30=' (base64 of '{}') when no GCP creds: an empty value renders `content: ` in the
+  // cloud-init write_files entry, which YAML parses as null and can TypeError the whole
+  // write_files step (no .env written → unconfigured VM). A valid-but-empty JSON keeps the
+  // file parseable; Caddy only reads it in GoogleCloudDns mode, so it's inert otherwise.
+  ['__GCP_SA_JSON_B64__', empty(gcpCredentialsJson) ? 'e30=' : gcpCredentialsJson]
   ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
@@ -326,21 +442,68 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
   name: pgDatabaseName
 }
 
+// --- Customer-owned secret store. Created ONLY when a break-glass VM password is generated
+// (i.e. no SSH key supplied) — a deploy that brings its own SSH key (e.g. prod) creates none of
+// this. RBAC mode; this deployment writes the secret via the control plane (the deployer's
+// Contributor on the vault). To READ it, grant yourself — or set adminObjectId — the "Key Vault
+// Secrets User" role. The master key is never stored here (it's customer-supplied). ---
+// Anchor the unique hash at a fixed offset rather than take()-ing the whole string: a blind
+// take(..., 24) drops the hash entirely for vmName >= 20 chars (KV names are GLOBALLY unique,
+// so two long same-named deployments would collide) and can leave a trailing '-' (invalid).
+// 10 (name) + 4 ('-kv-') + 9 (hash) = 23 <= 24, always alphanumeric-terminated and unique.
+var kvName = '${take(vmName, 10)}-kv-${take(uniqueString(resourceGroup().id, vmName), 9)}'
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (needsKeyVault) {
+  name: kvName
+  location: location
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+  }
+}
+
+resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
+  parent: keyVault
+  name: 'vm-admin-password'
+  properties: { value: generatedVmPassword }
+}
+
+// Optional: let the deployer read the secrets (Key Vault Secrets User).
+resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId) && needsKeyVault) {
+  scope: keyVault
+  name: guid(keyVault.id, adminObjectId, 'kv-secrets-user')
+  properties: {
+    principalId: adminObjectId
+    principalType: adminObjectType
+    // Key Vault Secrets User
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+  }
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
-  // Azure-DNS auth uses the VM's managed identity (no secret to store); other TLS modes
-  // need no identity. Grant this identity "DNS Zone Contributor" on the zone post-deploy.
-  identity: (certMode == 'Auto' && dnsProvider == 'AzureDns') ? { type: 'SystemAssigned' } : null
+  // Azure-DNS managed-identity mode uses the VM's identity (the template auto-grants it the DNS
+  // role below). The service-principal mode and every other provider authenticate with a supplied
+  // credential, so no identity is attached.
+  identity: azureDnsManagedIdentity ? { type: 'SystemAssigned' } : null
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
       computerName: vmName
       adminUsername: adminUsername
       customData: base64(cloudInit)
+      // No SSH key => generated password (break-glass via Serial Console; inbound SSH stays
+      // closed by default). BYO key => key-only auth, no password. The password derives from a
+      // @secure() seed param; the var loses the secure flag, hence the suppression.
+      #disable-next-line use-secure-value-for-secure-inputs
+      adminPassword: usePassword ? generatedVmPassword : null
       linuxConfiguration: {
-        disablePasswordAuthentication: true
-        ssh: {
+        disablePasswordAuthentication: !usePassword
+        ssh: usePassword ? null : {
           publicKeys: [
             {
               path: '/home/${adminUsername}/.ssh/authorized_keys'
@@ -363,15 +526,37 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
       }
     }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
+    // Managed boot diagnostics — REQUIRED for Azure Serial Console, the break-glass path when no
+    // SSH key is set (the generated password is only reachable via Serial Console).
+    diagnosticsProfile: { bootDiagnostics: { enabled: true } }
   }
   // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
   // the server + database (and, via the chain, the private DNS link) to exist first.
   dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
 }
 
+// Auto-grant the VM's managed identity "DNS Zone Contributor" on the DNS zone's resource group,
+// so Caddy's ACME DNS-01 works with NO manual post-deploy step. Scoped to the RG (Caddy is
+// configured with the RG, not a single zone — it finds the zone matching the hostname). Requires
+// the deployer to have Owner / User Access Administrator on that RG; if they don't, leave
+// dnsZoneResourceGroup empty and grant the role by hand instead. RBAC propagation is eventual —
+// Caddy retries issuance until the grant lands.
+module dnsRoleAssignment 'dns-role.bicep' = if (azureDnsManagedIdentity && !empty(dnsZoneResourceGroup)) {
+  name: 'broch-dns-role'
+  scope: resourceGroup(dnsZoneResourceGroup)
+  params: {
+    principalId: vm.identity!.principalId
+  }
+}
+
+// Human-readable SSH state for the vmAccess output (extracted to avoid deeply-nested ternaries).
+var sshState = empty(sshAllowedCidr) ? 'closed' : 'limited to ${sshAllowedCidr}'
+var sshStateWithHint = empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to open it)' : 'limited to ${sshAllowedCidr}'
+
 output publicIpAddress string = publicIp.properties.ipAddress
-output sshCommand string = 'ssh ${adminUsername}@${publicIp.properties.ipAddress}'
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
 output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
+output keyVaultName string = keyVault.?name ?? ''
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
-output dnsRoleGrantHint string = (certMode == 'Auto' && dnsProvider == 'AzureDns') ? 'Grant the VM managed identity (managedIdentityPrincipalId) the "DNS Zone Contributor" role on your Azure DNS zone so Caddy can complete the DNS-01 challenge.' : '(not using Azure DNS)'
+output dnsRoleAssignment string = azureDnsManagedIdentity ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(provider authenticates with a supplied credential; no role assignment)'
+output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${sshState}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${sshStateWithHint}.'

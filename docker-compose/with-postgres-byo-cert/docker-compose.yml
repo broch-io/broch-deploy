@@ -15,7 +15,9 @@
 
 services:
   broch:
-    image: ghcr.io/broch-io/broch:${BROCH_VERSION:-latest}
+    # Default is the public image; BROCH_IMAGE overrides the repo for a private mirror or a
+    # pre-release/beta image (set the registry login in your .env / deploy if it's private).
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:
