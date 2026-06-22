@@ -5,12 +5,18 @@
 using 'main.bicep'
 
 // --- Networking / access ---
-param adminSshPublicKey = 'ssh-ed25519 AAAA...replace-with-your-public-key... you@example'
-// SSH is closed by default (no inbound 22; manage via `az vm run-command` / Serial
-// Console). Uncomment + set a CIDR ONLY for break-glass SSH from your admin network:
-// param sshAllowedCidr = '203.0.113.0/24'
+// SSH is closed by default (no inbound 22) and the VM is provisioned with a generated
+// break-glass password — manage via `az vm run-command` / Serial Console. No SSH key
+// required. Uncomment ONLY if you specifically want key-based SSH (then also set a CIDR):
+// param adminSshPublicKey = 'ssh-ed25519 AAAA...your-public-key... you@example'
+// param sshAllowedCidr    = '203.0.113.0/24'
+// Optional: AAD object ID to grant Key Vault Secrets User (read the generated secrets):
+// param adminObjectId = '<your-user-or-group-object-id>'
 
-param brochMasterKey = '<master-key>' // openssl rand -base64 48; prefer --parameters; reuse the DB's existing key if taking one over
+// Master key — REQUIRED (>=32 chars). The at-rest encryption root; generate with
+// `openssl rand -base64 48` and supply the SAME value on every (re)deploy. For an existing DB,
+// use that database's key (a different key can't decrypt its data). Prefer --parameters over committing.
+param brochMasterKey = '<run: openssl rand -base64 48>' // placeholder is <32 chars on purpose — @minLength rejects it until you replace it
 
 // --- Database: Existing (bring your own) or Managed (provision a private Flex Server) ---
 param databaseMode = 'Existing'
@@ -24,12 +30,29 @@ param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database
 param wildcardHostname = 'tunnels.example.com'
 param certMode = 'Auto' // Auto (Let's Encrypt) | Byo (your own cert)
 param acmeEmail = 'ops@example.com'
-// Auto + Cloudflare:
+// DNS-01 provider (certMode=Auto). Pick one and set its credentials:
 param dnsProvider = 'Cloudflare'
 param cloudflareApiToken = '<cloudflare-zone-dns-token>' // Zone:Read + DNS:Edit; prefer --parameters
-// Auto + Azure DNS (no secret — grant the VM identity "DNS Zone Contributor" post-deploy):
+// Azure DNS — managed identity (template auto-grants DNS Zone Contributor; needs Owner/UAA):
 // param dnsProvider          = 'AzureDns'
 // param dnsZoneResourceGroup = '<dns-zone-resource-group>'
+// Azure DNS — service principal (Contributor is enough; pre-grant the SP on the zone):
+// param dnsProvider       = 'AzureDnsServicePrincipal'
+// param dnsZoneResourceGroup = '<dns-zone-resource-group>'
+// param azureTenantId     = '<tenant-id>'
+// param azureClientId     = '<app-client-id>'
+// param azureClientSecret = '<app-client-secret>'      // prefer --parameters
+// AWS Route 53:
+// param dnsProvider        = 'Route53'
+// param awsAccessKeyId     = '<aws-access-key-id>'
+// param awsSecretAccessKey = '<aws-secret-access-key>' // prefer --parameters
+// Google Cloud DNS:
+// param dnsProvider        = 'GoogleCloudDns'
+// param gcpProject         = '<gcp-project-id>'
+// param gcpCredentialsJson = '<base64 service-account JSON>' // prefer --parameters
+// DigitalOcean:
+// param dnsProvider = 'DigitalOcean'
+// param doAuthToken = '<do-api-token>'                 // prefer --parameters
 // Byo cert (set certMode = 'Byo'):
 // param tlsCertificate    = '<base64 PEM fullchain>'   // prefer --parameters
 // param tlsCertificateKey = '<base64 PEM private key>' // prefer --parameters
@@ -49,3 +72,6 @@ param authDomain = 'your-tenant.auth0.com'
 // --- Optional ---
 // param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region
 // param brochVersion = 'latest'      // pin to the running version before any prod cutover
+// Private pre-release/beta image — server/username default to GHCR, so set only the token:
+// param brochImage = 'ghcr.io/broch-io/broch-beta'
+// param registryPassword = '<registry-token>'  // prefer --parameters
