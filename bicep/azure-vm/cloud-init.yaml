@@ -1,20 +1,23 @@
 #cloud-config
-# Broch — Azure VM appliance bootstrap.
+# Broch -- Azure VM appliance bootstrap.
 # Copyright (c) 2026 Broch, LLC. All rights reserved.
 #
-# This does NOT hand-roll a compose stack. It deploys the CANONICAL
-# docker-compose/with-postgres-external assets (docker-compose.yml, Caddyfile,
-# tls.caddy) VERBATIM — main.bicep base64-embeds them at deploy time via
-# loadTextContent() from that template dir, so this VM runs byte-for-byte the same
-# stack a docker-direct customer runs. There is no second copy to drift (notably:
+# This does NOT hand-roll a compose stack. It deploys the CANONICAL docker-compose
+# assets (docker-compose.yml, Caddyfile, tls.caddy) VERBATIM -- with-postgres-external
+# for Existing/Managed databases, with-postgres for databaseMode=Local. main.bicep
+# base64-embeds the selected set at deploy time via loadTextContent(), so this VM runs
+# byte-for-byte the same stack a docker-direct customer runs. There is no second copy to drift (notably:
 # ONE wildcard hostname, fanned out to both Caddy and broch inside the compose).
 # Caddy is the prebuilt ghcr.io/broch-io/broch-caddy image (pulled, not built).
 #
-# Only /opt/broch/.env is templated, from that template's .env.example surface.
-# BROCH_MASTER_KEY is the at-rest encryption root — always customer-supplied (required,
-# >=32 chars), never generated; main.bicep injects it here from the brochMasterKey parameter.
-# For an Existing DB it must be the key that DB was encrypted with (a fresh key can't decrypt
-# stored state). Telemetry/logging and the license are configured IN-APP (Admin UI).
+# Only /opt/broch/.env is templated, from that template's .env.example surface, and only its
+# NON-secret keys are substituted here. The SECRETS (BROCH_MASTER_KEY, the DB credential,
+# AUTHENTICATION__CLIENTSECRET, the DNS-01 tokens) are NOT in this file or in customData -- they are
+# stored in Key Vault and fetched at boot by the VM's user-assigned identity (the kv-fetch runcmd),
+# which appends them to .env. BROCH_MASTER_KEY is the at-rest encryption root -- always
+# customer-supplied (required, >=32 chars), never generated; for an Existing DB it must be the key
+# that DB was encrypted with (a fresh key can't decrypt stored state). Telemetry/logging and the
+# license are configured IN-APP (Admin UI).
 #
 # Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
 # main.bicep before base64. The base64 blobs are pure base64 (no underscores), so
@@ -26,9 +29,16 @@ packages:
   - ca-certificates
   - curl
   - gnupg
+  # python3 drives the Key Vault secret-fetch runcmd below. It is part of Ubuntu's base seed AND a hard
+  # dependency of cloud-init itself (which is what runs this file), so it is always present already --
+  # listing it here makes that an EXPLICIT guarantee rather than an implicit invariant (this runs in the
+  # Azure Marketplace, where the base image must not be assumed). The packages module runs in the config
+  # stage, before the runcmd final stage, so it is installed-before-use; a no-op when already present.
+  - python3
 
 write_files:
-  # Canonical assets, base64-embedded from docker-compose/with-postgres-external/.
+  # Canonical assets, base64-embedded from docker-compose/with-postgres-external/
+  # (Existing/Managed) or docker-compose/with-postgres/ (databaseMode=Local).
   - path: /opt/broch/docker-compose.yml
     permissions: "0644"
     encoding: b64
@@ -68,40 +78,42 @@ write_files:
     permissions: "0600"
     content: |
       # The compose maps BROCH_WILDCARD_HOSTNAME to BOTH Caddy's TLS host and
-      # broch's API__WILDCARDHOSTNAME — one knob, they cannot diverge. Likewise
+      # broch's API__WILDCARDHOSTNAME -- one knob, they cannot diverge. Likewise
       # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__DefaultConnection. Do not
       # add raw API__/ConnectionStrings__ keys here. Telemetry, logging, and the
       # license are configured in-app (Admin UI); CentralServer URL defaults in code.
+      # Pin the compose project name so the container + named-volume names (broch-postgres-1,
+      # broch_postgres_data) are STABLE -- Local-DB durability and the docs' docker exec names depend
+      # on it not drifting with the working-directory basename.
+      COMPOSE_PROJECT_NAME=broch
       BROCH_VERSION=__BROCH_VERSION__
       BROCH_IMAGE=__BROCH_IMAGE__
-      BROCH_MASTER_KEY=__BROCH_MASTER_KEY__
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
       CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
-      CLOUDFLARE_API_TOKEN=__CLOUDFLARE_API_TOKEN__
       # Azure DNS credentials for Caddy's ACME DNS-01 challenge (issuing the wildcard
       # TLS cert by writing TXT records in your DNS zone). These are NOT sign-in/identity
-      # credentials — those are the AUTHENTICATION__* keys below. Managed-identity mode
-      # uses only subscription + resource group; service-principal mode adds tenant/client/secret.
+      # credentials -- those are the AUTHENTICATION__* keys below. Managed-identity mode
+      # uses only subscription + resource group; service-principal mode adds tenant/client/secret
+      # (the client SECRET is appended at boot from Key Vault, see the kv-fetch step below).
       AZURE_DNS_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
       AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
       AZURE_DNS_TENANT_ID=__AZURE_TENANT_ID__
       AZURE_DNS_CLIENT_ID=__AZURE_CLIENT_ID__
-      AZURE_DNS_CLIENT_SECRET=__AZURE_CLIENT_SECRET__
-      AWS_ACCESS_KEY_ID=__AWS_ACCESS_KEY_ID__
-      AWS_SECRET_ACCESS_KEY=__AWS_SECRET_ACCESS_KEY__
-      DO_AUTH_TOKEN=__DO_AUTH_TOKEN__
       GCP_PROJECT=__GCP_PROJECT__
       GOOGLE_APPLICATION_CREDENTIALS=__GOOGLE_APP_CREDS_PATH__
-      BROCH_DB_CONNECTION_STRING=__DATABASE_CONNECTION_STRING__
       AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
       AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
-      AUTHENTICATION__CLIENTSECRET=__AUTH_CLIENT_SECRET__
       AUTHENTICATION__ADMINROLES=__AUTH_ADMIN_ROLES__
       AUTHENTICATION__DOMAIN=__AUTH_DOMAIN__
       AUTHENTICATION__TENANTID=__AUTH_TENANT_ID__
       AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
       AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
       AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
+      # Secrets are NOT written here at deploy time. BROCH_MASTER_KEY, the DB credential
+      # (BROCH_DB_CONNECTION_STRING or POSTGRES_PASSWORD), AUTHENTICATION__CLIENTSECRET, and the DNS-01
+      # tokens (CLOUDFLARE_API_TOKEN / AZURE_DNS_CLIENT_SECRET / AWS_* / DO_AUTH_TOKEN) are fetched from
+      # Key Vault at boot by the VM's user-assigned identity and APPENDED to this file by the kv-fetch
+      # runcmd below -- so they never enter customData or the cloud-init logs.
 
   - path: /etc/systemd/system/broch.service
     permissions: "0644"
@@ -110,6 +122,13 @@ write_files:
       Description=Broch (Docker Compose)
       Requires=docker.service
       After=docker.service
+      # databaseMode=Local: do NOT start the stack until the data disk is actually mounted, so Postgres
+      # can never initialise an empty database on the OS disk. RequiresMountsFor waits for the mount; a
+      # Local-only ConditionPathIsMountPoint drop-in (written by cloud-init) additionally refuses to
+      # start when nothing is mounted there -- nofail lets the mount unit go active empty on a
+      # disk-detached reboot, and the condition is what fails closed in that case. No-op for other modes
+      # (RequiresMountsFor resolves to the always-active root mount; no drop-in is written).
+      RequiresMountsFor=/var/lib/docker/volumes
       [Service]
       Type=oneshot
       RemainAfterExit=yes
@@ -122,7 +141,7 @@ write_files:
 runcmd:
   # 2 GB swap for memory headroom on small/burstable VM sizes (the .NET server
   # under load). Idempotent. (Caddy is now pulled, not compiled, so there's no
-  # xcaddy Go build to OOM — but the headroom is still cheap insurance.)
+  # xcaddy Go build to OOM -- but the headroom is still cheap insurance.)
   - |
     if [ ! -f /swapfile ]; then
       fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
@@ -132,6 +151,78 @@ runcmd:
 
   - chmod 0600 /opt/broch/.env
 
+  # databaseMode=Local only: a dedicated data disk is attached at LUN 0, holding the bundled
+  # Postgres data. Mount it at /var/lib/docker/volumes BEFORE Docker installs, so the named volume
+  # lives on it and survives VM recreation. Gated on __LOCAL_DB__ so it is a true no-op (not a 60s
+  # wait) for Existing/Managed, and so a MISSING disk in Local mode FAILS LOUDLY instead of silently
+  # putting the database on the OS disk (which a reprovision would then destroy). Azure attaches the
+  # disk asynchronously, so wait for the LUN-0 symlink. Format ONLY when blank -- a reattached disk
+  # keeps its data (blkid finds the existing filesystem and we skip mkfs).
+  - |
+    if [ "__LOCAL_DB__" = "true" ]; then
+      # Write the fail-closed guard FIRST -- before anything below can `exit`. runcmd items are
+      # INDEPENDENT subprocesses, so an `exit 1` in this block does NOT stop the later Docker-install or
+      # `systemctl enable --now broch.service` items. The ConditionPathIsMountPoint drop-in is what
+      # actually keeps broch from starting against an unmounted (empty) /var/lib/docker/volumes and
+      # re-initialising a blank database, so it MUST exist even when disk setup then fails (missing LUN,
+      # no UUID). It checks the real mount table at start: disk mounted -> broch starts; not mounted ->
+      # broch is skipped (fails closed), never corrupting. Local-ONLY -- for Existing/Managed the path is
+      # a plain root-fs dir, never a mount point, so the condition would wrongly block broch forever.
+      mkdir -p /etc/systemd/system/broch.service.d
+      # Error-check the write: this drop-in is the ONLY real fail-closed barrier, so if it silently
+      # failed (e.g. a full OS disk) broch would later start unguarded against an empty path. Abort loud.
+      printf '[Unit]\nConditionPathIsMountPoint=/var/lib/docker/volumes\n' > /etc/systemd/system/broch.service.d/10-require-data-mount.conf || { echo "FATAL: could not write broch mount guard" >&2; exit 1; }
+      # Docker ITSELF must also wait for the mount. On a REBOOT (runcmd does not re-run) the disk mounts
+      # via the fstab `nofail` entry -- but `nofail` drops the mount's ordering before local-fs.target, so
+      # dockerd (which starts after local-fs.target) could otherwise initialise /var/lib/docker/volumes on
+      # the OS disk BEFORE the data disk mounts over it, realising the Postgres named volume in the wrong
+      # place. broch.service's guard only governs broch's start, not dockerd's data-root resolution --
+      # dockerd is the process that actually realises the volume -- so order dockerd after the mount too.
+      # With `nofail` this RequiresMountsFor is best-effort ORDERING for the happy path (it generates
+      # Requires=+After= against the generated .mount unit, not BindsTo=, so a never-mounting disk does not
+      # hard-fail dockerd); broch.service's ConditionPathIsMountPoint above is the LOAD-BEARING fail-closed
+      # guard if the disk is ever absent at boot -- it is what actually stops broch from running blank.
+      mkdir -p /etc/systemd/system/docker.service.d
+      printf '[Unit]\nRequiresMountsFor=/var/lib/docker/volumes\n' > /etc/systemd/system/docker.service.d/10-require-data-mount.conf || { echo "FATAL: could not write docker mount-ordering drop-in" >&2; exit 1; }
+      DEV=/dev/disk/azure/scsi1/lun0
+      for i in $(seq 1 30); do [ -e "$DEV" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
+      if [ ! -e "$DEV" ]; then echo "FATAL: databaseMode=Local but the data disk (LUN 0) never appeared" >&2; exit 1; fi
+      DISK=$(readlink -f "$DEV")
+      # Settle udev BEFORE format-detection. The wait loop breaks the instant the LUN symlink exists,
+      # which can be before the kernel finishes replaying the disk's uevents. The --timeout bounds settle
+      # so a stuck udev queue can never hang cloud-init forever.
+      udevadm settle --timeout=30 2>/dev/null || true
+      # blkid exit codes (util-linux): 0=filesystem found, 2=nothing found (a BLANK disk -- the normal
+      # first-deploy case), 4=usage error, 8=ambiguous/garbled probe. mkfs ONLY on rc 2. On rc 0 KEEP the
+      # existing filesystem (a reattached disk with surviving Postgres data). On ANYTHING else (4/8, or an
+      # unexpected code -- e.g. a reattached disk not ready despite settle, conflicting signatures) ABORT
+      # rather than `mkfs -F`, which would WIPE a disk that may hold the surviving data dir. (An abort
+      # leaves the disk unformatted + unmounted; the drop-in above keeps broch from starting blank. runcmd
+      # is first-boot-only, so there is NO auto-retry -- recover by redeploying once the disk is healthy.)
+      # A blind `|| mkfs` reformats on 2, 4 AND 8 alike, so we branch on the exact code.
+      blkid_rc=0
+      blkid "$DISK" >/dev/null 2>&1 || blkid_rc=$?
+      if [ "$blkid_rc" -eq 2 ]; then mkfs.ext4 -F "$DISK"; elif [ "$blkid_rc" -ne 0 ]; then echo "FATAL: blkid rc $blkid_rc on $DISK -- not a clean blank(2)/formatted(0) result; refusing to format a possibly-populated disk" >&2; exit 1; fi
+      mkdir -p /var/lib/docker/volumes
+      # Settle AGAIN so a freshly-mkfs'd filesystem's UUID is queryable -- blkid can otherwise race the
+      # new-fs uevent and return an empty string. An empty UUID would make an unanchored `grep -q ""`
+      # match every fstab line and silently skip the entry, dropping the database onto the OS disk. So
+      # settle, then FAIL LOUDLY if the UUID is still empty, and anchor the grep at line start + trailing
+      # space so it matches only a real fstab line for THIS UUID (never a comment or an embedded substring).
+      udevadm settle --timeout=30 2>/dev/null || true
+      # Poll for the UUID rather than read once: on a busy first boot the new-filesystem uevent can land
+      # AFTER settle's timeout, so a single blkid returns empty and the fatal below would abort a disk that
+      # was in fact formatted correctly (runcmd is first-boot-only -- that fatal needs a manual redeploy to
+      # recover). Retry a few times, settling between attempts, before giving up.
+      UUID=""
+      for i in $(seq 1 10); do UUID=$(blkid -s UUID -o value "$DISK"); [ -n "$UUID" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
+      if [ -z "$UUID" ]; then echo "FATAL: databaseMode=Local but blkid returned no UUID for $DISK after retries" >&2; exit 1; fi
+      # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
+      # would schedule systemd-fsck@<UUID> which can escalate to emergency.target if the disk is absent.
+      grep -q "^UUID=$UUID " /etc/fstab || echo "UUID=$UUID /var/lib/docker/volumes ext4 defaults,nofail 0 0" >> /etc/fstab
+      mountpoint -q /var/lib/docker/volumes || mount /var/lib/docker/volumes || { echo "FATAL: databaseMode=Local but mounting the data disk at /var/lib/docker/volumes failed" >&2; exit 1; }
+    fi
+
   # Docker Engine
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -140,7 +231,7 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  # Private-registry login — only when a registry token is supplied (a pre-release/beta image or
+  # Private-registry login -- only when a registry token is supplied (a pre-release/beta image or
   # the dev bundle). No-op for the default public image. Server/username default to GHCR, so a
   # private pull needs only registryPassword. The stored credential in /root/.docker/config.json
   # is reused by compose pulls on boot and upgrades.
@@ -149,6 +240,162 @@ runcmd:
       printf '%s' '__REGISTRY_PASSWORD__' | docker login "__REGISTRY_SERVER__" -u "__REGISTRY_USERNAME__" --password-stdin
     fi
 
+  # Fetch the deploy-time secrets from Key Vault with the VM's user-assigned identity and APPEND them to
+  # /opt/broch/.env, so the values never lived in customData. __KV_SECRETS__ is a ';'-joined list of
+  # ENVKEY=secret-name pairs for exactly the secrets that exist. The whole fetch is ONE python3 program
+  # (python3 is pinned in `packages:` above and is also what runs cloud-init itself). Doing the HTTP, JSON
+  # parse, CR/LF validation and .env write in python -- rather than bash + curl + sed -- removes the shell
+  # hazards the bash version kept re-introducing: $() stripping a trailing newline before any guard could
+  # see it, IFS collapsing a retry loop to one iteration, curl with no timeout hanging boot forever, grep
+  # not seeing an embedded LF. Retries on a fresh boot while the VM's managed-identity token warms up in
+  # IMDS and against transient vault/network blips -- the app vault's access policy is in place the instant
+  # the vault is created, so this loop is belt-and-suspenders, NOT a race with RBAC grant propagation; runcmd
+  # is first-boot-only. FAILS LOUD (and leaves the start-gate sentinel unwritten) if any secret can't be read.
+  - |
+    KV="__KV_NAME__" CID="__UAI_CLIENT_ID__" MAP="__KV_SECRETS__" ENVFILE=/opt/broch/.env SENTINEL=/run/kv-fetch-complete python3 - <<'PY'
+    import os, sys, json, time, urllib.request, urllib.error
+
+    KV, CID, MAP = os.environ["KV"], os.environ["CID"], os.environ["MAP"]
+    ENVFILE, SENTINEL = os.environ["ENVFILE"], os.environ["SENTINEL"]
+    # ~10 min window per stage (generous: covers IMDS managed-identity token warm-up + transient vault/network
+    # blips on a fresh boot -- the access policy itself is immediate, no RBAC lag); 15s per HTTP call so a
+    # stalled socket -- a vault that completes the TCP handshake then never sends -- can't hang first boot
+    # forever (the bash curl had no timeout). runcmd is first-boot-only, so the window must not give up early.
+    RETRIES, SLEEP, TIMEOUT = 60, 10, 15
+
+    def fatal(msg):
+        sys.stderr.write("FATAL: " + msg + "\n")
+        sys.exit(1)
+
+    if not MAP:
+        fatal("empty Key Vault secret map -- nothing to fetch (a deploy always has at least the master "
+              "key); refusing to start broch unconfigured")
+
+    # Clear any stale completion marker up front so a failed re-run (e.g. `cloud-init single` recovery on the
+    # same boot, /run being tmpfs that survives within a boot) can never leave a previous run's sentinel to
+    # bless a fetch that has since started failing.
+    try:
+        os.remove(SENTINEL)
+    except FileNotFoundError:
+        pass
+
+    # IMDS is link-local (169.254.169.254): bypass any http_proxy the VM baseline set -- a proxy can't reach
+    # link-local, so every token fetch would fail through it. The Key Vault call below uses the DEFAULT
+    # opener, which DOES honour proxy env -- correct for a real internet endpoint (vault.azure.net).
+    imds_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def imds_token():
+        url = ("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01"
+               "&resource=https%3A%2F%2Fvault.azure.net&client_id=" + CID)
+        req = urllib.request.Request(url, headers={"Metadata": "true"})
+        try:
+            with imds_opener.open(req, timeout=TIMEOUT) as r:
+                return json.load(r).get("access_token", "") or ""
+        except Exception:
+            return ""
+
+    token = ""
+    for _ in range(RETRIES):
+        token = imds_token()
+        if token:
+            break
+        time.sleep(SLEEP)
+    if not token:
+        fatal("no managed-identity token for Key Vault %s after retries" % KV)
+
+    def fetch(secn, tok):
+        url = "https://%s.vault.azure.net/secrets/%s?api-version=7.4" % (KV, secn)
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:  # default opener -> honours proxy env
+            return json.load(r).get("value", "")
+
+    # Fetch EVERY secret into memory first; write .env only once all of them succeeded. A mid-list failure
+    # therefore never leaves a partially-populated .env that the start gate's sentinel would then bless.
+    values = {}
+    for entry in MAP.split(";"):
+        if not entry:
+            continue
+        envk, _, secn = entry.partition("=")
+        val, last = "", "no attempt made"
+        for _ in range(RETRIES):
+            try:
+                val = fetch(secn, token)
+                if val:
+                    break
+                last = "HTTP 200 but the stored value is EMPTY"
+            except urllib.error.HTTPError as e:
+                # 404 = the secret genuinely doesn't exist (a deploy/map bug, not a fresh-boot blip).
+                # Retrying for the full window would only delay the same failure, so fail fast and clear.
+                if e.code == 404:
+                    fatal("secret %s not found in Key Vault %s (HTTP 404) -- it was never created" % (secn, KV))
+                last = "HTTP %s" % e.code              # transient 401/403 on a fresh boot -> retry
+            except Exception as e:
+                last = "%s: %s" % (type(e).__name__, e)   # DNS / connect / read timeout -> retry
+            time.sleep(SLEEP)
+            t = imds_token()                            # refresh, but NEVER zero a good token on a blip
+            if t:
+                token = t
+        if not val:
+            fatal("could not read secret %s from Key Vault %s after retries (last: %s)" % (secn, KV, last))
+        # .env is line-based (docker compose env_file truncates a value at its first CR/LF). python sees the
+        # RAW bytes here -- unlike the bash version, where $() had already stripped a trailing newline before
+        # any check could run -- so a CR/LF (including a fat-fingered trailing newline from a portal paste)
+        # FAILS LOUD instead of silently truncating. A genuinely multi-line secret (PEM, JSON) must go in a
+        # FILE, not appended here.
+        if "\n" in val or "\r" in val:
+            fatal("secret %s contains a CR/LF; /opt/broch/.env holds single-line values only" % secn)
+        values[envk] = val
+
+    # Rewrite .env: drop any prior assignment for each fetched key, then append KEY=value. Idempotent, so a
+    # redeploy after a first boot that needed retries REPLACES rather than duplicates (a duplicate would leave
+    # a stale value ahead of the new one, which first-match readers pick up). Preserve the 0600 mode.
+    try:
+        with open(ENVFILE) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        lines = []
+    keys = set(values)
+    # Keep comment/blank lines verbatim; only drop ASSIGNMENT lines whose key we're about to re-write (so a
+    # comment that happens to contain '=' can never be mistaken for a key and dropped).
+    kept = [ln for ln in lines if ln.lstrip().startswith("#") or ln.split("=", 1)[0] not in keys]
+    if kept and not kept[-1].endswith("\n"):
+        kept[-1] += "\n"
+    kept += ["%s=%s\n" % (k, v) for k, v in values.items()]
+    try:
+        with open(ENVFILE, "w") as f:
+            f.write("".join(kept))
+        os.chmod(ENVFILE, 0o600)
+    except OSError as e:
+        fatal("could not write secrets to %s (%s) -- refusing to continue" % (ENVFILE, e))
+
+    # Sentinel LAST: the start gate requires it, so any fatal above keeps broch from starting with missing
+    # secrets -- and .env is rewritten only on FULL success, so the sentinel and the file agree.
+    open(SENTINEL, "w").close()
+    PY
+
   # systemd owns the stack (single start path for first boot AND reboots).
   - systemctl daemon-reload
-  - systemctl enable --now broch.service
+  # Belt-and-suspenders for Local mode on FIRST boot: refuse to start broch unless the data disk is
+  # actually mounted. The ConditionPathIsMountPoint drop-in gates REBOOTS, but it is itself written by a
+  # runcmd above whose write could (pathologically: full OS disk) have failed with a non-fatal `exit 1`
+  # that does NOT stop this independent runcmd item -- leaving broch to start unguarded and initialise
+  # Postgres on the OS disk (destroyed on a later VM recreate). This check closes that first-boot window
+  # without depending on the drop-in. Non-Local modes short-circuit (the path is a plain dir, not a mount).
+  - |
+    if [ "__LOCAL_DB__" = "true" ] && ! mountpoint -q /var/lib/docker/volumes; then
+      echo "FATAL: databaseMode=Local but /var/lib/docker/volumes is not mounted -- refusing to start broch (would initialise Postgres on the OS disk)" >&2
+      exit 1
+    fi
+    # The kv-fetch runcmd FATALs in its OWN subprocess on a failed/partial fetch, which does NOT stop this
+    # independent item. It writes /run/kv-fetch-complete only after EVERY secret landed in .env, so gate on
+    # that sentinel (not a single key): a partial fetch -- master key OK but, say, the DB credential
+    # exhausted its retries -- must never start broch with missing secrets.
+    test -f /run/kv-fetch-complete || { echo "FATAL: Key Vault secret fetch did not complete -- refusing to start broch with missing secrets" >&2; exit 1; }
+    # Existing/Managed modes need a DB connection string (Local needs none -- the sentinel already covers
+    # POSTGRES_PASSWORD, which is always in the fetch map). Catch an Existing deploy with an EMPTY
+    # databaseConnectionString here: it is filtered out of the fetch map, so the sentinel can't see it, and
+    # broch would otherwise start and silently fail every DB connection.
+    if [ "__LOCAL_DB__" != "true" ]; then
+      grep -q "^BROCH_DB_CONNECTION_STRING=." /opt/broch/.env || { echo "FATAL: databaseMode=Existing/Managed but no database connection string was provided (set databaseConnectionString) -- refusing to start broch" >&2; exit 1; }
+    fi
+    systemctl enable --now broch.service

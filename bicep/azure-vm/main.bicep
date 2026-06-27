@@ -23,7 +23,7 @@ param adminUsername string = 'broch'
 @description('Optional, advanced. BYO SSH public key for break-glass access. Leave empty (default) and the VM is provisioned with a generated password instead — Broch is managed via `az vm run-command` / Azure Serial Console and needs no SSH. Setting a key switches the VM to key-only auth.')
 param adminSshPublicKey string = ''
 
-@description('Optional. AAD object ID of a user/group to grant Key Vault Secrets User on the created Key Vault, so you can read the generated break-glass VM password without a manual role grant. Empty (default) grants no data-plane access — grant yourself later. (The master key is never stored in the vault — it is customer-supplied.)')
+@description('Optional. AAD object ID of a user/group to grant read access to the generated break-glass VM password (Key Vault Secrets User, scoped to JUST that secret) so you can retrieve it without a manual role grant. Only applies when no SSH key is supplied (otherwise there is no break-glass password). It deliberately does NOT grant the app secrets (master key, DB credential, IdP secret, DNS tokens) — those are read only by the VM managed identity; grant yourself vault-level access manually if you need to inspect them. Empty (default) grants nothing.')
 param adminObjectId string = ''
 
 @description('Principal type of adminObjectId — set Group if it is an AAD group, or ServicePrincipal for a CI/CD managed identity / service principal. Lets ARM skip a type lookup that can race AAD replication and fail the role assignment.')
@@ -137,13 +137,23 @@ param vmPasswordSeed string = newGuid()
 @allowed([
   'Existing'
   'Managed'
+  'Local'
 ])
-@description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment.')
+@description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment. Local: run PostgreSQL on this VM (the bundled with-postgres compose) on a small dedicated data disk — zero DB prerequisites, but YOU manage backups (no automated backups/PITR; see README).')
 param databaseMode string = 'Existing'
 
-@description('Npgsql connection string for your existing PostgreSQL (Existing mode). Ignored when databaseMode=Managed.')
+@description('Npgsql connection string for your existing PostgreSQL (Existing mode). Ignored when databaseMode=Managed/Local.')
 @secure()
 param databaseConnectionString string = ''
+
+@description('Size (GiB) of the dedicated data disk that holds the Local PostgreSQL data (databaseMode=Local). Broch\'s database is tiny; the default suits typical use — size up only if you retain large audit/request-log history. The disk is a separate resource, so the database survives VM reboots and recreation. Pick the size at first deploy: INCREASING it on a later redeploy resizes the Azure disk but does NOT auto-grow the ext4 filesystem — run `sudo resize2fs /dev/disk/azure/scsi1/lun0` on the VM afterward (and note some disk tiers require a VM deallocate to resize). Shrinking is not supported.')
+@minValue(4)
+@maxValue(1024)
+param dataDiskSizeGb int = 4
+
+@description('Optional password for the bundled Local PostgreSQL (databaseMode=Local). Leave empty for a zero-config default DERIVED from the resource group + VM name. That default is computable by anyone with Reader on the subscription, so SET an explicit value for any deployment where the VM identity could be compromised (Postgres has no host port, so the practical blast radius is limited to in-container code execution). If you set one, STORE IT and re-supply the SAME value on any from-scratch recreate of a Local-mode VM (Postgres keeps the password from when its data dir was first initialised). Ignored for Existing/Managed.')
+@secure()
+param localDbAdminPassword string = ''
 
 @description('Admin password for the provisioned PostgreSQL (Managed mode). 8-128 chars; at least 3 of lower/upper/digit/symbol.')
 @secure()
@@ -186,6 +196,23 @@ var pgHost = '${pgServerName}.${pgDnsZone}'
 var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 
+// Local mode: PostgreSQL runs ON the VM (the bundled with-postgres compose). cloud-init injects
+// this password; the compose builds its own connection string from it. The path passed to
+// loadTextContent must be a compile-time literal, so we load BOTH composes and pick at deploy.
+// The password is DERIVED (not random) so it is STABLE across a from-scratch reprovision — same
+// subscription + RG + vmName => same password (uniqueString hashes resourceGroup().id, which includes
+// the subscription GUID, so MOVING the RG to another subscription changes it — pin localDbAdminPassword
+// before such a migration). That stability is essential: PostgreSQL ignores POSTGRES_PASSWORD after the
+// data dir is initialised, so a recreated VM must present the SAME password to the surviving disk's
+// database (a fresh newGuid() would lock broch out of its own surviving data). The bundled
+// PostgreSQL is not network-exposed (no host port, docker-internal only), so the derived default is
+// safe; an operator who wants a credential NOT derivable from ARM metadata (or one stable across a
+// subscription move) can supply localDbAdminPassword (re-supply the same value on recreate).
+var localDbPassword = empty(localDbAdminPassword) ? '${uniqueString(resourceGroup().id, vmName, 'broch-local-db')}X9' : localDbAdminPassword
+var composeExternal = loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml')
+var composeLocal = loadTextContent('../../docker-compose/with-postgres/docker-compose.yml')
+var selectedCompose = databaseMode == 'Local' ? composeLocal : composeExternal
+
 // The master key is always customer-supplied (required + @minLength) — never generated. So a
 // (re)deploy can't mint a different key that fails to decrypt an existing database.
 // No SSH key supplied => provision a generated break-glass password (Serial Console).
@@ -195,9 +222,13 @@ var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionStr
 // secret scanners (the entropy is the GUID, not the suffix).
 var usePassword = empty(adminSshPublicKey)
 var generatedVmPassword = '${vmPasswordSeed}X9'
-// The Key Vault now exists only to hold the generated break-glass password — so a deploy that
-// brings its own SSH key (e.g. prod) creates no Key Vault and no new resources.
-var needsKeyVault = usePassword
+// The Key Vault is now ALWAYS created: it holds the high-value deploy-time secrets (master key, DB
+// credential, IdP secret, DNS-01 tokens) that the VM's user-assigned managed identity reads at boot,
+// instead of those values living in customData (base64, ARM-Reader-readable). The generated break-glass
+// password (no-SSH-key mode) lives in a SECOND vault the VM identity can't read (see bgKeyVault). (The BYO
+// TLS cert/key, GCP creds JSON, and registry token are NOT yet migrated -- they remain in customData; see
+// the README follow-up note.) So every deploy creates a Key Vault -- two in no-SSH-key mode -- each with
+// the 7-day soft-delete-on-teardown behaviour (see README).
 
 // --- TLS config selection ---
 // Auto mode: build the tls.caddy fragment the Caddyfile imports, per DNS provider. All provider
@@ -213,7 +244,10 @@ var tlsGoogle = 'tls {\n\tdns googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT
 var tlsDigitalOcean = 'tls {\n\tdns digitalocean {env.DO_AUTH_TOKEN}\n}\n'
 var autoTlsCaddy = dnsProvider == 'Cloudflare' ? tlsCloudflare : (dnsProvider == 'AzureDns' ? tlsAzureMi : (dnsProvider == 'AzureDnsServicePrincipal' ? tlsAzureSpn : (dnsProvider == 'Route53' ? tlsRoute53 : (dnsProvider == 'GoogleCloudDns' ? tlsGoogle : tlsDigitalOcean))))
 var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : autoTlsCaddy
-var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile')
+// Mirror selectedCompose's mode branch so a Local-mode VM loads the Caddyfile from the same template
+// dir as its compose. The Auto-mode Caddyfiles are byte-identical today, so this is drift-insurance,
+// not a behaviour change; Byo mode uses its own variant.
+var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose/with-postgres-byo-cert/Caddyfile') : (databaseMode == 'Local' ? loadTextContent('../../docker-compose/with-postgres/Caddyfile') : loadTextContent('../../docker-compose/with-postgres-external/Caddyfile'))
 
 // Both Azure DNS modes need the subscription id. Only the managed-identity mode gets a VM
 // identity + the auto role grant; the service-principal mode (and every non-Azure provider)
@@ -229,10 +263,10 @@ var gcpCredsPath = (certMode == 'Auto' && dnsProvider == 'GoogleCloudDns') ? '/e
 // Token→value table folded over the file with reduce(). The base64 blobs are pure
 // base64 (no underscores), so they never collide with a __TOKEN__ placeholder.
 var cloudInitTokens = [
-  // Canonical compose stack, embedded VERBATIM (base64) from the shared
-  // docker-compose/with-postgres-external template — single source of truth, so the
-  // VM runs the same bytes as a docker-direct customer and the two cannot drift.
-  ['__COMPOSE_B64__', base64(loadTextContent('../../docker-compose/with-postgres-external/docker-compose.yml'))]
+  // Canonical compose stack, embedded VERBATIM (base64) from the shared docker-compose template
+  // — single source of truth, so the VM runs the same bytes as a docker-direct customer and the
+  // two cannot drift. with-postgres-external normally; with-postgres (bundled DB) for Local mode.
+  ['__COMPOSE_B64__', base64(selectedCompose)]
   ['__CADDYFILE_B64__', base64(caddyfileContent)]
   ['__TLS_CADDY_B64__', base64(tlsCaddyContent)]
   // Same null-render guard as __GCP_SA_JSON_B64__ below: tlsCertificate/tlsCertificateKey are
@@ -248,10 +282,8 @@ var cloudInitTokens = [
   ['__REGISTRY_SERVER__', registryServer]
   ['__REGISTRY_USERNAME__', registryUsername]
   ['__REGISTRY_PASSWORD__', registryPassword]
-  ['__BROCH_MASTER_KEY__', brochMasterKey]
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
-  ['__CLOUDFLARE_API_TOKEN__', cloudflareApiToken]
   // The __AZURE_*__ token names are intentionally NOT renamed — they are internal
   // substitution placeholders. The .env var NAMES they populate were renamed to
   // AZURE_DNS_* in cloud-init.yaml; "correcting" this apparent mismatch breaks substitution.
@@ -259,10 +291,6 @@ var cloudInitTokens = [
   ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
   ['__AZURE_TENANT_ID__', azureTenantId]
   ['__AZURE_CLIENT_ID__', azureClientId]
-  ['__AZURE_CLIENT_SECRET__', azureClientSecret]
-  ['__AWS_ACCESS_KEY_ID__', awsAccessKeyId]
-  ['__AWS_SECRET_ACCESS_KEY__', awsSecretAccessKey]
-  ['__DO_AUTH_TOKEN__', doAuthToken]
   ['__GCP_PROJECT__', gcpProject]
   ['__GOOGLE_APP_CREDS_PATH__', gcpCredsPath]
   // 'e30=' (base64 of '{}') when no GCP creds: an empty value renders `content: ` in the
@@ -270,16 +298,24 @@ var cloudInitTokens = [
   // write_files step (no .env written → unconfigured VM). A valid-but-empty JSON keeps the
   // file parseable; Caddy only reads it in GoogleCloudDns mode, so it's inert otherwise.
   ['__GCP_SA_JSON_B64__', empty(gcpCredentialsJson) ? 'e30=' : gcpCredentialsJson]
-  ['__DATABASE_CONNECTION_STRING__', effectiveConnectionString]
+  // Drives the cloud-init data-disk mount: Local waits for + requires the disk (a missing disk is a
+  // loud failure, never a silent fall-through onto the OS disk); other modes skip the block entirely.
+  ['__LOCAL_DB__', databaseMode == 'Local' ? 'true' : 'false']
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
-  ['__AUTH_CLIENT_SECRET__', authClientSecret]
   ['__AUTH_ADMIN_ROLES__', authAdminRoles]
   ['__AUTH_DOMAIN__', authDomain]
   ['__AUTH_TENANT_ID__', authTenantId]
   ['__AUTH_INSTANCE__', authInstance]
   ['__AUTH_AUTHORITY__', authAuthority]
   ['__AUTH_AUDIENCE__', authAudience]
+  // Key Vault boot-fetch (replaces the secret values that used to be substituted into .env here, so
+  // they never enter customData). cloud-init reads each named secret with the VM's user-assigned
+  // identity and appends it to .env. __KV_SECRETS__ lists ENVKEY=secret-name pairs for exactly the
+  // secrets that exist (assembled in kvSecretMap above), ';'-joined.
+  ['__KV_NAME__', kvName]
+  ['__UAI_CLIENT_ID__', vmIdentity.properties.clientId]
+  ['__KV_SECRETS__', kvSecretMap]
 ]
 var cloudInit = reduce(
   cloudInitTokens,
@@ -442,19 +478,80 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
   name: pgDatabaseName
 }
 
-// --- Customer-owned secret store. Created ONLY when a break-glass VM password is generated
-// (i.e. no SSH key supplied) — a deploy that brings its own SSH key (e.g. prod) creates none of
-// this. RBAC mode; this deployment writes the secret via the control plane (the deployer's
-// Contributor on the vault). To READ it, grant yourself — or set adminObjectId — the "Key Vault
-// Secrets User" role. The master key is never stored here (it's customer-supplied). ---
-// Anchor the unique hash at a fixed offset rather than take()-ing the whole string: a blind
-// take(..., 24) drops the hash entirely for vmName >= 20 chars (KV names are GLOBALLY unique,
-// so two long same-named deployments would collide) and can leave a trailing '-' (invalid).
-// 10 (name) + 4 ('-kv-') + 9 (hash) = 23 <= 24, always alphanumeric-terminated and unique.
-var kvName = '${take(vmName, 10)}-kv-${take(uniqueString(resourceGroup().id, vmName), 9)}'
+// --- Customer-owned secret store. ALWAYS created now: it holds the deploy-time secrets the VM's
+// user-assigned identity reads at BOOT (master key, DB credential, IdP secret, DNS-01 tokens) instead of
+// those values living in customData (base64, ARM-Reader-readable). The generated break-glass VM password
+// is kept in a SEPARATE vault (bgKeyVault, below) the VM identity canNOT read -- so a broch RCE can't use
+// the VM identity to lift the host break-glass password. ACCESS-POLICY mode (not RBAC); this deployment
+// writes the secrets via the control plane and grants the VM read via the vault's access policy -- both
+// Contributor-covered, so the secrets path needs no Owner/UAA (see the keyVault resource for the why).
+// The master key is customer-supplied and never transits Broch/Central (born in the customer tenant); it
+// is stored here only so the VM can read it the same way as the rest. ---
+// Two vaults per broch, both named for THIS deployment (vmName) + role and SHARING one id, so they read as
+// an obvious pair: <vmName>-app-<id> (app secrets, access-policy) and <vmName>-bg-<id> (break-glass, RBAC).
+// The <id> is not cosmetic randomness -- Key Vault names are unique across ALL of Azure, so a bare
+// <vmName>-app would collide whenever two deployments share a vmName (the Marketplace default is 'broch').
+// uniqueString(rg.id, vmName) is DETERMINISTIC: the same deployment always recomputes the same names, so a
+// redeploy re-targets the same vaults (no churn); a different RG/subscription gets distinct ones. These
+// names are also distinct from the old single-vault template's <vmName>-kv-<hash>, so on an UPGRADE the app
+// vault is created DIRECTLY in access-policy mode -- never an RBAC->access-policy flip, which would need
+// Owner/UAA and break Contributor-deployability. Length <= 24: take(vmName,12) + '-app-' (5) + id (7) = 24.
+var kvId = take(uniqueString(resourceGroup().id, vmName), 7)
+var kvBaseName = take(vmName, 12)
+var kvName = '${kvBaseName}-app-${kvId}'
+var bgKvName = '${kvBaseName}-bg-${kvId}'
 
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (needsKeyVault) {
+// User-assigned managed identity the VM uses to (a) read the deploy-time secrets from Key Vault at boot
+// and (b) complete Caddy's AzureDns ACME challenge (dnsProvider=AzureDns). User-assigned, NOT
+// system-assigned, on purpose: its principalId exists BEFORE the VM, so the app vault's access policy
+// (below) names it and is in place the instant the vault is created -- cloud-init's boot-time secret
+// fetch then does not race grant propagation. Declared ahead of the vault so the vault can reference it.
+resource vmIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${vmName}-id'
+  location: location
+}
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
+  location: location
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    // Access-policy mode (NOT RBAC). The VM identity's read grant is a data-plane PROPERTY of the vault,
+    // written with Contributor on the vault -- so the deploy needs NO Microsoft.Authorization/
+    // roleAssignments/write (i.e. Owner / User Access Administrator). The secret WRITES below are ARM
+    // control-plane ops, Contributor-covered either way. 'get' only: the boot-fetch reads named secrets,
+    // never lists. This keeps the appliance -- and the Azure Marketplace solution template compiled from
+    // this exact file -- deployable by a plain Contributor, which RBAC mode silently broke: an
+    // unconditional Key Vault Secrets User role assignment forced Owner/UAA on EVERY deploy. Bonus: access
+    // policies are enforced by the vault directly, with no AAD-RBAC replication lag -- shrinking the
+    // ~10-min propagation window the boot-fetch retry loop exists to survive (the loop stays as
+    // belt-and-suspenders). The break-glass vault (bgKeyVault) stays RBAC: its grant is conditional on
+    // adminObjectId, which the Marketplace never sets, so it does not raise the deploy floor.
+    // TRADEOFF: accessPolicies/write is ALSO in Contributor, so anyone with Contributor on this RG can add
+    // themselves to the policy and read these secrets. That is NOT a new exposure -- a Contributor already
+    // has VM-level access (az vm run-command -> cat /opt/broch/.env) -- so the vault is not a boundary against
+    // RG Contributors either way. The win is vs a subscription READER (customData was base64 Reader-decodable;
+    // the vault is not) and the break-glass password, which stays in the RBAC bgKeyVault a Contributor cannot
+    // self-grant. Lock down RG Contributor membership accordingly (README "Secrets & break-glass").
+    enableRbacAuthorization: false
+    accessPolicies: [
+      {
+        tenantId: subscription().tenantId
+        objectId: vmIdentity.properties.principalId
+        permissions: { secrets: [ 'get' ] }
+      }
+    ]
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+  }
+}
+
+// Separate vault holding ONLY the generated break-glass VM password (no-SSH-key mode). The VM's
+// user-assigned identity has NO grant here -- so a broch RCE that mints an IMDS vault token cannot read
+// the host break-glass password. Only the operator (adminObjectId) can, via the secret-scoped grant below.
+resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
+  name: bgKvName
   location: location
   properties: {
     tenantId: subscription().tenantId
@@ -466,15 +563,68 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (needsKeyVault) {
 }
 
 resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
-  parent: keyVault
+  parent: bgKeyVault
   name: 'vm-admin-password'
   properties: { value: generatedVmPassword }
 }
 
-// Optional: let the deployer read the secrets (Key Vault Secrets User).
-resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId) && needsKeyVault) {
-  scope: keyVault
-  name: guid(keyVault.id, adminObjectId, 'kv-secrets-user')
+// Deploy-time secrets the VM fetches at boot (kept OUT of customData). Each is created only when it has a
+// value, so the boot-fetch list (passed to cloud-init via __KV_SECRETS__) names exactly what exists.
+resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'broch-master-key'
+  properties: { value: brochMasterKey }
+}
+resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode != 'Local' && !empty(effectiveConnectionString)) {
+  parent: keyVault
+  name: 'db-connection-string'
+  properties: { value: effectiveConnectionString }
+}
+resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local') {
+  parent: keyVault
+  name: 'postgres-password'
+  properties: { value: localDbPassword }
+}
+resource secAuthSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(authClientSecret)) {
+  parent: keyVault
+  name: 'auth-client-secret'
+  properties: { value: authClientSecret }
+}
+resource secCloudflare 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(cloudflareApiToken)) {
+  parent: keyVault
+  name: 'cloudflare-api-token'
+  properties: { value: cloudflareApiToken }
+}
+resource secAzureDnsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(azureClientSecret)) {
+  parent: keyVault
+  name: 'azure-dns-client-secret'
+  properties: { value: azureClientSecret }
+}
+resource secAwsKeyId 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(awsAccessKeyId)) {
+  parent: keyVault
+  name: 'aws-access-key-id'
+  properties: { value: awsAccessKeyId }
+}
+resource secAwsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(awsSecretAccessKey)) {
+  parent: keyVault
+  name: 'aws-secret-access-key'
+  properties: { value: awsSecretAccessKey }
+}
+resource secDoToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(doAuthToken)) {
+  parent: keyVault
+  name: 'do-auth-token'
+  properties: { value: doAuthToken }
+}
+
+// Optional: let the deployer read the BREAK-GLASS PASSWORD. Scoped to the break-glass VAULT (which holds
+// ONLY vm-admin-password), so adminObjectId (e.g. a shared CI/CD principal) gains read on that and nothing
+// else -- never the master key / DB credential / IdP secret / DNS tokens, which live in the app vault and
+// are the VM identity's to read. Scoping to the vault (not the conditional secret resource) also avoids a
+// conditional-scope mismatch some Bicep toolchains reject. Only meaningful when a break-glass password
+// exists (no SSH key supplied); with an SSH key there is nothing to grant.
+resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminObjectId) && usePassword) {
+  scope: bgKeyVault
+  name: guid(bgKeyVault.id, adminObjectId, 'kv-secrets-user')
   properties: {
     principalId: adminObjectId
     principalType: adminObjectType
@@ -483,13 +633,51 @@ resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
   }
 }
 
+// Boot-fetch map: ENVKEY=secret-name pairs for every secret that exists, ';'-joined. cloud-init splits
+// this, fetches each from Key Vault via the VM identity, and appends KEY=value to /opt/broch/.env.
+var kvSecretMap = join(filter([
+  'BROCH_MASTER_KEY=broch-master-key'
+  databaseMode == 'Local' ? 'POSTGRES_PASSWORD=postgres-password' : (empty(effectiveConnectionString) ? '' : 'BROCH_DB_CONNECTION_STRING=db-connection-string')
+  empty(authClientSecret) ? '' : 'AUTHENTICATION__CLIENTSECRET=auth-client-secret'
+  empty(cloudflareApiToken) ? '' : 'CLOUDFLARE_API_TOKEN=cloudflare-api-token'
+  empty(azureClientSecret) ? '' : 'AZURE_DNS_CLIENT_SECRET=azure-dns-client-secret'
+  empty(awsAccessKeyId) ? '' : 'AWS_ACCESS_KEY_ID=aws-access-key-id'
+  empty(awsSecretAccessKey) ? '' : 'AWS_SECRET_ACCESS_KEY=aws-secret-access-key'
+  empty(doAuthToken) ? '' : 'DO_AUTH_TOKEN=do-auth-token'
+], item => !empty(item)), ';')
+
+// Dedicated data disk for the Local PostgreSQL (databaseMode=Local). A SEPARATE resource so the DB
+// survives VM recreation: createOption Empty is create-once (a redeploy never wipes it), and the VM
+// attaches it. Standard SSD is plenty for broch's tiny database.
+resource localDataDisk 'Microsoft.Compute/disks@2023-10-02' = if (databaseMode == 'Local') {
+  name: '${vmName}-data'
+  location: location
+  sku: { name: 'StandardSSD_LRS' }
+  properties: {
+    creationData: { createOption: 'Empty' }
+    diskSizeGB: dataDiskSizeGb
+    // The disk holds the bundled Postgres data dir (pg_wal + all user state). Block the SAS-export
+    // path so a Contributor on the RG can't `az disk grant-access` to download the raw ext4 image
+    // out-of-band — the data is reachable only through the VM. publicNetworkAccess=Disabled is
+    // belt-and-suspenders (DenyAll already covers it) and makes the hardened intent explicit.
+    networkAccessPolicy: 'DenyAll'
+    publicNetworkAccess: 'Disabled'
+  }
+}
+
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: location
-  // Azure-DNS managed-identity mode uses the VM's identity (the template auto-grants it the DNS
-  // role below). The service-principal mode and every other provider authenticate with a supplied
-  // credential, so no identity is attached.
-  identity: azureDnsManagedIdentity ? { type: 'SystemAssigned' } : null
+  // User-assigned identity ALWAYS (cloud-init reads the deploy-time secrets from Key Vault with it).
+  // System-assigned is ADDED only for AzureDns managed-identity mode: Caddy's DefaultAzureCredential
+  // (no client_id) picks the system-assigned identity that holds DNS Zone Contributor (granted below),
+  // while cloud-init's KV fetch selects the user-assigned identity explicitly by client_id — so the two
+  // never collide. The user-assigned identity exists before the app vault, so the vault's access policy
+  // names it at creation and the boot-time fetch has an immediate (no-propagation-lag) data-plane grant.
+  identity: {
+    type: azureDnsManagedIdentity ? 'SystemAssigned, UserAssigned' : 'UserAssigned'
+    userAssignedIdentities: { '${vmIdentity.id}': {} }
+  }
   properties: {
     hardwareProfile: { vmSize: vmSize }
     osProfile: {
@@ -513,7 +701,12 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
         }
       }
     }
-    storageProfile: {
+    // dataDisks is added via union() ONLY in Local mode, so the key is ABSENT (not []) otherwise.
+    // This matters: in ARM incremental mode a VM PUT with dataDisks:[] declares a desired state of
+    // ZERO disks and would DETACH an attached Local data disk if the VM were ever redeployed as
+    // Existing/Managed (the default mode) -- breaking Postgres mid-flight. An absent key leaves any
+    // existing attachment untouched.
+    storageProfile: union({
       imageReference: {
         publisher: 'Canonical'
         offer: 'ubuntu-24_04-lts'
@@ -524,15 +717,35 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
         createOption: 'FromImage'
         managedDisk: { storageAccountType: 'Premium_LRS' }
       }
-    }
+    }, databaseMode == 'Local' ? {
+      // Local mode: attach the dedicated data disk that holds the PostgreSQL data. It is a separate
+      // resource (created empty / never wiped by redeploy), so the DB survives VM recreation.
+      dataDisks: [
+        {
+          lun: 0
+          createOption: 'Attach'
+          // Detach (not Delete) on VM deletion: the whole point of the separate disk resource is that
+          // the database survives `az vm delete` / a recreate. Already Azure's default for an attached
+          // pre-existing disk, but stating it makes the durability guarantee ARM-enforced and unchecks
+          // the disk in the Portal's "Delete VM" dialog, preventing an accidental data wipe.
+          deleteOption: 'Detach'
+          managedDisk: { id: localDataDisk!.id }
+        }
+      ]
+    } : {})
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
     // Managed boot diagnostics — REQUIRED for Azure Serial Console, the break-glass path when no
     // SSH key is set (the generated password is only reachable via Serial Console).
     diagnosticsProfile: { bootDiagnostics: { enabled: true } }
   }
-  // Managed mode: broch runs EF migrations against the provisioned DB on boot, so wait for
-  // the server + database (and, via the chain, the private DNS link) to exist first.
-  dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
+  // Wait for the app vault (which carries the VM identity's access-policy read grant) + ALL the
+  // deploy-time secrets before the VM boots and fetches, so the boot-time KV read never races their
+  // creation. (The secrets dependsOn the vault, so its access policy is in place too.) Conditional secrets
+  // that aren't deployed (their `if` is false) are silently skipped in dependsOn. (The boot-fetch also retries, and only writes its
+  // completion sentinel after every secret lands -- so a missed one fails closed rather than starting
+  // broch half-configured.) Managed mode additionally waits for the provisioned DB (broch runs EF
+  // migrations against it on boot; the chain pulls in the private DNS link too).
+  dependsOn: databaseMode == 'Managed' ? [kvVmPassword, secMasterKey, secDbConn, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken, postgresDatabase] : [kvVmPassword, secMasterKey, secDbConn, secPgPassword, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken]
 }
 
 // Auto-grant the VM's managed identity "DNS Zone Contributor" on the DNS zone's resource group,
@@ -555,8 +768,13 @@ var sshStateWithHint = empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to op
 
 output publicIpAddress string = publicIp.properties.ipAddress
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
-output databaseHost string = databaseMode == 'Managed' ? pgHost : 'external (you supplied the connection string)'
-output keyVaultName string = keyVault.?name ?? ''
+output databaseHost string = databaseMode == 'Managed' ? pgHost : (databaseMode == 'Local' ? 'local (PostgreSQL on this VM)' : 'external (you supplied the connection string)')
+output keyVaultName string = keyVault.name
+output breakGlassKeyVaultName string = usePassword ? bgKvName : ''
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
+// The user-assigned identity the app vault's access policy grants secret-read (and that holds AzureDns
+// rights). Use THIS to grant the VM identity more permissions; managedIdentityPrincipalId above is the
+// system-assigned one, present only in dnsProvider=AzureDns mode.
+output vmIdentityPrincipalId string = vmIdentity.properties.principalId
 output dnsRoleAssignment string = azureDnsManagedIdentity ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(provider authenticates with a supplied credential; no role assignment)'
-output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${sshState}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${sshStateWithHint}.'
+output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${sshState}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault "${bgKvName}", secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${sshStateWithHint}.'
