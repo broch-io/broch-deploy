@@ -18,13 +18,23 @@ using 'main.bicep'
 // use that database's key (a different key can't decrypt its data). Prefer --parameters over committing.
 param brochMasterKey = '<run: openssl rand -base64 48>' // placeholder is <32 chars on purpose — @minLength rejects it until you replace it
 
-// --- Database: Existing (bring your own) or Managed (provision a private Flex Server) ---
+// --- Database: Existing (bring your own) | Managed (provision a private Flex Server) | Local (on the VM) ---
 param databaseMode = 'Existing'
 // Existing:
 param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;SSL Mode=Require' // prefer --parameters
 // Managed (set databaseMode = 'Managed' above, then):
 // param postgresAdminPassword = '<strong-password>'  // prefer --parameters
 // param postgresSkuName       = 'Standard_B1ms'      // B1ms | B2s | D2ds_v5 | D4ds_v5
+// Local (set databaseMode = 'Local'): Postgres runs ON the VM on a small dedicated data disk —
+// zero prerequisites, but YOU manage backups (no automated backups / PITR). Optional size override:
+// param dataDiskSizeGb = 4   // GiB; Broch's DB is tiny — size up only for large audit-log history
+// Optional hardening: by default the Local Postgres password is DERIVED (computable by anyone with
+// Reader on the subscription). Set an explicit one for any deployment where the VM identity could be
+// compromised, and re-supply the SAME value on every redeploy (Postgres keeps its first password):
+// param localDbAdminPassword = '<strong-password>'  // prefer --parameters
+// NOTE: always redeploy a Local-mode VM with --mode Incremental (the default). A `--mode Complete`
+// deploy of this resource group with databaseMode != 'Local' would DELETE the <vmName>-data disk (it
+// is absent from the template for non-Local modes), destroying the database.
 
 // --- Domain + TLS (bring your own domain) ---
 param wildcardHostname = 'tunnels.example.com'

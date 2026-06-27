@@ -4,7 +4,7 @@ Broch on a single Azure VM, deployed with Bicep. **This is the same template Bro
 
 The VM runs the canonical [`with-postgres-external` + Caddy compose stack](../../docker-compose/with-postgres-external/) **verbatim** (cloud-init embeds it at deploy time, so the box runs the same bytes as a docker-direct deploy). You choose:
 
-- **Database** — `databaseMode=Existing` (bring your own reachable PostgreSQL 14+ via a connection string) or `databaseMode=Managed` (the template provisions a **private** Azure Database for PostgreSQL Flexible Server — VNet-injected, no public endpoint).
+- **Database** — `databaseMode=Existing` (bring your own reachable PostgreSQL 14+ via a connection string), `databaseMode=Managed` (the template provisions a **private** Azure Database for PostgreSQL Flexible Server — VNet-injected, no public endpoint), or `databaseMode=Local` (PostgreSQL runs **on the VM** on a small dedicated data disk — zero DB prerequisites, but **you manage backups**; see [Local database](#local-database)).
 - **TLS** — `certMode=Auto` (Caddy issues + auto-renews the apex + wildcard via ACME DNS-01; `dnsProvider=Cloudflare` with an API token, or `AzureDns` with the VM's managed identity — **no secret**) or `certMode=Byo` (supply your own wildcard cert + key).
 
 **Bring your own domain.**
@@ -34,14 +34,14 @@ internet ─ 80/443/443udp ───────▶ │ Azure VM — static publ
 - An Ubuntu 24.04 VM (default x86 `Standard_B2s`; ARM64 is a one-line opt-in via the `vmSize`/`imageSku` params where Ampere capacity exists).
 - A **static** Standard public IP — the address your DNS points at.
 - An NSG: HTTP (80) + HTTPS/HTTP-3 (443 tcp+udp) from the internet. SSH (22) is **closed by default**; set `sshAllowedCidr` to a CIDR for break-glass SSH.
-- cloud-init that drops in the canonical compose + Caddyfile + Caddy.Dockerfile, writes `.env`, injects `BROCH_MASTER_KEY` + the DB connection string, installs Docker, and starts the stack via systemd. No embedded Postgres, no data disk.
+- cloud-init that drops in the canonical compose + Caddyfile + Caddy.Dockerfile, writes the **non-secret** `.env`, **fetches the secrets (master key, DB credential, IdP secret, DNS-01 tokens) from Key Vault at boot** (see [Secrets & break-glass](#secrets--break-glass)), installs Docker, and starts the stack via systemd. With `databaseMode=Local` it also runs Postgres on a dedicated data disk (see [Local database](#local-database)).
 
 Telemetry, logging, and the license are configured **in-app** (Admin → …) after first sign-in — not in the deploy.
 
 ## Prerequisites
 
 - Azure CLI logged in (`az login`), Contributor on the target resource group. **Owner or User Access Administrator** is needed only if you let the template auto-grant the Azure-DNS role (below) or set `adminObjectId` — both create role assignments.
-- A database — **either** an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)), **or** nothing to pre-arrange and let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`).
+- A database — **one of**: an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)); let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`); or run it **on the VM** with nothing to pre-arrange (`databaseMode=Local` — you manage backups; see [Local database](#local-database)).
 - For `certMode=Auto`, DNS for your wildcard hostname on a supported provider: **Cloudflare** (API token, Zone:Read + DNS:Edit) **or** **Azure DNS** (no secret — uses the VM's managed identity). With Azure DNS, set `dnsZoneResourceGroup` and the template **grants the identity *DNS Zone Contributor* on that resource group automatically** (needs Owner/UAA there); if you only have Contributor, leave it empty and grant the role by hand. For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
 - An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<wildcardHostname>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - **A master key** — generate with `openssl rand -base64 48` and store it in your own secret store. **Required** (≥32 chars); supply the same value on every (re)deploy. Broch never sees it. For an existing Broch database it must be that database's key.
@@ -50,7 +50,7 @@ Telemetry, logging, and the license are configured **in-app** (Admin → …) af
 
 ## Database setup
 
-*Only for `databaseMode=Existing`. With `databaseMode=Managed` the template provisions the private Flex Server, the `brochdb` database, and the admin role for you — skip this section.*
+*Only for `databaseMode=Existing`. `Managed` (provisions a private Flex Server) and `Local` (runs Postgres on the VM — see [Local database](#local-database)) need no pre-setup — skip this section.*
 
 The VM connects as a least-privilege role that owns **only its own database** — never the server admin (which would expose every database on the server). As the server admin, from a host allowed through the DB firewall:
 
@@ -66,6 +66,32 @@ ALTER SCHEMA public OWNER TO broch;
 ```
 
 After the VM deploys, add its public IP (a deployment output) to the database server's firewall.
+
+## Local database
+
+`databaseMode=Local` runs PostgreSQL **on the VM** (the bundled [`with-postgres`](../../docker-compose/with-postgres/) compose) — **nothing to set up first**. The template generates the Postgres password and provisions a small **dedicated data disk** (`dataDiskSizeGb`, default **4 GiB** Standard SSD — Broch's database is tiny; size up only if you retain large audit/request-log history). cloud-init mounts that disk at `/var/lib/docker/volumes`, so the database lives on it and **survives reboots and VM recreation** — the disk is a *separate* resource, so a from-scratch reprovision (or `az vm delete` + redeploy) reattaches it with data intact. The generated Postgres password is **derived** (from the resource group + VM name), so it stays the same across a recreate and still matches the surviving database. You can override it with **`localDbAdminPassword`** (re-supply the same value on every redeploy). The password value is stored in **Key Vault** (see [Secrets & break-glass](#secrets--break-glass)) and fetched at boot — it is **not** in `customData`, so a plain subscription **Reader** can't read it (that needs *Key Vault Secrets User*). The one residual note: the *derived default* is computable from the (public) resource names, so set an explicit `localDbAdminPassword` if you don't want it formula-derivable. Either way Postgres has **no host port** — the blast radius is in-container code execution, not the network.
+
+> **If you script recreation/reprovisioning of a Local-mode VM,** that automation must (a) **not delete** the `<vmName>-data` disk, (b) re-pass `databaseMode=Local` — otherwise the new VM boots in the default mode with the disk orphaned (a deploy that "succeeds" but runs the wrong/empty database) — and (c) deploy with **`--mode Incremental`** (the default). A `--mode Complete` deploy of this resource group with `databaseMode != 'Local'` **deletes** the `<vmName>-data` disk outright, since the disk is absent from the template for non-Local modes. Broch's own `reprovision-{dev,prod}-vm.yml` workflows use `Existing` mode and are **not** Local-aware.
+
+**Sizing.** Choose `dataDiskSizeGb` at first deploy. Increasing it on a later redeploy resizes the Azure disk but does **not** auto-grow the ext4 filesystem — after the redeploy, run `sudo resize2fs /dev/disk/azure/scsi1/lun0` on the VM to use the new space (and note some disk tiers require a VM deallocate to resize). Shrinking is not supported.
+
+**Zero-downtime (blue-green) upgrades aren't available in Local mode.** A blue-green swap stands up a replacement VM and cuts traffic to it while the old one still serves — which needs an **external, shared** database both VMs reach at once. Local keeps the database on a disk attached to a single VM, so there is nothing to share. A Local upgrade is therefore the recreate-and-reattach described above (the same `<vmName>-data` disk reattaches to the new VM), with a brief outage while it boots. Choose `Existing` or `Managed` if you need zero-downtime deploys.
+
+**Backups are yours.** Local has **no automated backups or point-in-time restore** — choose `Managed` or `Existing` if you need those. Back the Local database up yourself.
+
+**Azure disk snapshot** (simplest) — snapshot the `<vmName>-data` disk on a schedule:
+
+```sh
+az snapshot create -g <rg> -n broch-data-$(date +%Y%m%d) \
+  --source "$(az disk show -g <rg> -n <vmName>-data --query id -o tsv)"
+```
+
+**Logical dump** — `pg_dump` from the VM (no SSH needed):
+
+```sh
+az vm run-command invoke -g <rg> -n <vmName> --command-id RunShellScript --scripts \
+  'docker exec broch-postgres-1 pg_dump -U broch brochdb | gzip > /opt/broch/backup-$(date +%F).sql.gz'
+```
 
 ## Setup
 
@@ -136,27 +162,36 @@ Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTIC
 
 ## Secrets & break-glass
 
-**Key Vault.** When the VM is provisioned **without** an SSH key, the deployment creates a Key Vault (RBAC mode) in your resource group holding the generated break-glass password:
+**Key Vault (app secrets).** The deployment **always** creates a Key Vault (**access-policy mode**, name in the `keyVaultName` output) holding the deploy-time **app** secrets, which the VM's **user-assigned managed identity** reads at boot (a `get`-only access policy) and writes into `/opt/broch/.env` — so the secret **values never enter the VM's `customData`** (which a subscription Reader can decode):
 
-- `vm-admin-password` — the generated break-glass password.
+- `broch-master-key` — the at-rest encryption root (customer-supplied; never generated). It is still born in your tenant and never transits Broch — Key Vault is just where the VM reads it from at boot.
+- `db-connection-string` (Existing/Managed) **or** `postgres-password` (Local) — the database credential
+- `auth-client-secret` — the IdP client secret (when set)
+- `cloudflare-api-token` / `azure-dns-client-secret` / `aws-access-key-id` / `aws-secret-access-key` / `do-auth-token` — Caddy's DNS-01 credential (only the one your provider needs)
 
-The **master key is not stored here** — it's customer-supplied, kept in your own secret store. The deployment writes the password via the control plane (your Contributor on the vault). To **read** it, grant yourself **Key Vault Secrets User** on the vault — or set `adminObjectId` at deploy time and the template grants it for you.
+The deployment writes these via the control plane and grants the VM identity read via a vault **access policy** — both covered by **Contributor** on the resource group, so the **whole secrets path deploys as a plain Contributor** (no Owner / User Access Administrator). The one exception is `dnsProvider=AzureDns` managed-identity mode, which still creates a DNS-Zone-Contributor *role assignment* (needs Owner/UAA on the zone RG); every other path is Contributor-only. Access policies also take effect immediately — no AAD-RBAC replication lag — so the boot-fetch isn't racing grant propagation (its retry loop stays as belt-and-suspenders). To read the secrets yourself, add an access policy (or *Key Vault Secrets User*) for your principal on this vault.
 
-> ⚠️ **The break-glass password rotates on every redeploy.** `vmPasswordSeed` defaults to a fresh value each `az deployment group create`, so the `vm-admin-password` secret is overwritten on every run — even a routine redeploy to bump `brochVersion` or change a DNS provider. Any out-of-band copy of the old password stops working; re-read `vm-admin-password` from Key Vault after each deploy. To keep a stable password across redeploys, pass an explicit `vmPasswordSeed` (and store it yourself).
+> **Tradeoff of access-policy mode:** adding access policies is itself a Contributor-level action, so anyone with **Contributor on this resource group** can grant themselves secret-read and read the app secrets. This is **not a new exposure** — a Contributor already has VM-level access (`az vm run-command` → `cat /opt/broch/.env`), so the vault is not a boundary against RG Contributors either way. The win over `customData` is against a subscription **Reader** (who could base64-decode `customData` but cannot read the vault), plus the break-glass password staying in the RBAC vault below that a Contributor **cannot** self-grant. Restrict resource-group Contributor membership accordingly.
 
-**VM access.** Inbound SSH is closed by default. The box is managed via `az vm run-command` (Azure RBAC — no SSH) and **Azure Serial Console** (sign in as `broch` with the `vm-admin-password` above). Supply `adminSshPublicKey` only if you specifically want key-based SSH (then also open `sshAllowedCidr`).
+**Break-glass password — a SECOND, isolated vault.** When no SSH key is supplied, the generated `vm-admin-password` is stored in its **own** Key Vault (name in the `breakGlassKeyVaultName` output, `<vmName>-bg-<id>`) that the **VM identity has no access to** — so a compromise of broch can't use the VM identity to read the host break-glass password. Set `adminObjectId` at deploy time and the template grants *you* read on **just that one secret** (or grant yourself *Key Vault Secrets User* on that vault manually). **Upgrading an earlier deployment:** this version uses **distinct** vault names — the app-secrets vault is `<vmName>-app-<id>` (`keyVaultName` output, access-policy mode) and the break-glass password moves to `<vmName>-bg-<id>` (`breakGlassKeyVaultName`, RBAC). The earlier template's single `<vmName>-kv-<hash>` vault (which held `vm-admin-password` in RBAC mode) is **left orphaned on purpose**: re-using that exact name would force an RBAC→access-policy permission-model flip on the existing vault, which needs Owner/UAA — so the app vault takes a fresh name to stay **Contributor-deployable**. Update any runbook that read `vm-admin-password` via `keyVaultName`, and delete the orphaned `<vmName>-kv-<hash>` vault by hand once the new deploy is confirmed healthy. (Deployed **with** an SSH key originally? The old template created no vault, so nothing is orphaned — you simply get the two new vaults.)
 
-**Runtime config.** cloud-init writes `/opt/broch/.env` (mode `0600`) from the deploy parameters; the compose reads it:
+> ⚠️ **The break-glass password rotates on every redeploy.** `vmPasswordSeed` defaults to a fresh value each `az deployment group create`, so the `vm-admin-password` secret is overwritten on every run — even a routine redeploy to bump `brochVersion` or change a DNS provider. Any out-of-band copy of the old password stops working; re-read it from the break-glass vault after each deploy. To keep a stable password across redeploys, pass an explicit `vmPasswordSeed` (and store it yourself).
+
+**VM access.** Inbound SSH is closed by default. The box is managed via `az vm run-command` (Azure RBAC — no SSH) and **Azure Serial Console** (sign in as `broch` with the `vm-admin-password` from the break-glass vault above). Supply `adminSshPublicKey` only if you specifically want key-based SSH (then also open `sshAllowedCidr`).
+
+**Runtime config.** `/opt/broch/.env` (mode `0600`) holds the config the compose reads. cloud-init writes the **non-secret** keys (hostname, provider names, IdP client id, etc.) from the deploy parameters; at boot the VM's identity **fetches the secrets from Key Vault and appends them** to the same file:
 
 - `BROCH_MASTER_KEY` → broch's at-rest encryption root
 - `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__DefaultConnection` (mapped in compose)
 - `AUTHENTICATION__CLIENTSECRET` → the IdP client secret
 - `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential (Cloudflare mode)
-- `AZURE_DNS_SUBSCRIPTION_ID` / `AZURE_DNS_RESOURCE_GROUP` / `AZURE_DNS_TENANT_ID` / `AZURE_DNS_CLIENT_ID` / `AZURE_DNS_CLIENT_SECRET` → Caddy's DNS-01 credentials for **Azure DNS** (cert issuance only — *not* the `AUTHENTICATION__*` IdP sign-in config; managed-identity mode uses only subscription + resource group, no secret)
+- `AZURE_DNS_SUBSCRIPTION_ID` / `AZURE_DNS_RESOURCE_GROUP` / `AZURE_DNS_TENANT_ID` / `AZURE_DNS_CLIENT_ID` → Caddy's DNS-01 config for **Azure DNS** (cert issuance only — *not* the `AUTHENTICATION__*` IdP sign-in config; managed-identity mode uses only subscription + resource group; service-principal mode adds `AZURE_DNS_CLIENT_SECRET`, fetched from Key Vault)
 
-Rotate by editing `/opt/broch/.env` and running `docker compose up -d` (a **recreate** — `env_file` is only read at container create time, so a plain `docker restart` silently keeps the old values).
+Rotate a secret by updating it in **Key Vault** and reprovisioning the VM (the boot-fetch re-reads it), or edit `/opt/broch/.env` directly and run `docker compose up -d` (a **recreate** — `env_file` is only read at container create time, so a plain `docker restart` silently keeps the old values).
 
-> Secrets are still injected into the running container through the VM's `customData` (base64, not encrypted) — readable by anyone with VM read access. The Key Vault is the durable record of the generated secrets; wiring the compose to pull from Key Vault at runtime (instead of inline `.env`) remains a follow-up hardening item.
+> **If the first-boot secret fetch fails** (e.g. the VM's managed-identity token isn't yet mintable via IMDS within the ~10-minute retry window, or the vault is unreachable — the app vault's access policy is immediate, so it is not a grant-propagation race), cloud-init aborts before enabling `broch.service`, so broch won't start — and because the fetch runs only on first boot, a plain reboot won't fix it. **Recover by redeploying**: the deploy is idempotent — the data disk and the Key Vault secrets are preserved, and the boot-fetch replaces rather than duplicates `.env` entries — so it simply completes the fetch and enables the service. (If you'd rather not redeploy, re-run the boot scripts on the host and inspect their output: `az vm run-command invoke -g <rg> -n <vmName> --command-id RunShellScript --scripts 'cloud-init single --name runcmd'` — broch starts only if the fetch succeeds, since the start gate still requires the completion sentinel.)
+
+> **Still in `customData`:** the non-secret config, and — for now — the BYO TLS cert + key (`certMode=Byo`), the GCP service-account JSON (GoogleCloudDns), and the private-registry token (`registryPassword`; this one is also substituted into a runcmd, so it additionally appears in the VM's boot-diagnostics serial log, readable by VM Contributor — only relevant for private pre-release/beta image pulls, since it's empty for the public image). Moving those file/registry secrets to Key Vault too is a follow-up; the high-value secrets (master key, DB credential, IdP secret, DNS-01 tokens) are already Key Vault-only and absent from `customData`.
 
 ## Pulling a new Broch image
 
@@ -184,13 +219,15 @@ Pointing this VM at a database another Broch instance already uses is a **migrat
 
 ## Teardown
 
-The VM holds no state — your external database is separate and is **not** part of this deployment, so the box is disposable (back up the DB + master key, not the VM).
+In **Existing/Managed** mode the VM holds no state — the database is separate, so the box is disposable (back up the DB + master key, not the VM). **In `databaseMode=Local`, the dedicated `<vmName>-data` disk holds your entire database** — a separate resource that deliberately survives VM deletion, so teardown must treat it as the thing to preserve (and the disk-cleanup step below deliberately excludes it).
 
-If you deployed into a **dedicated resource group**, teardown is one line:
+If you deployed into a **dedicated resource group** and have **no Local database to keep** — Existing/Managed mode, or you have already snapshotted/moved the `<vmName>-data` disk out of the group — teardown is one line:
 
 ```sh
 az group delete --name <dedicated-rg> --yes
 ```
+
+> ⚠️ **In `databaseMode=Local`, `az group delete` DESTROYS your database.** It removes *every* resource in the group, **including the `<vmName>-data` disk** — `deleteOption: Detach` only protects the disk when the *VM* is deleted via the VM API, **not** when the enclosing group is deleted. To keep a Local database, do **not** use `az group delete`: first snapshot or move the `<vmName>-data` disk out of the group (see [Local database](#local-database)), or delete resources individually with the `-data`-excluding filter below.
 
 **If the VM shares a resource group with your database** (or anything else you want to keep), do **not** delete the group — it takes the DB with it. Delete only this deployment's resources (default `vmName` is `broch`):
 
@@ -201,8 +238,15 @@ az network nic delete        -g $RG -n $VM-nic
 az network public-ip delete  -g $RG -n $VM-pip
 az network vnet delete       -g $RG -n $VM-vnet
 az network nsg delete        -g $RG -n $VM-nsg
-# az vm delete leaves the OS disk — remove it too:
-az disk list -g $RG --query "[?starts_with(name, '$VM')].id" -o tsv | xargs -r az disk delete --yes --ids
+# az vm delete leaves the OS disk — remove it too. The `!ends_with(...,'-data')` filter EXCLUDES the
+# Local-mode data disk so a teardown never silently destroys your database (starts_with('broch-data',
+# 'broch') would otherwise match it). In Local mode, delete the DB explicitly only when you truly want
+# it gone:  az disk delete -g $RG -n $VM-data --yes
+# Build the query in a variable with `!` SINGLE-quoted: in an interactive shell (history-expansion on by
+# default) a double-quoted `!ends_with` is taken as a history event -> `bash: !ends_with: event not found`
+# and the filter never runs. Single quotes around the `!` segment suppress that; $VM still expands.
+Q='[?starts_with(name, '"'$VM'"') && !ends_with(name, '"'-data'"')].id'
+az disk list -g $RG --query "$Q" -o tsv | xargs -r az disk delete --yes --ids
 ```
 
-> **Key Vault soft-delete.** If the deployment created a Key Vault (no-SSH-key mode), its name is deterministic (`<vmName>-kv-<hash of RG + vmName>`). After a teardown that removes the vault, it stays **soft-deleted for 7 days**, and a redeploy with the same resource group + `vmName` fails with *"vault name … is already in use (in soft-deleted state)."* Purge it first: `az keyvault purge --name <vault-name> --location <location>`.
+> **Key Vault soft-delete.** The deployment creates a Key Vault for the app secrets (`<vmName>-app-<id>`), **plus a second one for the break-glass password** (`<vmName>-bg-<id>`) in no-SSH-key mode — both deterministic (the `keyVaultName` / `breakGlassKeyVaultName` outputs). (Upgrading from the old single-vault template? Its `<vmName>-kv-<hash>` vault is left orphaned — delete it separately; see [Secrets & break-glass](#secrets--break-glass).) After a teardown that removes a vault, it stays **soft-deleted for 7 days**, and a redeploy with the same resource group + `vmName` fails with *"vault name … is already in use (in soft-deleted state)."* Purge the app vault first: `az keyvault purge --name <vault-name> --location <location>`. **Purge the break-glass vault too — but only in no-SSH-key mode** (with an SSH key there is no second vault, and `breakGlassKeyVaultName` is empty, so don't run `purge` against an empty name). (Purge protection is deliberately **off** so you can reclaim the deterministic names on redeploy; the secrets are all re-suppliable on the next deploy.)
