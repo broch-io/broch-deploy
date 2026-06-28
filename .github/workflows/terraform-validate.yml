@@ -76,10 +76,14 @@ jobs:
       - uses: actions/checkout@v6
       - name: Reject non-ASCII bytes in cloud-init files
         run: |
-          hits=$(grep -rlP "[^\x00-\x7F]" --include='cloud-init*.yaml' terraform || true)
+          # Scan the WHOLE repo, not just terraform/: the Azure VM appliance ships its cloud-init from
+          # bicep/azure-vm/cloud-init.yaml, which is base64'd into customData and discarded just as
+          # silently on a stray multi-byte char. (Earlier this only scanned terraform/, so the Bicep
+          # cloud-init was unguarded.)
+          hits=$(grep -rlP "[^\x00-\x7F]" --include='cloud-init*.yaml' . || true)
           if [ -n "$hits" ]; then
             echo "::error::Non-ASCII characters in cloud-init file(s). See lines below:"
-            grep -rnP "[^\x00-\x7F]" --include='cloud-init*.yaml' terraform || true
+            grep -rnP "[^\x00-\x7F]" --include='cloud-init*.yaml' . || true
             exit 1
           fi
           echo "cloud-init files are ASCII-clean."
