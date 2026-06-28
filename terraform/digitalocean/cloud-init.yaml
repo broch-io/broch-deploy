@@ -168,7 +168,11 @@ write_files:
       Type=oneshot
       RemainAfterExit=yes
       WorkingDirectory=/opt/broch
-      ExecStart=/usr/bin/docker compose up -d
+      # --force-recreate --remove-orphans makes every boot converge to the declared stack from any prior
+      # state. After an unclean stop a container can be left half-created that a plain `up -d` will
+      # neither start nor replace, leaving the stack down until manual action. Force-recreate replaces
+      # them; named volumes are preserved, so this is idempotent and never loses data.
+      ExecStart=/usr/bin/docker compose up -d --force-recreate --remove-orphans
       ExecStop=/usr/bin/docker compose down
 
       [Install]
@@ -217,7 +221,10 @@ runcmd:
         mkfs.ext4 -F "$DEVICE"
       fi
       mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
-      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+      # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
+      # would schedule systemd-fsck@<dev> which can escalate to emergency.target if the volume is slow
+      # to attach or absent (a real race on DigitalOcean). Mirrors the azure-vm side.
+      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 0" >> /etc/fstab
     fi
   - mkdir -p /mnt/broch-data/postgresql
   - chown -R 999:999 /mnt/broch-data/postgresql

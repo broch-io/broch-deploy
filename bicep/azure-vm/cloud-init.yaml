@@ -133,7 +133,12 @@ write_files:
       Type=oneshot
       RemainAfterExit=yes
       WorkingDirectory=/opt/broch
-      ExecStart=/usr/bin/docker compose up -d
+      # --force-recreate --remove-orphans makes every boot converge to the declared stack from any prior
+      # state. After an unclean stop (host resize, hard power-off) a container can be left half-created
+      # that a plain `up -d` will neither start nor replace, leaving the stack down until manual action.
+      # Force-recreate replaces such containers; named volumes (Postgres + Caddy data) are preserved, so
+      # this is idempotent and never loses data.
+      ExecStart=/usr/bin/docker compose up -d --force-recreate --remove-orphans
       ExecStop=/usr/bin/docker compose down
       [Install]
       WantedBy=multi-user.target

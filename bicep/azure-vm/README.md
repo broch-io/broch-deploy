@@ -38,6 +38,17 @@ internet ─ 80/443/443udp ───────▶ │ Azure VM — static publ
 
 Telemetry, logging, and the license are configured **in-app** (Admin → …) after first sign-in — not in the deploy.
 
+## Sizing
+
+At **idle** (Local mode), the three containers total **~700 MB** resident — Caddy ~68 MB, broch/.NET ~205 MB, Postgres ~25–60 MB; the rest is the OS. cloud-init also provisions a **2 GB swapfile** for headroom on small/burstable sizes.
+
+| `vmSize` | vCPU / RAM | Notes |
+| --- | --- | --- |
+| `Standard_B1ms` | 1 / 2 GiB | **Floor** — comfortable at idle (~1.2 GiB free, swap untouched). The single vCPU is the limiter under concurrency. |
+| `Standard_B2s` | 2 / 4 GiB | **Recommended default** — the 2nd vCPU noticeably speeds boot convergence (ACME issuance, .NET JIT). |
+
+> **The real workload is SSH tunnels.** Broch's load is long-lived tunnel connections, so the operative cost is `~700 MB baseline + (concurrent tunnels × per-tunnel cost)`. Per-tunnel cost is **small** — on the order of **1–2 MB RAM and a small fraction of a vCPU per concurrent tunnel** at idle, scaling modestly with relayed throughput. At these sizes the **single vCPU is the binding constraint** (connection count + keepalive), not RAM — memory has comfortable headroom on `B1ms` and the swapfile is a further cushion. `B1ms` is the **floor** and `B2s` the recommended **default**; do not size below `B1ms` for a production deployment.
+
 ## Prerequisites
 
 - Azure CLI logged in (`az login`), Contributor on the target resource group. **Owner or User Access Administrator** is needed only if you let the template auto-grant the Azure-DNS role (below) or set `adminObjectId` — both create role assignments.
