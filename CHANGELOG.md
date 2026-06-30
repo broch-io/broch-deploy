@@ -8,6 +8,12 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.27.0
+
+### Security
+
+- **CLI vulnerability fixes.** The `broch` CLI patches three HIGH-severity vulnerabilities in its HTTP transport layer: denial of service via WebSocket and a potential man-in-the-middle attack via SOCKS5 TLS. Update your CLI installation to receive these fixes.
+
 ## 1.26.0
 
 ### Added
