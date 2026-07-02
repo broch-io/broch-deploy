@@ -30,8 +30,8 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 @secure()
 param masterKey string
 
-@description('Container image to deploy. Pin to a specific version in production (e.g. ghcr.io/broch-io/broch:1.5.0).')
-param containerImage string = 'ghcr.io/broch-io/broch:latest'
+@description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
+param containerImage string = 'ghcr.io/broch-io/broch:1.26.0'
 
 // ============================================================================
 // Database Parameters
@@ -140,7 +140,7 @@ param datadogSite string = 'datadoghq.com'
 var datadogLoggingEnabled = loggingProvider == 'DataDog' && !empty(datadogApiKey)
 
 // ============================================================================
-// Custom Domain & SSL Parameters (ELF-300)
+// Custom Domain & SSL Parameters
 // ============================================================================
 
 @description('Custom domain hostname to bind (e.g., app.example.com). Leave empty to use default Azure domain.')
@@ -158,7 +158,7 @@ param sslCertificatePfxBase64 string = ''
 param sslCertificatePassword string = ''
 
 // ============================================================================
-// Access Terminate-Mode Parameters (ELF-800)
+// Access Terminate-Mode Parameters
 // ============================================================================
 
 @description('Access domain (e.g. access.broch.io) whose wildcard resolves to the client loopback. Leave empty to disable Access terminate mode.')

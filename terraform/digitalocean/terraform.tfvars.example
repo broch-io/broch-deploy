@@ -7,7 +7,10 @@ ssh_key_fingerprint = "aa:bb:cc:dd:ee:ff:..."   # `doctl compute ssh-key list`
 wildcard_hostname   = "tunnels.example.com"
 
 # DNS provider for Caddy's wildcard cert (DNS-01 challenge).
-# Cloudflare is the default; godaddy and route53 are also compiled in.
+# digitalocean, cloudflare (default), and godaddy are supported (single-token DNS-01 providers) --
+# digitalocean is the natural pick if your DNS zone is on DigitalOcean too. Route 53 needs an AWS key
+# PAIR, not a single token, so it is NOT supported here -- use the aws-vm/azure-vm appliance for it.
+dns_provider        = "cloudflare"
 dns_api_token       = "<your-dns-provider-api-token>"
 
 # Identity provider config — see /docs/identity-providers for what to fill in.
@@ -16,8 +19,8 @@ auth_client_id      = "<idp-application-id>"
 auth_client_secret  = "<idp-client-secret>"
 auth_tenant_id      = "<azure-tenant-id>"       # required for AzureAd / EntraExternalId
 
-# Postgres password for the bundled DB. Generate with `openssl rand -base64 32`.
-postgres_password   = "<strong-random-password>"
+# NOTE: the bundled Postgres password is NOT set here — it is generated on the droplet at
+# first boot and stored in /opt/broch/.env (kept out of droplet user_data). Nothing to fill in.
 
 # ── Optional (defaults shown) ────────────────────────────────────────────────
 
@@ -26,8 +29,7 @@ postgres_password   = "<strong-random-password>"
 # deployment_name     = "broch-server"
 # volume_size         = 10
 # image               = "ghcr.io/broch-io/broch"
-# image_tag           = "latest"
-# dns_provider        = "cloudflare"
+# image_tag           = "1.26.0"   # defaults to a pinned version; set a newer tag to upgrade, or "latest" to float
 # auth_provider       = "AzureAd"
 # auth_instance       = "https://login.microsoftonline.com/"
 # ssh_allowed_cidrs   = ["203.0.113.0/24"]   # break-glass SSH; default [] = no port-22 rule

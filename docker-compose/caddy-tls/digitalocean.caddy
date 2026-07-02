@@ -1,0 +1,6 @@
+tls {
+	dns digitalocean {env.DO_AUTH_TOKEN}
+	resolvers 1.1.1.1 8.8.8.8
+	propagation_delay 120s
+	propagation_timeout 300s
+}

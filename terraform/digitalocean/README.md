@@ -39,7 +39,7 @@ The smallest footprint of the three Terraform modules. Tradeoff is the obvious o
 - Terraform 1.6+ and the [DigitalOcean provider](https://registry.terraform.io/providers/digitalocean/digitalocean/latest/docs) (auto-installed by `terraform init`)
 - A DigitalOcean account with an [API token](https://cloud.digitalocean.com/account/api/tokens)
 - An SSH key [registered in DigitalOcean](https://cloud.digitalocean.com/account/security) — note the fingerprint
-- A registered domain on a [Caddy-compatible DNS provider](https://github.com/caddy-dns) — Cloudflare, GoDaddy, and Route 53 are compiled in by default
+- A registered domain on a [Caddy-compatible DNS provider](https://github.com/caddy-dns) — DigitalOcean, Cloudflare (default), and GoDaddy are supported here (single-token DNS-01); DigitalOcean is the natural pick if your DNS zone is on DigitalOcean too. Route 53 needs an AWS key pair rather than a single token, so use the [aws-vm](../../cloudformation/aws-vm/) or [azure-vm](../../bicep/azure-vm/) appliance for a Route 53 domain
 - A DNS provider API token with permission to edit the zone hosting your wildcard hostname
 - An identity provider app registration (Azure Entra ID, Auth0, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot
 - A Broch license — activated in-app after first sign-in (Admin → License)
@@ -92,7 +92,14 @@ $EDITOR terraform.tfvars      # bump image_tag
 terraform apply
 ```
 
-This **recreates the Droplet** (cloud-init re-runs with the new image tag). Postgres data is preserved on the attached block storage volume, which is detached/reattached during the cycle. Expect ~3-4 min of downtime.
+This **recreates the Droplet** (cloud-init re-runs with the new image tag). Postgres data is preserved on the attached block storage volume, which is detached/reattached during the cycle. Two secrets are also persisted on that volume and restored on the new Droplet, so the recreated stack reconnects cleanly to the surviving state:
+
+- the bundled-Postgres password (`/mnt/broch-data/postgres-password`) — so the new stack authenticates to the surviving database (Postgres ignores `POSTGRES_PASSWORD` once initialised);
+- the `BROCH_MASTER_KEY` at-rest encryption root (`/mnt/broch-data/master-key`) — so ASP.NET Data Protection keys (auth/session cookies, OIDC correlation state) stored in Postgres and sealed with the old master key stay decryptable. Without this, a recreate would mint a fresh key and break auth/cookie/OIDC sign-in against the otherwise-intact database.
+
+Expect ~3-4 min of downtime.
+
+> **Upgrading a volume created by an older module version** (one that took `postgres_password` as a Terraform variable): before recreating the droplet, SSH in and write that password to the block volume so the new droplet can open the existing database — `printf '%s' '<your-postgres-password>' > /mnt/broch-data/postgres-password && chmod 0600 /mnt/broch-data/postgres-password`. Boot **fails loudly** (see `/var/log/cloud-init-output.log`) if an initialised database is found without this file, rather than minting a fresh password that cannot open it. The master key needs no action: older versions rolled it on every recreate anyway (users re-authenticate and the license re-activates once), and from this version on it persists across recreates.
 
 For zero-downtime upgrades, move to the AWS or Azure Terraform modules — both use rolling deploys via their respective container schedulers.
 
@@ -133,6 +140,19 @@ Block storage volume snapshots via the DigitalOcean console are also fine and co
 | SSH closed by default          | Default `ssh_allowed_cidrs = []` adds no port-22 rule (use the DO console / a bastion) | Set `ssh_allowed_cidrs` to your bastion / VPN CIDRs for break-glass SSH    |
 | No automated DB backups        | You configure your own via cron + DO Spaces or external storage                    | The minute the data matters                                 |
 | Reserved IP without IPv6       | DO reserved IPs are v4-only                                                        | If you need v6, attach a floating v6 to the Droplet itself  |
+
+## Secret exposure (read before production use)
+
+This module is **not** yet at the azure-vm secret-handling baseline. Two classes of secret are handled differently:
+
+- **Generated on-box, never in user_data (good):** the `BROCH_MASTER_KEY` at-rest encryption root and the **bundled Postgres password** are both generated on the droplet at first boot and written to `/opt/broch/.env` (mode `0600`). They never enter the droplet's cloud-init user_data. Both are also persisted to the block volume (`/mnt/broch-data/master-key`, `/mnt/broch-data/postgres-password`, mode `0600`) and restored on a droplet recreate, so the surviving database stays both reachable and decryptable (see [Upgrading the broch image](#upgrading-the-broch-image)).
+- **Still rendered into user_data (residual exposure):** the **IdP client secret** (`auth_client_secret`) and the **DNS-01 API token** (`dns_api_token`) are interpolated into cloud-init user_data by `templatefile()`. DigitalOcean droplet user_data is retrievable from the link-local metadata endpoint (`http://169.254.169.254/metadata/v1/user_data`), which is reachable from **inside any container on the droplet** by default, and via the DO API to anyone holding the account token.
+
+  **Risk:** a Broch RCE — or any compromised container on the box — can curl the metadata endpoint and lift your IdP client secret and DNS token without ever touching the host filesystem. These are *your own* secrets in *your own* DO account (not a vendor-owned sink), so the blast radius is your IdP app registration and DNS zone, but it is a real, avoidable exposure relative to the azure-vm module, which fetches these from Key Vault at boot so they never enter user_data.
+
+  **Mitigations today:** scope the IdP client secret and the DNS token as tightly as your provider allows (e.g. a Cloudflare token limited to `Zone:Read + DNS:Edit` on the one zone); rotate them if you suspect a container compromise.
+
+  A future revision may close this gap by fetching `auth_client_secret` and `dns_api_token` from a secret store at first boot (mirroring the azure-vm Key Vault boot-fetch) instead of baking them into user_data — DigitalOcean has no per-droplet managed-secret store, so the likely shape is a first-boot pull from DO Spaces or an external vault. Until then, use the scoping + rotation mitigations above.
 
 ## Teardown
 

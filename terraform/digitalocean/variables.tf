@@ -64,16 +64,24 @@ variable "image" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag"
+  description = "Docker image tag. Defaults to a concrete pinned version (NOT latest) so a droplet recreate never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or \"latest\" to float (not recommended in production)."
   type        = string
-  default     = "latest"
+  default     = "1.26.0"
 }
 
 
 variable "dns_provider" {
-  description = "DNS provider name matching the compiled Caddy plugin (cloudflare, godaddy, route53)"
+  description = "DNS provider for Caddy DNS-01 (digitalocean, cloudflare, or godaddy). Selects the canonical tls fragment docker-compose/caddy-tls/<provider>.caddy embedded at deploy time. DigitalOcean is the natural choice when your domain's DNS is hosted on DigitalOcean too."
   type        = string
   default     = "cloudflare"
+  validation {
+    # Only single-token providers work here: the droplet receives ONE dns_api_token. digitalocean,
+    # cloudflare, and godaddy each authenticate with a single token; route53 needs an AWS access-key
+    # PAIR, so it is unsupported on DigitalOcean (use the aws-vm/azure-vm appliance for Route 53).
+    # Each name must have a docker-compose/caddy-tls/<name>.caddy and a dns_env_var mapping in main.tf.
+    condition     = contains(["digitalocean", "cloudflare", "godaddy"], var.dns_provider)
+    error_message = "dns_provider must be one of: digitalocean, cloudflare, godaddy (single-token Caddy DNS-01 providers; route53 needs an AWS key pair — use the aws-vm/azure-vm appliance for Route 53)."
+  }
 }
 
 variable "dns_api_token" {
@@ -141,8 +149,8 @@ variable "admin_roles" {
 
 # --- Database ---
 
-variable "postgres_password" {
-  description = "Password for the PostgreSQL database"
-  type        = string
-  sensitive   = true
-}
+# NOTE: there is intentionally NO postgres_password variable. The bundled
+# Postgres password is generated ON the droplet at first boot (see cloud-init.yaml) so the
+# DB credential never enters droplet user_data. It lands in /opt/broch/.env at 0600 and is
+# stable across reboots/cloud-init re-runs (the generator only fills the placeholder once),
+# which Postgres requires since it ignores POSTGRES_PASSWORD after its data dir is initialised.

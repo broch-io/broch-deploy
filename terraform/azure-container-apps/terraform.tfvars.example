@@ -28,7 +28,7 @@ auth_admin_roles   = "broch_admin"
 # A Broch license is activated in-app on first sign-in (Admin → License) — there
 # is no license env var. Buy a license at https://broch.io/pricing.
 
-# broch_image         = "ghcr.io/broch-io/broch:1.5.0"
+# broch_image         = "ghcr.io/broch-io/broch:1.26.0"   # defaults to a pinned version; set a newer tag to upgrade
 # location            = "eastus"
 # name_prefix         = "broch"
 # container_cpu       = 0.5

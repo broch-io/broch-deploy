@@ -52,7 +52,7 @@ param adminRoles = 'broch_admin'
 //                                        // managed Postgres) is the production shape.
 // param databaseConnectionString = ''    // required for Shared mode
 // param databasePassword = ''            // Embedded sidecar password — auto-generated when omitted
-// param containerImage = 'ghcr.io/broch-io/broch:latest'  // pin a version in production
+// param containerImage = 'ghcr.io/broch-io/broch:1.26.0'  // defaults to a pinned version; set a newer tag to upgrade
 // param centralServerUrl = 'https://api.broch.io'
 
 // Custom domain + wildcard TLS (see README — Azure managed certs don't issue

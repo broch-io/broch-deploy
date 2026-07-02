@@ -8,6 +8,9 @@
 # workflow logs leaking account state, resource ARNs, or IPs. Real apply
 # testing happens out-of-CI via scripts/test-terraform.sh, run manually
 # before tagging a release.
+#
+# COVERAGE NOTE: these jobs are VALIDATE-ONLY -- they check formatting (fmt) and configuration
+# validity (validate) but do NOT stand the modules up, so they assert no runtime health.
 
 name: Terraform Validate
 
@@ -21,6 +24,7 @@ on:
     branches: [main]
     paths:
       - 'terraform/**'
+      - 'cloudformation/**'
       - '.github/workflows/terraform-validate.yml'
 
 permissions:
@@ -46,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Match the version broch's deploy-do.yml uses for consistency.
+      # Pinned Terraform version so the checks are reproducible.
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.9.8"
@@ -87,3 +91,25 @@ jobs:
             exit 1
           fi
           echo "cloud-init files are ASCII-clean."
+
+  # The CloudFormation appliance (cloudformation/**) has no provider-native validate command the
+  # way the Terraform modules (`terraform validate`) and Bicep templates (`az bicep build`) do,
+  # so cfn-lint fills that role here. It statically checks
+  # the template: bad !Ref/!Sub/!GetAtt, malformed Fn::Sub variables (e.g. a stray ${...} in a
+  # UserData comment), unresolved Conditions/Rules, and resource-schema errors -- before a customer's
+  # `aws cloudformation deploy` is the first thing to find them. Lints the SOURCE template; the
+  # __*_B64__ placeholders are inert strings to cfn-lint.
+  cfn-lint:
+    name: cfn-lint (cloudformation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install cfn-lint
+        run: python3 -m pip install --quiet cfn-lint
+      - name: Lint CloudFormation templates
+        # Quoted glob: cfn-lint expands ** itself (recursive), so new cloudformation/<target>/
+        # templates are covered automatically.
+        run: cfn-lint "cloudformation/**/*.yaml"
