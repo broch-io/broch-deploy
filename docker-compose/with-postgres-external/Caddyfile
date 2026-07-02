@@ -18,15 +18,22 @@
 	# Applied to every site below unless overridden.
 }
 
-# Apex: the API endpoint customers and the CLI talk to.
-{env.BROCH_WILDCARD_HOSTNAME} {
+# Apex (the API endpoint the CLI/customers talk to) AND the per-tunnel wildcard
+# subdomains share ONE site block on purpose: listing both names together makes
+# Caddy issue a SINGLE certificate covering both as SANs via ONE ACME order.
+# Separate blocks would each get their own cert -> two concurrent DNS-01 orders
+# racing on the same _acme-challenge.<host> TXT record. With providers whose TXT
+# upsert REPLACES rather than appends (e.g. Route 53), the two orders clobber each
+# other's challenge value and wildcard issuance fails intermittently. One block,
+# one cert, one order = no race. Broch routes by Host, so one proxy serves both.
+{env.BROCH_WILDCARD_HOSTNAME}, *.{env.BROCH_WILDCARD_HOSTNAME} {
 	import /etc/caddy/tls.caddy
 
 	# Forward absolutely everything to broch. The server handles its own
 	# routing — REST API, WebSocket tunnel upgrades, healthchecks, etc.
 	reverse_proxy broch:8080 {
-		# Preserve the original Host header so broch sees the public
-		# hostname rather than the docker service name.
+		# Preserve the original Host header so broch sees the public hostname
+		# (apex or tunnel subdomain) rather than the docker service name.
 		header_up Host {host}
 
 		# Ride out brief broch unavailability (container restart / image
@@ -34,20 +41,6 @@
 		# immediate 502. Mirrors the hosted ingress, which holds traffic across
 		# a revision swap. Connection-level only — cannot mask a 5xx the broch
 		# server itself returns.
-		lb_try_duration 30s
-		lb_try_interval 250ms
-	}
-}
-
-# Wildcard: every tunnel subdomain (one per tunnel). Broch maps these to
-# the right tunnel based on the subdomain, so Caddy just passes through.
-*.{env.BROCH_WILDCARD_HOSTNAME} {
-	import /etc/caddy/tls.caddy
-
-	reverse_proxy broch:8080 {
-		header_up Host {host}
-
-		# Restart/upgrade resilience — see the apex block above.
 		lb_try_duration 30s
 		lb_try_interval 250ms
 	}

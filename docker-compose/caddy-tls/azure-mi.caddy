@@ -1,0 +1,8 @@
+tls {
+	dns azure {
+		subscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}
+		resource_group_name {env.AZURE_DNS_RESOURCE_GROUP}
+	}
+	resolvers 1.1.1.1 8.8.8.8
+	propagation_timeout 300s
+}

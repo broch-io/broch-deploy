@@ -104,8 +104,8 @@ param tlsCertificate string = ''
 @secure()
 param tlsCertificateKey string = ''
 
-@description('Broch server image tag. Pin in production.')
-param brochVersion string = 'latest'
+@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set to a newer tag to upgrade deliberately, or "latest" to float.')
+param brochVersion string = '1.26.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
 param brochImage string = 'ghcr.io/broch-io/broch'
@@ -236,12 +236,17 @@ var generatedVmPassword = '${vmPasswordSeed}X9'
 // Byo mode: the BYO-cert Caddyfile (:443 catch-all) reads the supplied cert from /etc/caddy/certs;
 // tls.caddy is unused. Caddyfiles come from broch-deploy (single source).
 // Azure managed identity = omit tenant/client/secret; service principal = include them.
-var tlsCloudflare = 'tls {\n\tdns cloudflare {env.CLOUDFLARE_API_TOKEN}\n}\n'
-var tlsAzureMi = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}\n}\n'
-var tlsAzureSpn = 'tls {\n\tdns azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t\ttenant_id {env.AZURE_DNS_TENANT_ID}\n\t\tclient_id {env.AZURE_DNS_CLIENT_ID}\n\t\tclient_secret {env.AZURE_DNS_CLIENT_SECRET}\n\t}\n}\n'
-var tlsRoute53 = 'tls {\n\tdns route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}\n}\n'
-var tlsGoogle = 'tls {\n\tdns googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}\n}\n'
-var tlsDigitalOcean = 'tls {\n\tdns digitalocean {env.DO_AUTH_TOKEN}\n}\n'
+// The per-provider tls fragments (with DNS-01 propagation tuning baked in) come from the CANONICAL
+// single source docker-compose/caddy-tls/<provider>.caddy -- one definition, consumed by every deploy
+// target; scripts/check-caddy-dns-sync.py fails CI if any target drifts from it. loadTextContent needs
+// a compile-time-literal path, so load all variants and ternary-select (like selectedCompose below).
+// Azure VM uses the explicit-keys route53 fragment (no instance role here, unlike the AWS appliance).
+var tlsCloudflare = loadTextContent('../../docker-compose/caddy-tls/cloudflare.caddy')
+var tlsAzureMi = loadTextContent('../../docker-compose/caddy-tls/azure-mi.caddy')
+var tlsAzureSpn = loadTextContent('../../docker-compose/caddy-tls/azure-spn.caddy')
+var tlsRoute53 = loadTextContent('../../docker-compose/caddy-tls/route53.caddy')
+var tlsGoogle = loadTextContent('../../docker-compose/caddy-tls/googleclouddns.caddy')
+var tlsDigitalOcean = loadTextContent('../../docker-compose/caddy-tls/digitalocean.caddy')
 var autoTlsCaddy = dnsProvider == 'Cloudflare' ? tlsCloudflare : (dnsProvider == 'AzureDns' ? tlsAzureMi : (dnsProvider == 'AzureDnsServicePrincipal' ? tlsAzureSpn : (dnsProvider == 'Route53' ? tlsRoute53 : (dnsProvider == 'GoogleCloudDns' ? tlsGoogle : tlsDigitalOcean))))
 var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : autoTlsCaddy
 // Mirror selectedCompose's mode branch so a Local-mode VM loads the Caddyfile from the same template

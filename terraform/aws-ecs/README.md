@@ -85,7 +85,7 @@ Rotating any secret = edit the secret value (via console or `aws secretsmanager 
 
 ## Pulling a new broch image
 
-The task definition references the image by tag (default: `:latest`). To deploy a new version:
+The task definition references the image by tag (default: a concrete pinned version, e.g. `:1.26.0` — not `:latest`). To deploy a new version:
 
 ```sh
 # Option A: change the tag in tfvars + re-apply
@@ -100,7 +100,7 @@ aws ecs update-service \
   --region us-east-1
 ```
 
-For production, pin to a specific version (`:1.6.0`) rather than `:latest` so deploys are reproducible.
+The default is already a pinned version so deploys are reproducible; bump it deliberately rather than floating on `:latest`.
 
 ## Teardown
 

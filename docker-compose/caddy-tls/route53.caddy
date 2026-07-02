@@ -1,0 +1,9 @@
+tls {
+	dns route53 {
+		access_key_id {env.AWS_ACCESS_KEY_ID}
+		secret_access_key {env.AWS_SECRET_ACCESS_KEY}
+	}
+	resolvers 1.1.1.1 8.8.8.8
+	propagation_delay 60s
+	propagation_timeout 300s
+}

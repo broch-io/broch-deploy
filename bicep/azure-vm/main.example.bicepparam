@@ -81,7 +81,7 @@ param authDomain = 'your-tenant.auth0.com'
 
 // --- Optional ---
 // param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region
-// param brochVersion = 'latest'      // pin to the running version before any prod cutover
+// param brochVersion = '1.26.0'      // defaults to a concrete pinned version; set a newer tag to upgrade
 // Private pre-release/beta image — server/username default to GHCR, so set only the token:
 // param brochImage = 'ghcr.io/broch-io/broch-beta'
 // param registryPassword = '<registry-token>'  // prefer --parameters

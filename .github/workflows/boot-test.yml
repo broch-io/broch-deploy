@@ -132,3 +132,22 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # Drift guard: the Caddy DNS-01 per-provider tls fragment + propagation tuning
+  # (resolvers / propagation_timeout / per-provider propagation_delay) and the provider env-key set
+  # were once re-encoded four ways with no shared source; they are now single-sourced in
+  # docker-compose/caddy-tls/, consumed by compose tls.caddy, the bicep
+  # azure-vm loadTextContent select, the cloudformation aws-vm base64 embed, and the
+  # terraform/digitalocean templatefile. This guard keeps every target selecting the RIGHT fragment
+  # (plugin + credential env keys, incl. the two route53 variants) so a partial change can't drift
+  # silently and fail cert issuance at a customer's first deploy (validate/build/the Cloudflare-only
+  # boot-test don't exercise the other providers). Fast + cloud-free, so it runs on every PR.
+  caddy-dns-sync:
+    name: caddy DNS-01 provider block sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install PyYAML
+        run: python3 -m pip install --user pyyaml
+      - name: Assert Caddy DNS-01 tls fragments + tuning are in sync across all deploy targets
+        run: python3 scripts/check-caddy-dns-sync.py

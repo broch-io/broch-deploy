@@ -1,0 +1,21 @@
+[
+  { "ParameterKey": "BrochMasterKey", "ParameterValue": "REPLACE-WITH-openssl-rand-base64-48-AND-REUSE-ON-EVERY-REDEPLOY" },
+
+  { "ParameterKey": "WildcardHostname", "ParameterValue": "tunnels.example.com" },
+  { "ParameterKey": "HostedZoneId", "ParameterValue": "Z0123456789ABCDEFGHIJ" },
+  { "ParameterKey": "AcmeEmail", "ParameterValue": "ops@example.com" },
+
+  { "ParameterKey": "DnsProvider", "ParameterValue": "Route53" },
+
+  { "ParameterKey": "DatabaseMode", "ParameterValue": "NewServer" },
+  { "ParameterKey": "DbSubnetIds", "ParameterValue": "subnet-aaaaaaaa,subnet-bbbbbbbb" },
+
+  { "ParameterKey": "AuthProvider", "ParameterValue": "Auth0" },
+  { "ParameterKey": "AuthClientId", "ParameterValue": "<client-id>" },
+  { "ParameterKey": "AuthClientSecret", "ParameterValue": "<client-secret>" },
+  { "ParameterKey": "AuthAdminRoles", "ParameterValue": "broch_admin" },
+  { "ParameterKey": "AuthDomain", "ParameterValue": "your-tenant.auth0.com" },
+
+  { "ParameterKey": "VpcId", "ParameterValue": "vpc-0123456789abcdef0" },
+  { "ParameterKey": "InstanceSubnetId", "ParameterValue": "subnet-aaaaaaaa" }
+]

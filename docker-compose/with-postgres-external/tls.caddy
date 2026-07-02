@@ -2,7 +2,23 @@
 #
 # Default: ACME DNS-01 via Cloudflare. The provider modules are all compiled into
 # the image (see Caddy.Dockerfile), so switching providers is just editing this
-# file — no rebuild. Examples:
+# file — no rebuild.
+#
+# DNS-01 propagation tuning — every example below carries it, and you
+# should keep it whatever provider you switch to:
+#   resolvers           — Caddy's own "has the TXT propagated yet?" pre-check uses these
+#                         public resolvers instead of the host resolver, which can cache a
+#                         stale NXDOMAIN for the apex+wildcard _acme-challenge name (apex and
+#                         wildcard share one TXT). Pure reliability win, no latency cost.
+#   propagation_timeout — ceiling on that pre-check wait before Caddy asks Let's Encrypt to
+#                         validate. A reliability ceiling, not a floor — never slows a fast DNS.
+#   propagation_delay   — a FIXED minimum wait before the first check. ONLY for slow providers
+#                         (Route 53, DigitalOcean), whose nameservers propagate slowly enough
+#                         that LE's multi-perspective validation otherwise runs before the TXT
+#                         is globally visible and fails. Do NOT add it to Cloudflare/Azure —
+#                         they propagate in seconds, so a delay would only add dead latency.
+#
+# Examples:
 #
 #   Azure DNS (managed identity — no secret; grant the VM "DNS Zone Contributor"):
 #     tls {
@@ -10,6 +26,8 @@
 #         subscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}
 #         resource_group_name {env.AZURE_DNS_RESOURCE_GROUP}
 #       }
+#       resolvers 1.1.1.1 8.8.8.8
+#       propagation_timeout 300s
 #     }
 #
 #   Azure DNS (service principal — for an app registration instead of a managed identity):
@@ -21,13 +39,27 @@
 #         client_id {env.AZURE_DNS_CLIENT_ID}
 #         client_secret {env.AZURE_DNS_CLIENT_SECRET}
 #       }
+#       resolvers 1.1.1.1 8.8.8.8
+#       propagation_timeout 300s
 #     }
 #
-#   AWS Route 53:
-#     tls { dns route53 { access_key_id {env.AWS_ACCESS_KEY_ID} secret_access_key {env.AWS_SECRET_ACCESS_KEY} } }
+#   AWS Route 53 (slow propagation — add the propagation_delay floor):
+#     tls {
+#       dns route53 { access_key_id {env.AWS_ACCESS_KEY_ID} secret_access_key {env.AWS_SECRET_ACCESS_KEY} }
+#       resolvers 1.1.1.1 8.8.8.8
+#       propagation_delay 60s
+#       propagation_timeout 300s
+#     }
 #
-#   DigitalOcean:
-#     tls { dns digitalocean {env.DO_AUTH_TOKEN} }
+#   DigitalOcean (slowest propagation — longest floor):
+#     tls {
+#       dns digitalocean {env.DO_AUTH_TOKEN}
+#       resolvers 1.1.1.1 8.8.8.8
+#       propagation_delay 120s
+#       propagation_timeout 300s
+#     }
 tls {
 	dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	resolvers 1.1.1.1 8.8.8.8
+	propagation_timeout 300s
 }

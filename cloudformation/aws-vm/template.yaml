@@ -1,0 +1,955 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Broch — AWS VM appliance. Boots the canonical with-postgres-external + Caddy
+  compose stack on a single Ubuntu 24.04 EC2 instance behind an Elastic IP. The
+  AWS analog of bicep/azure-vm. Wildcard TLS via Caddy ACME DNS-01, issued with
+  the instance's IAM role against Route 53 — no token typed, no cert upload.
+  Copyright (c) 2026 Broch, LLC. All rights reserved.
+#
+# NOTE: the canonical assets (docker-compose.yml, BOTH Caddyfiles, and the four
+# per-provider caddy-tls fragments) are base64-embedded by build.sh — this
+# committed template carries __*_B64__ placeholders for all of them
+# (Auto = ACME DNS-01 Caddyfile, Byo = static-cert Caddyfile; CertMode picks one
+# at deploy, DnsProvider picks the tls fragment at boot). Deploy the built
+# output (dist/template.yaml), never this file directly. See README.md.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Encryption (required) }
+        Parameters: [BrochMasterKey]
+      - Label: { default: Domain & TLS }
+        Parameters: [WildcardHostname, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
+      - Label: { default: Database }
+        Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId]
+      - Label: { default: Identity provider (boot floor) }
+        Parameters: [AuthProvider, AuthClientId, AuthClientSecret, AuthAdminRoles, AuthDomain, AuthTenantId, AuthInstance, AuthAuthority, AuthAudience]
+      - Label: { default: Compute & network }
+        Parameters: [VpcId, InstanceSubnetId, InstanceType, UbuntuAmi, SshAllowedCidr]
+      - Label: { default: Image (advanced) }
+        Parameters: [BrochVersion, BrochImage, RegistryServer, RegistryUsername, RegistryPassword]
+    ParameterLabels:
+      BrochMasterKey: { default: "Master key (BROCH_MASTER_KEY) - customer-owned, required" }
+      WildcardHostname: { default: Wildcard hostname (e.g. tunnels.example.com) }
+      HostedZoneId: { default: Route 53 hosted zone for that domain }
+
+Parameters:
+  # ── Encryption (required) ────────────────────────────────────────────────────
+  BrochMasterKey:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: >-
+      REQUIRED. The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned; Broch never
+      sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own
+      secret store; the SAME value must be supplied on every (re)deploy. For ExistingDatabase
+      this MUST be the key that database was encrypted with — a different key cannot decrypt its
+      Data Protection keyring. The server also rejects values under 32 bytes at boot. It is
+      stashed in this stack's Secrets Manager so the instance can read it at boot without it ever
+      entering UserData; it is NOT generated here (a generated key would change on redeploy and
+      orphan an existing database).
+
+  # ── Domain & TLS ────────────────────────────────────────────────────────────
+  WildcardHostname:
+    Type: String
+    Description: Apex + wildcard hostname for tunnels and the API, e.g. tunnels.example.com. Broch serves the apex and *.<this>.
+    AllowedPattern: "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
+  HostedZoneId:
+    # Plain String (not AWS::Route53::HostedZone::Id) so it can be empty for the non-Route53
+    # providers -- an AWS-specific type validates the "" default unconditionally and would break
+    # them. Required only for DnsProvider=Route53 (enforced by the Route53RequiresHostedZone Rule).
+    Type: String
+    Default: ""
+    Description: Route 53 hosted zone id that owns WildcardHostname -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there, so point its apex + wildcard A records at the PublicIp output yourself.
+  CertMode:
+    Type: String
+    AllowedValues: [Auto, Byo]
+    Default: Auto
+    Description: Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a DnsProvider). Byo = you supply the wildcard cert + key (no ACME, no DnsProvider needed); renewal is your responsibility.
+  TlsCertificate:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — only when CertMode=Byo. e.g. base64 -w0 fullchain.pem
+  TlsCertificateKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Base64-encoded PEM private key for the wildcard cert — only when CertMode=Byo. e.g. base64 -w0 privkey.pem
+  AcmeEmail:
+    Type: String
+    Description: Email Let's Encrypt notifies about renewal failures.
+    Default: ""
+    # These free-text values are templated into cloud-init via Fn::Sub, where a literal
+    # "${...}" would be misread as a CFn variable and fail the deploy. Forbid "$" outright
+    # (it's never valid in an email / OIDC identifier). Secret fields no longer go through
+    # Fn::Sub (they're fetched from Secrets Manager at boot), so they don't carry this guard.
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  DnsProvider:
+    Type: String
+    AllowedValues: [Route53, Cloudflare, GoogleCloudDns, DigitalOcean]
+    Default: Route53
+    Description: ACME DNS-01 provider (CertMode=Auto). Route53 (default) uses the instance IAM role — no secret. Cloudflare / GoogleCloudDns / DigitalOcean authenticate with a credential you supply below (for a domain hosted off Route 53). Ignored when CertMode=Byo.
+  CloudflareApiToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Cloudflare API token (Zone:Read + DNS:Edit) — only when DnsProvider=Cloudflare.
+  DoAuthToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: DigitalOcean API token with DNS write scope — only when DnsProvider=DigitalOcean.
+  GcpProject:
+    Type: String
+    Default: ""
+    Description: GCP project ID hosting the Cloud DNS zone — only when DnsProvider=GoogleCloudDns.
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  GcpCredentialsJson:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone) — only when DnsProvider=GoogleCloudDns. e.g. base64 -w0 sa.json
+
+  # ── Database ────────────────────────────────────────────────────────────────
+  DatabaseMode:
+    Type: String
+    AllowedValues: [NewServer, ExistingDatabase, ExistingServer]
+    Default: NewServer
+    Description: NewServer provisions a private RDS Postgres. ExistingDatabase points at a ready connection string. ExistingServer carves a brochdb + least-priv broch role onto a Postgres server you already run (supply the DbServer* admin fields below).
+  DatabaseConnectionString:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Npgsql connection string — only when DatabaseMode=ExistingDatabase. e.g. Host=...;Port=5432;Database=brochdb;Username=broch;Password=...;SSL Mode=Require
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: RDS instance class (NewServer).
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    Description: RDS storage in GB (NewServer).
+  DbSubnetIds:
+    # CommaDelimitedList, NOT List<AWS::EC2::Subnet::Id>: CloudFormation validates
+    # AWS-specific list types UNCONDITIONALLY at stack creation, before evaluating
+    # Conditions — so a List<...Subnet::Id> with Default "" fails parameter validation
+    # on every ExistingDatabase deploy (where subnets are never used). A basic
+    # CommaDelimitedList accepts an empty default and is only dereferenced under IsNewServer.
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Two+ subnet IDs (comma-separated) in different AZs for the RDS subnet group (NewServer). In the default VPC, pick two default subnets. Leave empty for ExistingDatabase.
+  # ExistingServer mode: connect to a Postgres server you already run and carve a brochdb +
+  # least-priv broch role onto it (at boot, via the admin creds below). Host/username are
+  # Fn::Sub'd into cloud-init, hence the "no $" guard; the admin password is a secret.
+  DbServerHost:
+    Type: String
+    Default: ""
+    Description: Hostname/endpoint of the existing Postgres server (ExistingServer). e.g. mydb.abc123.us-east-1.rds.amazonaws.com
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  DbServerPort:
+    Type: Number
+    Default: 5432
+    Description: Port of the existing Postgres server (ExistingServer).
+  DbAdminUsername:
+    Type: String
+    Default: ""
+    Description: Admin/superuser login on the existing server (ExistingServer) — used ONCE at boot to create the brochdb database and broch role. Not stored on the instance afterward.
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  DbAdminPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Password for DbAdminUsername (ExistingServer). Stashed in Secrets Manager, used at boot for the carve, never written to the instance's .env.
+  DbServerSecurityGroupId:
+    # Plain String (not AWS::EC2::SecurityGroup::Id) for the same reason as DbSubnetIds:
+    # AWS-specific types validate the "" default unconditionally, breaking non-ExistingServer deploys.
+    Type: String
+    Default: ""
+    Description: Security group ID of the existing server (ExistingServer) — the stack adds an ingress rule allowing Postgres from this instance. e.g. sg-0123456789abcdef0
+
+  # ── Identity provider (boot floor) ──────────────────────────────────────────
+  # All the non-secret auth fields below carry the same "no $" guard as AcmeEmail
+  # (templated into cloud-init via Fn::Sub). AuthClientSecret is exempt — it's a
+  # secret, fetched from Secrets Manager at boot, never substituted by Fn::Sub.
+  AuthProvider:
+    Type: String
+    Default: ""
+    Description: Auth0 | AzureAd | EntraExternalId | Okta | Oidc. Broch has no local login; the IdP is the boot floor.
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  AuthClientId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  AuthClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+  AuthAdminRoles:
+    Type: String
+    Default: broch_admin
+    Description: Comma-separated role(s); the first user holding one becomes admin.
+    AllowedPattern: "^[^$]*$"
+    ConstraintDescription: must not contain a '$' character.
+  AuthDomain: { Type: String, Default: "", Description: Auth0/Okta tenant domain., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthTenantId: { Type: String, Default: "", Description: AzureAd/Entra tenant id., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthInstance: { Type: String, Default: "", Description: AzureAd/Entra login instance., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthAuthority: { Type: String, Default: "", Description: Generic OIDC issuer URL., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthAudience: { Type: String, Default: "", Description: OAuth audience (optional)., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+
+  # ── Compute & network ───────────────────────────────────────────────────────
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (the default VPC is fine).
+  InstanceSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet for the instance + Elastic IP.
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    Description: EC2 instance type. Default is ARM64 (Graviton, cheap); the broch image is multi-arch.
+  UbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+    Description: Resolved from SSM — latest Ubuntu 24.04. Must match InstanceType arch (arm64 path for t4g/*g; amd64 path for x86).
+  SshAllowedCidr:
+    Type: String
+    Default: ""
+    Description: CIDR allowed to reach SSH (22). Empty (default) opens no SSH — manage via SSM Session Manager.
+
+  # ── Image (advanced) ────────────────────────────────────────────────────────
+  BrochVersion:
+    Type: String
+    Default: "1.26.0"
+    Description: >-
+      Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
+      replacement never silently rolls the box across an EF-migration boundary; new releases of this
+      template bump this default. Set a newer tag to upgrade deliberately, or "latest" to float.
+  BrochImage:
+    Type: String
+    Default: ghcr.io/broch-io/broch
+    Description: Broch image repository (public by default).
+  RegistryServer: { Type: String, Default: ghcr.io, Description: Registry host for a private image pull. }
+  RegistryUsername: { Type: String, Default: broch-io, Description: Registry username for a private image pull. }
+  RegistryPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Registry token — only for a private/pre-release image. Empty for the public image.
+
+Conditions:
+  IsNewServer: !Equals [!Ref DatabaseMode, NewServer]
+  IsExistingDatabase: !Equals [!Ref DatabaseMode, ExistingDatabase]
+  IsExistingServer: !Equals [!Ref DatabaseMode, ExistingServer]
+  IsByoCert: !Equals [!Ref CertMode, Byo]
+  # Route 53 is the only provider the stack manages DNS for (the apex/wildcard A records and
+  # the instance-role DNS-01 policy). The token-based providers run on a domain hosted OFF
+  # Route 53, so those resources are skipped and the customer owns their own A records.
+  IsRoute53: !Equals [!Ref DnsProvider, Route53]
+  # UseGoogleDns gates the GcpCredsPath .env value. The other providers are selected at
+  # boot by render-secrets.sh switching on ${DnsProvider}, so they need no Condition here.
+  UseGoogleDns: !Equals [!Ref DnsProvider, GoogleCloudDns]
+  HasSsh: !Not [!Equals [!Ref SshAllowedCidr, ""]]
+  # Each user-supplied secret is stashed in Secrets Manager (and read at boot) only
+  # when actually provided — so it never has to ride along in UserData.
+  HasCloudflareToken: !Not [!Equals [!Ref CloudflareApiToken, ""]]
+  HasDoToken: !Not [!Equals [!Ref DoAuthToken, ""]]
+  HasGcpCreds: !Not [!Equals [!Ref GcpCredentialsJson, ""]]
+  HasAuthClientSecret: !Not [!Equals [!Ref AuthClientSecret, ""]]
+  HasRegistryPassword: !Not [!Equals [!Ref RegistryPassword, ""]]
+
+# Fail fast at stack create/update (before any resource is built) on the two
+# configuration mistakes that would otherwise deploy "green" and then break at
+# runtime: Cloudflare DNS-01 with no token (cert never issues), and NewServer
+# with no subnets (RDS subnet group gets an empty list).
+Rules:
+  # The DNS-token rules are guarded with `CertMode != Byo`: in Byo mode Caddy serves a
+  # supplied cert and never runs ACME DNS-01, so the provider token is unused. A customer
+  # whose domain is on Cloudflare and who brings their own cert legitimately sets
+  # DnsProvider=Cloudflare with an empty token — these rules must not reject that.
+  CloudflareRequiresToken:
+    RuleCondition: !And
+      - !Equals [!Ref DnsProvider, Cloudflare]
+      - !Not [!Equals [!Ref CertMode, Byo]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CloudflareApiToken, ""]]
+        AssertDescription: CloudflareApiToken is required when DnsProvider=Cloudflare (Caddy's DNS-01 has no credential otherwise).
+  Route53RequiresHostedZone:
+    RuleCondition: !Equals [!Ref DnsProvider, Route53]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref HostedZoneId, ""]]
+        AssertDescription: HostedZoneId is required when DnsProvider=Route53 (instance-role DNS-01 and the apex/wildcard A records both need it). Off-Route53 providers leave it empty.
+  NewServerRequiresSubnets:
+    RuleCondition: !Equals [!Ref DatabaseMode, NewServer]
+    Assertions:
+      # Fn::Contains (not Fn::Join — unsupported in Rules): the default "" resolves to
+      # [""], so a list containing an empty string means no real subnets were supplied.
+      - Assert:
+          Fn::Not:
+            - Fn::Contains:
+                - !Ref DbSubnetIds
+                - ""
+        AssertDescription: DbSubnetIds (two or more subnets in different AZs) is required when DatabaseMode=NewServer.
+  ByoCertRequiresCertAndKey:
+    RuleCondition: !Equals [!Ref CertMode, Byo]
+    Assertions:
+      - Assert: !And [!Not [!Equals [!Ref TlsCertificate, ""]], !Not [!Equals [!Ref TlsCertificateKey, ""]]]
+        AssertDescription: TlsCertificate and TlsCertificateKey (base64 PEM) are both required when CertMode=Byo.
+  DigitalOceanRequiresToken:
+    RuleCondition: !And
+      - !Equals [!Ref DnsProvider, DigitalOcean]
+      - !Not [!Equals [!Ref CertMode, Byo]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DoAuthToken, ""]]
+        AssertDescription: DoAuthToken is required when DnsProvider=DigitalOcean.
+  GoogleDnsRequiresCreds:
+    RuleCondition: !And
+      - !Equals [!Ref DnsProvider, GoogleCloudDns]
+      - !Not [!Equals [!Ref CertMode, Byo]]
+    Assertions:
+      - Assert: !And [!Not [!Equals [!Ref GcpProject, ""]], !Not [!Equals [!Ref GcpCredentialsJson, ""]]]
+        AssertDescription: GcpProject and GcpCredentialsJson are both required when DnsProvider=GoogleCloudDns.
+  ExistingServerRequiresAdmin:
+    RuleCondition: !Equals [!Ref DatabaseMode, ExistingServer]
+    Assertions:
+      - Assert: !And
+          - !Not [!Equals [!Ref DbServerHost, ""]]
+          - !Not [!Equals [!Ref DbAdminUsername, ""]]
+          - !Not [!Equals [!Ref DbAdminPassword, ""]]
+          - !Not [!Equals [!Ref DbServerSecurityGroupId, ""]]
+        AssertDescription: DbServerHost, DbAdminUsername, DbAdminPassword and DbServerSecurityGroupId are all required when DatabaseMode=ExistingServer.
+  ExistingDatabaseRequiresConnString:
+    RuleCondition: !Equals [!Ref DatabaseMode, ExistingDatabase]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DatabaseConnectionString, ""]]
+        AssertDescription: DatabaseConnectionString is required when DatabaseMode=ExistingDatabase.
+
+Resources:
+  # ── Secrets (born in the customer account; never transit Broch) ──────────────
+  # The master key is CUSTOMER-SUPPLIED (BrochMasterKey), never generated — stored here only so
+  # the instance can read it at boot via the instance role (keeping it out of UserData). Storing
+  # the same customer value every deploy is idempotent; a generated key would change on redeploy
+  # and could no longer decrypt an existing database's keyring.
+  MasterKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-master-key"
+      Description: Broch at-rest encryption root (BROCH_MASTER_KEY). Customer-supplied; the same value must be supplied on every redeploy that reuses the DB.
+      SecretString: !Ref BrochMasterKey
+
+  DbPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsNewServer
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-db-password"
+      Description: Master password for the provisioned RDS Postgres.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"broch"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  # ── ExistingServer carve secrets ─────────────────────────────────────────────
+  # Admin password: used ONCE at boot to create the brochdb + broch role, then dropped.
+  DbAdminPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsExistingServer
+    # W1030: "" default looks empty to cfn-lint; ExistingServer makes it mandatory (Rule enforces).
+    Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-db-admin-password"
+      SecretString: !Ref DbAdminPassword
+  # Generated password for the least-priv broch role (ExcludePunctuation so it's safe to
+  # carry through the carve SQL and the connection string unquoted).
+  BrochRolePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsExistingServer
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-role-password"
+      Description: Password for the least-privilege broch role carved onto the existing server.
+      GenerateSecretString:
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  # ── User-supplied secrets (kept OUT of UserData) ─────────────────────────────
+  # NoEcho hides a parameter from describe-stacks output, but a value substituted
+  # into UserData via Fn::Sub is still recoverable by anyone with
+  # ec2:DescribeInstanceAttribute or anything that can reach the IMDS user-data
+  # endpoint. So each provided secret is stashed here and fetched at boot by the
+  # instance role (render-secrets.sh). SecretString is the RAW parameter value —
+  # no JSON wrapper — so a value containing quotes/backslashes/newlines can't
+  # corrupt anything (and isn't re-scanned by Fn::Sub for ${...} either).
+  CloudflareTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasCloudflareToken
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-cloudflare-token"
+      SecretString: !Ref CloudflareApiToken
+
+  ConnStringSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsExistingDatabase
+    # W1030: cfn-lint sees DatabaseConnectionString's "" default and warns the
+    # SecretString could be empty. It can't infer that ExistingDatabase mode makes the
+    # connection string mandatory — the ExistingDatabaseRequiresConnString Rule enforces
+    # that at stack-create (an empty value fails the deploy loudly), but cfn-lint doesn't
+    # evaluate Rules, so the static warning persists and is suppressed here.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W1030]
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-conn-string"
+      SecretString: !Ref DatabaseConnectionString
+
+  AuthClientSecretSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasAuthClientSecret
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-auth-client-secret"
+      SecretString: !Ref AuthClientSecret
+
+  # BYO-cert: the supplied wildcard cert + key (base64 PEM), fetched at boot and
+  # decoded into /opt/broch/certs/. The private key especially must not ride in UserData.
+  TlsCertSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsByoCert
+    Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-tls-cert"
+      SecretString: !Ref TlsCertificate
+  TlsKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: IsByoCert
+    Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-tls-key"
+      SecretString: !Ref TlsCertificateKey
+
+  DoTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasDoToken
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-do-token"
+      SecretString: !Ref DoAuthToken
+
+  GcpCredsSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasGcpCreds
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-gcp-creds"
+      SecretString: !Ref GcpCredentialsJson
+
+  RegistryPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasRegistryPassword
+    Properties:
+      Name: !Sub "${AWS::StackName}/broch-registry-password"
+      SecretString: !Ref RegistryPassword
+
+  # ── Networking ──────────────────────────────────────────────────────────────
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Broch instance - HTTP/HTTPS/HTTP3 from the internet.
+      VpcId: !Ref VpcId
+      # IPv4 and IPv6 both open for HTTP/HTTPS/HTTP3 — without the v6 rules, clients on
+      # IPv6-only or dual-stack networks can't reach the appliance.
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP (ACME + redirect) }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+        - { IpProtocol: udp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTP/3 (QUIC) }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0", Description: HTTP (ACME + redirect) IPv6 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0", Description: HTTPS IPv6 }
+        - { IpProtocol: udp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0", Description: HTTP/3 (QUIC) IPv6 }
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-instance" }]
+
+  SshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSsh
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshAllowedCidr
+      Description: SSH break-glass
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsNewServer
+    Properties:
+      GroupDescription: Broch RDS - Postgres from the instance only.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref InstanceSecurityGroup
+          Description: Postgres from the Broch instance
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-rds" }]
+
+  # ExistingServer: open Postgres on the customer's existing server SG to this instance.
+  ExistingServerIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: IsExistingServer
+    # W1030: DbServerSecurityGroupId is a plain String (default "") so the AWS-type default
+    # check doesn't break other modes; ExistingServer makes it mandatory (Rule enforces).
+    Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
+    Properties:
+      GroupId: !Ref DbServerSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref InstanceSecurityGroup
+      Description: !Sub "Postgres from ${AWS::StackName} Broch instance"
+
+  # ── Managed database (NewServer) ────────────────────────────────────────────
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Condition: IsNewServer
+    Properties:
+      DBSubnetGroupDescription: !Sub "${AWS::StackName} Broch RDS"
+      SubnetIds: !Ref DbSubnetIds
+
+  BrochDB:
+    Type: AWS::RDS::DBInstance
+    Condition: IsNewServer
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${AWS::StackName}-postgres"
+      Engine: postgres
+      # EngineVersion omitted — RDS selects its current default Postgres major.
+      # Pin to a specific version (e.g. "17.4") for reproducible upgrades.
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      # gp3 to match the EC2 root volume — cheaper per GB than the gp2 default and
+      # a flat 3000 IOPS baseline instead of gp2's size-scaled 3 IOPS/GB.
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: brochdb
+      MasterUsername: broch
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbPasswordSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref RdsSecurityGroup]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+
+  # ── IAM: instance role (Route 53 DNS-01, read its secrets, SSM break-glass) ──
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        # Route 53 DNS-01 via the instance role -- ONLY when DnsProvider=Route53. The token
+        # providers don't use the role for DNS and leave HostedZoneId empty (which would make
+        # the ChangeResourceRecordSets ARN malformed), so the whole policy is omitted for them.
+        - !If
+          - IsRoute53
+          - PolicyName: route53-dns01
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                # Read+write the TXT challenge records, scoped to THIS zone only — so a compromised
+                # instance can't enumerate or read record sets in other zones on a shared account.
+                - Effect: Allow
+                  Action: [route53:ChangeResourceRecordSets, route53:ListResourceRecordSets]
+                  Resource: !Sub "arn:aws:route53:::hostedzone/${HostedZoneId}"
+                # ListHostedZones(ByName) and GetChange don't support resource-level scoping in
+                # Route 53 (account-wide by design); they expose only zone names/ids and change
+                # status, not record contents.
+                - Effect: Allow
+                  Action: [route53:ListHostedZones, route53:ListHostedZonesByName]
+                  Resource: "*"
+                - Effect: Allow
+                  Action: route53:GetChange
+                  Resource: "arn:aws:route53:::change/*"
+          - !Ref AWS::NoValue
+        - PolicyName: read-broch-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                # Scoped to THIS stack's secret namespace. Secrets Manager appends a
+                # random 6-char suffix to every secret's ARN, so the trailing "-*"
+                # matches "<stack>/broch-*-AbCdEf" — covering the master key, DB
+                # password, and any of the conditional user-secrets without having to
+                # enumerate (and !If) each one that may or may not exist.
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/broch-*"
+        - PolicyName: cfn-helpers
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # cfn-init reads the large static assets (compose + Caddyfile) from THIS
+              # stack's resource metadata at boot (DescribeStackResource); cfn-signal reports
+              # boot success/failure back to the Instance's CreationPolicy (SignalResource), so
+              # the stack only reaches CREATE_COMPLETE once the box is actually healthy.
+              - Effect: Allow
+                Action: [cloudformation:DescribeStackResource, cloudformation:SignalResource]
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ── Static address + DNS ────────────────────────────────────────────────────
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # A dedicated association (rather than EIP.InstanceId) is the documented VPC
+  # pattern and gives CloudFormation a cleaner rollback target on instance replacement.
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+  # apex + wildcard A records: only when Route 53 owns the domain. Off-Route53 providers
+  # (Cloudflare/GCP/DO) host their own zone -- the customer points A records at PublicIp.
+  ApexRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: IsRoute53
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${WildcardHostname}."
+      Type: A
+      TTL: "60"
+      ResourceRecords: [!Ref ElasticIp]
+
+  WildcardRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: IsRoute53
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "*.${WildcardHostname}."
+      Type: A
+      TTL: "60"
+      ResourceRecords: [!Ref ElasticIp]
+
+  # ── The instance ────────────────────────────────────────────────────────────
+  Instance:
+    Type: AWS::EC2::Instance
+    # cfn-init writes the large static assets (compose + the CertMode-selected Caddyfile)
+    # at boot from template metadata -- which is staged in S3 with the template and has no
+    # size limit -- instead of UserData, which EC2 hard-caps at 16 KB. build.sh substitutes
+    # the same base64 blobs into the placeholders below; they are just relocated from
+    # UserData's write_files to here.
+    # CreationPolicy: the stack does NOT reach CREATE_COMPLETE until cfn-signal fires from the
+    # end of runcmd. Without it, `aws cloudformation deploy` returns the moment the EC2 instance
+    # is RUNNING -- before Docker install, secret hydration, the DB carve, and container health --
+    # and a boot FAILURE would still report CREATE_COMPLETE (a silent production failure). The
+    # generous timeout covers a cold image pull + the broch container's healthcheck (which waits on
+    # the database -- RDS for NewServer, or the external/existing server -- before reporting healthy).
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        # PT25M, not PT20M: on a cold t4g the serial pre-health work (apt+docker install, cfn-init,
+        # AWS CLI install, ExistingServer psql-client + carve, cold image pull) can run ~6-10 min
+        # BEFORE the up-to-600s health wait even starts, so 20 min left too little margin and could
+        # roll back an instance that was about to go healthy.
+        Timeout: PT25M
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /opt/broch/docker-compose.yml:
+              content: __COMPOSE_B64__
+              encoding: base64
+              mode: "000644"
+              owner: root
+              group: root
+            # CertMode picks the Caddyfile: Auto (ACME DNS-01, imports tls.caddy) or
+            # Byo (static cert from /opt/broch/certs, no ACME). Both embedded by build.sh.
+            /opt/broch/Caddyfile:
+              content: !If [IsByoCert, "__CADDYFILE_BYO_B64__", "__CADDYFILE_AUTO_B64__"]
+              encoding: base64
+              mode: "000644"
+              owner: root
+              group: root
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref InstanceSubnetId
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: { VolumeSize: 30, VolumeType: gp3, Encrypted: true }
+      Tags: [{ Key: Name, Value: !Ref AWS::StackName }]
+      MetadataOptions:
+        HttpEndpoint: enabled
+        # IMDSv2 only: a bare GET (no session token) can't read instance credentials
+        # or the user-data blob, so SSRF in the app can't trivially harvest the role.
+        HttpTokens: required
+        # MUST be 2, not the default 1. Caddy runs in a bridge-network container (one
+        # extra network hop), and its route53 DNS-01 module authenticates with the
+        # instance role via IMDS — at hop limit 1 the token PUT response is dropped
+        # inside the container and wildcard issuance never completes. The host-side
+        # boot script (which fetches secrets) is only 1 hop and is unaffected either way.
+        HttpPutResponseHopLimit: 2
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #cloud-config
+              # Broch -- AWS VM appliance bootstrap. Deploys the CANONICAL
+              # with-postgres-external + Caddy assets verbatim (base64-embedded by
+              # build.sh). Only /opt/broch/.env is templated. Caddy issues the
+              # wildcard via ACME DNS-01; with DnsProvider=Route53 it authenticates
+              # with THIS instance's IAM role (the .env sets no AWS keys, so Caddy's
+              # route53 module falls through to the instance metadata credentials).
+              # NOTE: this block must stay pure ASCII -- cloud-init's YAML loader
+              # rejects multi-byte UTF-8 in user-data and silently drops the whole config.
+              package_update: true
+              # python3-pip: for aws-cfn-bootstrap (cfn-init). unzip: for the AWS CLI v2 installer.
+              # NOTE: Ubuntu 24.04 ships NO 'awscli' apt package -- AWS CLI v2 is installed in runcmd.
+              packages: [ca-certificates, curl, gnupg, python3-pip, unzip]
+              write_files:
+                # docker-compose.yml and the CertMode-selected Caddyfile are written by
+                # cfn-init from template metadata (too big for UserData's 16 KB cap) --
+                # see the Instance Metadata block above. The rest stays inline below.
+                # tls.caddy (Caddy's per-provider TLS fragment) is generated at boot by
+                # render-secrets.sh -- it must be multi-line (Caddy rejects single-line blocks)
+                # and Route 53 needs a propagation wait, both awkward in a YAML block scalar.
+                # Only NON-secret values here. The secrets (master key, DB connection
+                # string / password, Cloudflare token, IdP client secret) are appended
+                # at boot by render-secrets.sh, fetched from Secrets Manager via the
+                # instance role -- they are never written into UserData.
+                - path: /opt/broch/.env
+                  permissions: "0600"
+                  content: |
+                    BROCH_VERSION=${BrochVersion}
+                    BROCH_IMAGE=${BrochImage}
+                    BROCH_WILDCARD_HOSTNAME=${WildcardHostname}
+                    CADDY_ACME_EMAIL=${AcmeEmail}
+                    GCP_PROJECT=${GcpProject}
+                    GOOGLE_APPLICATION_CREDENTIALS=${GcpCredsPath}
+                    AUTHENTICATION__PROVIDER=${AuthProvider}
+                    AUTHENTICATION__CLIENTID=${AuthClientId}
+                    AUTHENTICATION__ADMINROLES=${AuthAdminRoles}
+                    AUTHENTICATION__DOMAIN=${AuthDomain}
+                    AUTHENTICATION__TENANTID=${AuthTenantId}
+                    AUTHENTICATION__INSTANCE=${AuthInstance}
+                    AUTHENTICATION__AUTHORITY=${AuthAuthority}
+                    AUTHENTICATION__AUDIENCE=${AuthAudience}
+                - path: /opt/broch/render-secrets.sh
+                  permissions: "0700"
+                  content: |
+                    #!/usr/bin/env bash
+                    # Boot-time secret hydration. Fetches the stack's secrets with the
+                    # instance role (the host is 1 hop from IMDS, so the default hop limit
+                    # is fine here) and APPENDS them to /opt/broch/.env before broch.service
+                    # starts. Keeping these out of UserData is the whole point -- see the
+                    # secrets comment in the template.
+                    set -euo pipefail
+                    env_file=/opt/broch/.env
+                    # certs/ is bind-mounted into the Caddy container; ensure it exists (empty in
+                    # Auto+Route53/Cloudflare, populated for Byo cert and GoogleCloudDns).
+                    mkdir -p /opt/broch/certs
+                    # Caddy's TLS fragment (the tls {...} block the Caddyfile imports), selected per
+                    # DnsProvider from the CANONICAL single source docker-compose/caddy-tls/*.caddy,
+                    # which build.sh base64-embeds into the __TLS_*_B64__ placeholders below. Route53
+                    # uses route53-iam.caddy (bare 'dns route53' -- this appliance authenticates Route
+                    # 53 with its INSTANCE ROLE, not env keys). The propagation tuning lives in those
+                    # fragments; scripts/check-caddy-dns-sync.py fails CI if any target drifts from
+                    # them. base64 output is $/{-free, so it is safe inside this Fn::Sub UserData.
+                    case "${CertMode}" in
+                      Byo) printf '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' > /opt/broch/tls.caddy ;;
+                      *)
+                        case "${DnsProvider}" in
+                          Cloudflare)     printf '%s' '__TLS_CLOUDFLARE_B64__'     | base64 -d > /opt/broch/tls.caddy ;;
+                          DigitalOcean)   printf '%s' '__TLS_DIGITALOCEAN_B64__'   | base64 -d > /opt/broch/tls.caddy ;;
+                          GoogleCloudDns) printf '%s' '__TLS_GOOGLECLOUDDNS_B64__' | base64 -d > /opt/broch/tls.caddy ;;
+                          *)              printf '%s' '__TLS_ROUTE53_B64__'         | base64 -d > /opt/broch/tls.caddy ;;
+                        esac
+                        ;;
+                    esac
+                    get() { aws --region "${AWS::Region}" secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text; }
+
+                    # Values are written single-quoted: docker compose's dotenv parser treats a
+                    # single-quoted value as a literal, so a '#', space, ';' or '$' inside a
+                    # secret (e.g. a connection-string password) is preserved verbatim instead
+                    # of being read as an inline comment / interpolation.
+                    printf "BROCH_MASTER_KEY='%s'\n" "$(get "${AWS::StackName}/broch-master-key")" >> "$env_file"
+
+                    case "${DatabaseMode}" in
+                      NewServer)
+                        db_pass="$(get "${AWS::StackName}/broch-db-password" | python3 -c 'import sys,json; print(json.load(sys.stdin)["password"])')"
+                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbEndpoint};Port=5432;Database=brochdb;Username=broch;Password=%s;SSL Mode=Require'\n" "$db_pass" >> "$env_file"
+                        ;;
+                      ExistingDatabase)
+                        printf "BROCH_DB_CONNECTION_STRING='%s'\n" "$(get "${AWS::StackName}/broch-conn-string")" >> "$env_file"
+                        ;;
+                      ExistingServer)
+                        # Carve a brochdb + least-priv broch role onto the customer's existing server,
+                        # using the admin creds ONCE (not persisted to .env). Idempotent across reboots.
+                        apt-get install -y postgresql-client
+                        admin_pass="$(get "${AWS::StackName}/broch-db-admin-password")"
+                        broch_pass="$(get "${AWS::StackName}/broch-role-password")"
+                        export PGPASSWORD="$admin_pass"
+                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d postgres -v brochpw="$broch_pass" <<'SQL'
+                    SELECT 'CREATE ROLE broch LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'broch')\gexec
+                    ALTER ROLE broch LOGIN PASSWORD :'brochpw';
+                    -- Managed Postgres (RDS, Cloud SQL, Azure Flexible Server, ...) runs the
+                    -- admin as a NON-superuser member of rds_superuser/azure_pg_admin/etc.
+                    -- Creating a database OWNER broch then requires the admin to be a member of
+                    -- broch (to SET ROLE to it); without this, RDS fails with "must be able to
+                    -- SET ROLE broch". A true superuser admin bypasses the check, so this is a
+                    -- harmless no-op there. Idempotent: re-granting an existing membership is fine.
+                    GRANT broch TO CURRENT_USER;
+                    SELECT 'CREATE DATABASE brochdb OWNER broch' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'brochdb')\gexec
+                    SQL
+                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d brochdb <<'SQL'
+                    GRANT ALL ON SCHEMA public TO broch;
+                    ALTER SCHEMA public OWNER TO broch;
+                    SQL
+                        unset PGPASSWORD
+                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbServerHost};Port=${DbServerPort};Database=brochdb;Username=broch;Password=%s;SSL Mode=Require'\n" "$broch_pass" >> "$env_file"
+                        ;;
+                    esac
+
+                    if [ "${HasCfToken}" = "true" ]; then
+                      printf "CLOUDFLARE_API_TOKEN='%s'\n" "$(get "${AWS::StackName}/broch-cloudflare-token")" >> "$env_file"
+                    fi
+                    if [ "${HasAuthSecret}" = "true" ]; then
+                      printf "AUTHENTICATION__CLIENTSECRET='%s'\n" "$(get "${AWS::StackName}/broch-auth-client-secret")" >> "$env_file"
+                    fi
+                    if [ "${IsByo}" = "true" ]; then
+                      # base64 PEM -> files. The Byo Caddyfile reads these; the private key is 0600.
+                      get "${AWS::StackName}/broch-tls-cert" | base64 -d > /opt/broch/certs/fullchain.pem
+                      get "${AWS::StackName}/broch-tls-key" | base64 -d > /opt/broch/certs/privkey.pem
+                      chmod 0644 /opt/broch/certs/fullchain.pem
+                      chmod 0600 /opt/broch/certs/privkey.pem
+                    fi
+                    if [ "${DoTokenSet}" = "true" ]; then
+                      printf "DO_AUTH_TOKEN='%s'\n" "$(get "${AWS::StackName}/broch-do-token")" >> "$env_file"
+                    fi
+                    if [ "${GcpCredsSet}" = "true" ]; then
+                      # SA JSON read by Caddy via GOOGLE_APPLICATION_CREDENTIALS (set in .env).
+                      get "${AWS::StackName}/broch-gcp-creds" | base64 -d > /opt/broch/certs/gcp-sa.json
+                      chmod 0600 /opt/broch/certs/gcp-sa.json
+                    fi
+                    if [ "${HasRegistryPw}" = "true" ]; then
+                      # --password-stdin via a shell variable: no token ever reaches argv,
+                      # and a token containing quotes can't break the command.
+                      reg_pass="$(get "${AWS::StackName}/broch-registry-password")"
+                      printf '%s' "$reg_pass" | docker login "${RegistryServer}" -u "${RegistryUsername}" --password-stdin
+                    fi
+                    chmod 0600 "$env_file"
+                - path: /etc/systemd/system/broch.service
+                  permissions: "0644"
+                  content: |
+                    [Unit]
+                    Description=Broch (Docker Compose)
+                    Requires=docker.service
+                    After=docker.service
+                    [Service]
+                    Type=oneshot
+                    RemainAfterExit=yes
+                    WorkingDirectory=/opt/broch
+                    # --force-recreate --remove-orphans so every boot CONVERGES from any prior state.
+                    # After an unclean stop, containers can be left "Created" with a nil RWLayer (overlay2
+                    # writable layer never committed); a plain `up -d` tries to start those stale containers,
+                    # won't recreate them, and the stack never comes up (a reboot alone can't clear it).
+                    # Force-recreate replaces them; named volumes are preserved -- idempotent, no data loss.
+                    ExecStart=/usr/bin/docker compose up -d --force-recreate --remove-orphans
+                    ExecStop=/usr/bin/docker compose down
+                    [Install]
+                    WantedBy=multi-user.target
+              runcmd:
+                - |
+                  if [ ! -f /swapfile ]; then
+                    fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+                    chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
+                    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+                  fi
+                - chmod 0600 /opt/broch/.env
+                - install -m 0755 -d /etc/apt/keyrings
+                - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+                - chmod a+r /etc/apt/keyrings/docker.asc
+                - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+                - apt-get update
+                - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                # Write the large static assets (compose + Caddyfile) from template metadata.
+                # aws-cfn-bootstrap isn't packaged for Ubuntu; install from the AWS-hosted
+                # tarball (--break-system-packages: Ubuntu 24.04 is PEP-668 externally-managed).
+                - pip3 install --break-system-packages https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+                - /usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+                # AWS CLI v2 -- Ubuntu 24.04 has NO 'awscli' apt package, and render-secrets needs
+                # it to pull secrets from Secrets Manager. Arch-aware: $(uname -m) = aarch64 (t4g) or x86_64.
+                - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip -o /tmp/awscliv2.zip
+                - unzip -q /tmp/awscliv2.zip -d /tmp
+                - /tmp/aws/install
+                # Hydrate secrets into .env (and do any private-registry login) AFTER docker
+                # is installed and BEFORE the service starts.
+                - bash /opt/broch/render-secrets.sh
+                - systemctl daemon-reload
+                - systemctl enable --now broch.service
+                # Gate CREATE_COMPLETE on real boot health: wait (bounded) for the broch container
+                # to report healthy, then cfn-signal that exit code to the Instance CreationPolicy.
+                # A failed/never-healthy boot signals non-zero -> the stack rolls back instead of
+                # falsely reporting success. rc/i/cid/h are shell vars referenced unbraced ($rc ...)
+                # so Fn::Sub leaves them; only the AWS::StackName / AWS::Region pseudo-params (the
+                # only brace-wrapped tokens below) are substituted.
+                - |
+                  rc=1
+                  for i in $(seq 1 60); do
+                    cid=$(docker ps --filter "label=com.docker.compose.service=broch" -q | head -n1)
+                    if [ -n "$cid" ]; then
+                      h=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo none)
+                      [ "$h" = healthy ] && { rc=0; break; }
+                    fi
+                    sleep 10
+                  done
+                  /usr/local/bin/cfn-signal --exit-code $rc --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+            # Non-secret values render-secrets.sh needs (CertMode/DnsProvider are plain
+            # parameter refs Fn::Sub resolves directly). The RDS endpoint is not a secret;
+            # the password it pairs with is fetched from Secrets Manager at boot.
+            - DbEndpoint: !If [IsNewServer, !GetAtt BrochDB.Endpoint.Address, ""]
+              # In-container path Caddy reads the GCP SA JSON from (GoogleCloudDns only).
+              GcpCredsPath: !If [UseGoogleDns, "/etc/caddy/certs/gcp-sa.json", ""]
+              HasCfToken: !If [HasCloudflareToken, "true", "false"]
+              HasAuthSecret: !If [HasAuthClientSecret, "true", "false"]
+              HasRegistryPw: !If [HasRegistryPassword, "true", "false"]
+              IsByo: !If [IsByoCert, "true", "false"]
+              DoTokenSet: !If [HasDoToken, "true", "false"]
+              GcpCredsSet: !If [HasGcpCreds, "true", "false"]
+
+Outputs:
+  Url:
+    Description: Broch URL (sign in here once Caddy has issued the cert).
+    Value: !Sub "https://${WildcardHostname}"
+  PublicIp:
+    Description: Elastic IP. Route53 deployments get their apex/wildcard A records created by this stack; with any other DNS provider, point both records here yourself.
+    Value: !Ref ElasticIp
+  MasterKeySecretArn:
+    Description: Where your supplied BROCH_MASTER_KEY is stored (your account) for the instance to read. Keep the original safe — supply the same value on every redeploy that reuses the DB.
+    Value: !Ref MasterKeySecret
+  DatabaseEndpoint:
+    Description: RDS endpoint (NewServer), the existing server host (ExistingServer), or a note (ExistingDatabase).
+    Value: !If
+      - IsNewServer
+      - !GetAtt BrochDB.Endpoint.Address
+      - !If [IsExistingServer, !Ref DbServerHost, "external (you supplied the connection string)"]
+  SsmCommand:
+    Description: Break-glass / log access (no SSH).
+    Value: !Sub "aws ssm start-session --target ${Instance}"

@@ -40,6 +40,16 @@ resource "digitalocean_droplet" "broch" {
   size     = var.droplet_size
   ssh_keys = [var.ssh_key_fingerprint]
 
+  # NOTE: postgres_password is NOT passed in — it is generated ON the droplet
+  # at first boot (like BROCH_MASTER_KEY) so the bundled DB credential never enters droplet
+  # user_data (which is readable from the link-local metadata endpoint by any container on
+  # the box, and via the DO API to the account-token holder). See cloud-init.yaml's runcmd.
+  #
+  # The IdP client secret (auth_client_secret) and the DNS-01 token (dns_api_token) DO still
+  # ride in user_data: they are values you hold off-box and the droplet must receive them
+  # somehow, and DigitalOcean has no per-droplet managed-secret store (the azure-vm Key Vault
+  # boot-fetch equivalent). A future revision may fetch these from a secret store at first
+  # boot; the residual exposure is documented in README.md ("Secret exposure").
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     deployment_name    = var.deployment_name
     central_server_url = var.central_server_url
@@ -51,14 +61,31 @@ resource "digitalocean_droplet" "broch" {
     auth_instance      = var.auth_instance
     auth_domain        = var.auth_domain
     admin_roles        = var.admin_roles
-    postgres_password  = var.postgres_password
     image              = var.image
     image_tag          = var.image_tag
-    dns_provider       = var.dns_provider
+    dns_env_var        = local.dns_env_var
     dns_api_token      = var.dns_api_token
+    tls_fragment       = local.tls_fragment
     auth_audience      = var.auth_audience
     auth_authority     = var.auth_authority
   })
+}
+
+locals {
+  # The Caddy DNS-01 `tls` block comes from the CANONICAL single source
+  # docker-compose/caddy-tls/<provider>.caddy (propagation tuning baked in) -- the SAME fragments
+  # bicep/azure-vm loadTextContent()s and cloudformation/aws-vm base64-embeds. One definition; every
+  # target consumes it. Written to /opt/broch/tls.caddy and imported by the Caddyfile (same as the
+  # compose variants). Only single-token providers work on DigitalOcean -- route53 needs an AWS key
+  # PAIR, not one token -- so var.dns_provider is validated to digitalocean | cloudflare | godaddy.
+  tls_fragment = file("${path.module}/../../docker-compose/caddy-tls/${var.dns_provider}.caddy")
+
+  # The env var each provider's fragment reads its token from (see the {env.*} ref in the fragment).
+  dns_env_var = lookup({
+    digitalocean = "DO_AUTH_TOKEN"
+    cloudflare   = "CLOUDFLARE_API_TOKEN"
+    godaddy      = "GODADDY_API_TOKEN"
+  }, var.dns_provider, "CLOUDFLARE_API_TOKEN")
 }
 
 # --- Attach block storage to droplet ---

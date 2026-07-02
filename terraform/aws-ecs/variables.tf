@@ -73,9 +73,9 @@ variable "auth_audience" {
 # ─── Optional inputs (sensible defaults) ─────────────────────────────────────
 
 variable "broch_image" {
-  description = "Full image reference for the broch server. Pin to a specific version in production."
+  description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a task redeploy never silently rolls the service across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or :latest to float (not recommended in production)."
   type        = string
-  default     = "ghcr.io/broch-io/broch:latest"
+  default     = "ghcr.io/broch-io/broch:1.26.0"
 }
 
 variable "aws_region" {

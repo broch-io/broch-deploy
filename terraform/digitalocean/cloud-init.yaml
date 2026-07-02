@@ -28,7 +28,10 @@ write_files:
             - ASPNETCORE_ENVIRONMENT=Production
             - ASPNETCORE_URLS=http://+:8080
             - DATABASE__PROVIDER=PostgreSQL
-            - ConnectionStrings__DefaultConnection=Host=postgres;Database=brochdb;Username=broch;Password=${postgres_password}
+            # POSTGRES_PASSWORD is generated on-box at first boot and lives in .env (compose
+            # interpolates $${POSTGRES_PASSWORD} from /opt/broch/.env). It is never baked into
+            # droplet user_data. See the runcmd that generates it.
+            - ConnectionStrings__DefaultConnection=Host=postgres;Database=brochdb;Username=broch;Password=$${POSTGRES_PASSWORD}
           depends_on:
             postgres:
               condition: service_healthy
@@ -54,9 +57,12 @@ write_files:
             - "443:443"
           environment:
             - WILDCARD_HOSTNAME=${wildcard_hostname}
-            - DNS_API_TOKEN=${dns_api_token}
+            # Provider-specific env var the canonical tls fragment reads its token from
+            # (e.g. CLOUDFLARE_API_TOKEN); dns_env_var is chosen per dns_provider in main.tf.
+            - ${dns_env_var}=${dns_api_token}
           volumes:
             - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - ./tls.caddy:/etc/caddy/tls.caddy:ro
             - caddy_data:/data
             - caddy_config:/config
           logging:
@@ -72,7 +78,10 @@ write_files:
           environment:
             - POSTGRES_DB=brochdb
             - POSTGRES_USER=broch
-            - POSTGRES_PASSWORD=${postgres_password}
+            # Sourced from /opt/broch/.env (generated on-box at first boot), never from
+            # droplet user_data. postgres:16 rejects an empty password, so the runcmd that
+            # writes .env MUST land before the stack starts (it does -- see runcmd order).
+            - POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
           volumes:
             - /mnt/broch-data/postgresql:/var/lib/postgresql/data
           healthcheck:
@@ -105,13 +114,15 @@ write_files:
       # Caddy generates and renews the certificate automatically --
       # no manual cert management required.
       #
-      # DNS_PROVIDER must match a compiled plugin (see Dockerfile.caddy).
-      # Supported: cloudflare, godaddy, route53
+      # The tls block is imported from /opt/broch/tls.caddy (the canonical caddy-tls fragment for
+      # var.dns_provider). Supported: digitalocean, cloudflare, godaddy (single-token DNS-01 providers).
 
       {$WILDCARD_HOSTNAME}, *.{$WILDCARD_HOSTNAME} {
-      	tls {
-      		dns ${dns_provider} {$DNS_API_TOKEN}
-      	}
+      	# Apex + wildcard share ONE site block (one ACME order) so a slow/replacing TXT upsert can't
+      	# race issuance. The tls { dns ... } block (with propagation tuning) is the canonical fragment
+      	# docker-compose/caddy-tls/<provider>.caddy, written to /opt/broch/tls.caddy by write_files
+      	# below and imported here -- identical mechanism to the compose + VM-appliance targets.
+      	import /etc/caddy/tls.caddy
 
       	# Ride out a broch restart/upgrade (broch-server briefly unreachable)
       	# by retrying the dial for up to 30s, instead of returning an immediate
@@ -122,6 +133,15 @@ write_files:
       	}
       }
 
+  # The canonical Caddy DNS-01 tls fragment (docker-compose/caddy-tls/<provider>.caddy), imported by
+  # the Caddyfile above -- same mechanism as the compose + VM-appliance targets. indent()+trimspace
+  # keep the `content: |` block-scalar alignment; the fragment's {env.*} refs are NOT Terraform
+  # template syntax (no leading dollar), so templatefile passes them through to Caddy untouched.
+  - path: /opt/broch/tls.caddy
+    permissions: "0644"
+    content: |
+      ${indent(6, trimspace(tls_fragment))}
+
   # Custom Caddy build with DNS provider plugins
   - path: /opt/broch/Dockerfile.caddy
     permissions: "0644"
@@ -131,7 +151,7 @@ write_files:
       RUN xcaddy build \
           --with github.com/caddy-dns/godaddy \
           --with github.com/caddy-dns/cloudflare \
-          --with github.com/caddy-dns/route53
+          --with github.com/caddy-dns/digitalocean
 
       FROM caddy:2-alpine
 
@@ -142,7 +162,12 @@ write_files:
     permissions: "0600"
     content: |
       # Generated on first boot by the runcmd below - never supplied by the operator.
+      # Persisted to /mnt/broch-data/master-key on the block volume and restored on a droplet
+      # recreate, so Data Protection keys sealed with it stay decryptable.
       BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__
+      # Bundled-Postgres password, generated on-box at first boot (kept OUT of droplet
+      # user_data). compose interpolates $${POSTGRES_PASSWORD} from this file.
+      POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__
       CentralServer__ApiUrl=${central_server_url}
       API__WILDCARDHOSTNAME=${wildcard_hostname}
       AUTHENTICATION__PROVIDER=${auth_provider}
@@ -192,17 +217,6 @@ runcmd:
       echo '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
 
-  # Generate BROCH_MASTER_KEY on the droplet and inject it into .env before the
-  # stack starts. This is the customer-owned at-rest encryption root - the vendor
-  # never receives it. Idempotent: only fills the placeholder, so re-running
-  # cloud-init won't re-roll the key. (`$${MASTER_KEY}` is escaped for templatefile.)
-  - |
-    if grep -q '^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
-      MASTER_KEY=$(openssl rand -base64 48 | tr -d '\n')
-      sed -i "s|^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__|BROCH_MASTER_KEY=$${MASTER_KEY}|" /opt/broch/.env
-      chmod 0600 /opt/broch/.env
-    fi
-
   # Install Docker Engine
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -211,23 +225,109 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  # Format and mount block storage volume
+  # Format and mount block storage volume.
+  #
+  # HARD DEPENDENCY: the postgres password and the BROCH_MASTER_KEY are persisted ON this volume
+  # (see the runcmds below) so they survive a droplet recreate. The DO volume's by-id udev symlink
+  # can lag behind cloud-init -- if we proceed before it appears, the mount is silently skipped,
+  # those secrets land on the (ephemeral) rootfs, and the fstab entry is missing. So we
+  # `udevadm settle` and then bounded-retry for the device, and HARD-FAIL if it never shows: a loud
+  # failure here is far better than a silently broken DB / non-recoverable Data Protection keys.
   - mkdir -p /mnt/broch-data
   - |
-    DEVICE=$(ls /dev/disk/by-id/scsi-0DO_Volume_${deployment_name}-data 2>/dev/null || echo "")
-    if [ -n "$DEVICE" ]; then
-      # Only format if not already formatted
-      if ! blkid "$DEVICE" | grep -q ext4; then
-        mkfs.ext4 -F "$DEVICE"
+    DEV_LINK=/dev/disk/by-id/scsi-0DO_Volume_${deployment_name}-data
+    # Let any pending udev events drain so the by-id symlink is materialised.
+    udevadm settle --timeout=60 || true
+    DEVICE=""
+    for attempt in $(seq 1 30); do
+      if [ -e "$DEV_LINK" ]; then
+        DEVICE=$(readlink -f "$DEV_LINK")
+        break
       fi
-      mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
-      # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
-      # would schedule systemd-fsck@<dev> which can escalate to emergency.target if the volume is slow
-      # to attach or absent (a real race on DigitalOcean). Mirrors the azure-vm side.
-      echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 0" >> /etc/fstab
+      echo "waiting for block volume device $DEV_LINK (attempt $attempt/30)..."
+      udevadm settle --timeout=10 || true
+      sleep 2
+    done
+    if [ -z "$DEVICE" ] || [ ! -b "$DEVICE" ]; then
+      echo "::error::block volume device $DEV_LINK never appeared -- refusing to continue (postgres password + master key would land on ephemeral rootfs and the DB would not persist)."
+      echo "FATAL: block volume not attached; aborting cloud-init." >&2
+      exit 1
     fi
+    # Only format if not already formatted
+    if ! blkid "$DEVICE" | grep -q ext4; then
+      mkfs.ext4 -F "$DEVICE"
+    fi
+    mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
+    # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
+    # would schedule systemd-fsck@<dev> which can escalate to emergency.target if the volume is slow
+    # to attach or absent (a real race on DigitalOcean). Mirrors the azure-vm side.
+    echo "$DEVICE /mnt/broch-data ext4 defaults,nofail,discard 0 0" >> /etc/fstab
   - mkdir -p /mnt/broch-data/postgresql
   - chown -R 999:999 /mnt/broch-data/postgresql
+
+  # Generate (or restore) the bundled-Postgres password ON the droplet, so the DB credential
+  # never enters droplet user_data (the link-local metadata endpoint is reachable from any
+  # container; the DO API exposes user_data to the account-token holder).
+  #
+  # MUST persist across a droplet recreate: the README upgrade flow recreates the droplet, and
+  # Postgres IGNORES POSTGRES_PASSWORD once its data dir is initialised -- so a freshly-rolled
+  # password would lock broch out of the surviving database on the block volume. We therefore
+  # store the password in a file ON THE BLOCK VOLUME (which survives recreate) and reuse it if
+  # present; only a brand-new volume mints a fresh one. This runs AFTER the volume is mounted.
+  # URL-safe value (base64 then strip non-alphanumerics) so it is safe in a Host=...;Password=...
+  # connection string. (`$${...}` is escaped for templatefile so it reaches the disk verbatim.)
+  - |
+    PW_FILE=/mnt/broch-data/postgres-password
+    # UPGRADE GUARD: a volume from an OLDER module version can hold an initialised Postgres data
+    # dir WITHOUT a persisted password file (older versions took the password as a Terraform
+    # variable instead of generating it on-box). Minting a fresh password against that data dir
+    # would lock broch out of its own database (Postgres ignores POSTGRES_PASSWORD once the data
+    # dir exists) -- so fail LOUDLY with the recovery step instead of generating one. Fresh
+    # volumes (no PG_VERSION) are unaffected. See README.md "Upgrading the broch image".
+    if [ ! -s "$PW_FILE" ] && [ -e /mnt/broch-data/postgresql/PG_VERSION ]; then
+      echo "::error::existing Postgres data dir found but no $PW_FILE -- this volume was initialised by an older module version." >&2
+      echo "FATAL: write the password that database was initialised with to $PW_FILE (mode 0600) and recreate the droplet. Refusing to mint a fresh password that cannot open the existing database." >&2
+      exit 1
+    fi
+    if [ -s "$PW_FILE" ]; then
+      PG_PASSWORD=$(cat "$PW_FILE")
+    else
+      PG_PASSWORD=$(openssl rand -base64 36 | tr -dc 'A-Za-z0-9' | head -c 40)
+      umask 077
+      printf '%s' "$${PG_PASSWORD}" > "$PW_FILE"
+      chmod 0600 "$PW_FILE"
+    fi
+    if grep -q '^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
+      sed -i "s|^POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__|POSTGRES_PASSWORD=$${PG_PASSWORD}|" /opt/broch/.env
+      chmod 0600 /opt/broch/.env
+    fi
+
+  # Generate (or restore) the BROCH_MASTER_KEY ON the droplet, the same way as the postgres
+  # password above. This is the customer-owned at-rest encryption root -- the vendor never
+  # receives it, and it is NEVER baked into droplet user_data.
+  #
+  # MUST persist across a droplet recreate: ASP.NET Data Protection keys (auth/session cookies,
+  # OIDC correlation/nonce state) are stored in Postgres SEALED with this master key. The README
+  # upgrade flow recreates the droplet against the SURVIVING block volume, so a freshly-rolled
+  # master key could no longer decrypt those keys -- breaking auth, cookies, and OIDC sign-in
+  # against an otherwise-intact database. We therefore store the master key in a file ON THE BLOCK
+  # VOLUME (which survives recreate) and reuse it if present; only a brand-new volume mints a fresh
+  # one. This runs AFTER the volume is mounted (it depends on /mnt/broch-data existing).
+  # (`$${...}` is escaped for templatefile so it reaches the disk verbatim.)
+  - |
+    MK_FILE=/mnt/broch-data/master-key
+    if [ -s "$MK_FILE" ]; then
+      MASTER_KEY=$(cat "$MK_FILE")
+    else
+      MASTER_KEY=$(openssl rand -base64 48 | tr -d '\n')
+      umask 077
+      printf '%s' "$${MASTER_KEY}" > "$MK_FILE"
+      chmod 0600 "$MK_FILE"
+    fi
+    if grep -q '^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__' /opt/broch/.env; then
+      sed -i "s|^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__|BROCH_MASTER_KEY=$${MASTER_KEY}|" /opt/broch/.env
+      chmod 0600 /opt/broch/.env
+    fi
 
   # Start Broch
   - systemctl daemon-reload
