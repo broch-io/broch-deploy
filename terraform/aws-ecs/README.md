@@ -63,7 +63,7 @@ curl -fsS "$(terraform output -raw broch_url)/healthz"
 
 1. You hand the IdP `auth_client_secret` to Terraform as a variable.
 2. Terraform writes it (plus the generated master key and DB connection string) to Secrets Manager.
-3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__DefaultConnection`). Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment. The license is not a boot input — it's activated in-app on first sign-in. The broch image is public, so no registry credentials are needed.
+3. The ECS task definition references the secret ARNs — Fargate fetches them at task-start and injects them into the container as env vars (`AUTHENTICATION__CLIENTSECRET`, `BROCH_MASTER_KEY`, `ConnectionStrings__BrochConnection`). Non-secret IdP config (`AUTHENTICATION__PROVIDER`, `CLIENTID`, `ADMINROLES`, …) is passed as plain environment. The license is not a boot input — it's activated in-app on first sign-in. The broch image is public, so no registry credentials are needed.
 4. The container never sees the raw secret on disk — it only gets the resolved values via env.
 
 The Postgres password and `BROCH_MASTER_KEY` are *generated* by Terraform (`random_password`), not supplied — they exist only in Secrets Manager and the container's environment. `BROCH_MASTER_KEY` is the at-rest encryption root the server requires at boot; rotating it forces a one-time re-auth (state self-heals).

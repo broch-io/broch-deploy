@@ -24,6 +24,8 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      # Public IP broch advertises for auto-DNS (seeded at deploy, admin-overridable). See with-postgres.
+      API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a
@@ -45,7 +47,7 @@ services:
       # Connection string points at your external DB. SSL Mode=Require is
       # standard for managed services; relax to Prefer or Disable if your
       # provider doesn't support TLS to the server.
-      ConnectionStrings__DefaultConnection: ${BROCH_DB_CONNECTION_STRING}
+      ConnectionStrings__BrochConnection: ${BROCH_DB_CONNECTION_STRING}
     expose:
       - "8080"
     healthcheck:
@@ -113,6 +115,9 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./tls.caddy:/etc/caddy/tls.caddy:ro
+      # Automatic A-record management, imported by the Caddyfile's global block.
+      # Empty (manual DNS) by default; the VM appliance regenerates it for DnsAutoRecords=Auto.
+      - ./dynamic-dns.caddy:/etc/caddy/dynamic-dns.caddy:ro
       # BYO-cert deployments place their wildcard cert+key here and use a Caddyfile that
       # references them (auto-TLS deployments leave this empty).
       - ./certs:/etc/caddy/certs:ro

@@ -37,7 +37,10 @@ param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database
 // is absent from the template for non-Local modes), destroying the database.
 
 // --- Domain + TLS (bring your own domain) ---
-param wildcardHostname = 'tunnels.example.com'
+// The public hostname is composed from the zone + share subdomain: this serves
+// tunnels.example.com and *.tunnels.example.com. Set shareSubdomain = '' to serve at the apex.
+param dnsZone = 'example.com'
+param shareSubdomain = 'tunnels'
 param certMode = 'Auto' // Auto (Let's Encrypt) | Byo (your own cert)
 param acmeEmail = 'ops@example.com'
 // DNS-01 provider (certMode=Auto). Pick one and set its credentials:

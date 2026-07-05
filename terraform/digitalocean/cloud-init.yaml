@@ -31,7 +31,7 @@ write_files:
             # POSTGRES_PASSWORD is generated on-box at first boot and lives in .env (compose
             # interpolates $${POSTGRES_PASSWORD} from /opt/broch/.env). It is never baked into
             # droplet user_data. See the runcmd that generates it.
-            - ConnectionStrings__DefaultConnection=Host=postgres;Database=brochdb;Username=broch;Password=$${POSTGRES_PASSWORD}
+            - ConnectionStrings__BrochConnection=Host=postgres;Database=brochdb;Username=broch;Password=$${POSTGRES_PASSWORD}
           depends_on:
             postgres:
               condition: service_healthy

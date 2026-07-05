@@ -1,0 +1,46 @@
+# Broch — Caddy dynamic-DNS (automatic A-record) config.
+#
+# Imported into the Caddyfile's GLOBAL OPTIONS block. Empty (comments only) by
+# default: on plain docker-compose your DNS A records are MANUAL — point the apex
+# and wildcard at this host yourself (see README).
+#
+# The VM appliances (Azure / AWS) REGENERATE this file at deploy time when you pick
+# DnsAutoRecords=Auto: they drop in a `dynamic_dns { … }` block so Caddy keeps the
+# apex + wildcard A records pointed at the VM's public IP, reusing the SAME DNS
+# provider + credentials as tls.caddy — turning "deploy" into "deploy → sign in"
+# with no hand-created records. DnsAutoRecords=Manual (and Byo-cert mode) leave this
+# file empty and DNS stays your responsibility.
+#
+# SYNC: keep the two compose copies byte-identical (docker-direct ships both) —
+# enforced by scripts/check-caddy-dns-sync.py. The VM appliances GENERATE their own
+# copy at deploy (azure cloud-init, aws render-secrets.sh), so this parity is about
+# the docker-compose copies, not an embedded fragment.
+#
+# To enable it on plain docker-compose, uncomment and adapt the block below.
+#
+# WHERE THE IP COMES FROM — `ip_source simple_http http://broch:8080/internal/public-ip`
+# asks broch (this stack's own server) which IP to advertise, rather than guessing.
+# broch is the source of truth: on the VM appliances it is seeded at deploy with the
+# platform-allocated IP; on plain docker-compose it detects this host's PUBLIC (egress)
+# IP; and in either case an admin can override it at runtime in broch (Admin UI). Caddy
+# re-fetches every check_interval and reconciles the records.
+#
+# ASSUMPTION (detect mode) — nothing sits in front of Caddy (no load balancer / reverse
+# proxy / NAT gateway): the egress IP broch detects is only the address clients should
+# resolve to when Caddy is directly internet-facing. If something fronts Caddy, set the
+# correct address in broch (or leave this file empty and point your DNS at that
+# front-end instead).
+#
+#   dynamic_dns {
+#       # Same provider + credential as tls.caddy (Cloudflare shown):
+#       provider cloudflare {env.CLOUDFLARE_API_TOKEN}
+#       # <zone> then the labels to keep pointed here. For tunnels.example.com in
+#       # zone example.com:  example.com tunnels *.tunnels
+#       # If the wildcard host IS your zone apex, use:  example.com @ *
+#       domains {
+#           example.com tunnels *.tunnels
+#       }
+#       ip_source simple_http http://broch:8080/internal/public-ip
+#       versions ipv4
+#       check_interval 5m
+#   }

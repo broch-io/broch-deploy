@@ -225,6 +225,59 @@ if missing:
     errors.append(f"compose caddy env block is missing fragment env keys: {missing}")
 
 
+# --- 6. auto-DNS (dynamic-dns.caddy): the caddy-dynamicdns wiring moves together everywhere -------
+# DnsAutoRecords=Auto renders a `dynamic_dns { … }` block into /opt/broch/dynamic-dns.caddy, imported
+# by the Caddyfile's GLOBAL options block. caddy fetches the IP to advertise from broch
+# (ip_source simple_http http://broch:8080/internal/public-ip); the appliances seed broch with the
+# platform IP via BROCH_PUBLIC_IP -> API__PUBLICIP. Five things must stay in lockstep or auto-DNS
+# silently no-ops or boot-fails on the un-updated path (the appliance embeds ONE compose per mode):
+DDNS_DIRS = ["with-postgres", "with-postgres-external"]
+DDNS_IMPORT = "import /etc/caddy/dynamic-dns.caddy"
+DDNS_MOUNT = "./dynamic-dns.caddy:/etc/caddy/dynamic-dns.caddy"
+DDNS_MODULE = "caddy-dynamicdns"
+# The exact mapping the broch service must carry -- the key ALONE is not enough: it must be fed from
+# the deploy's BROCH_PUBLIC_IP seed (`API__PUBLICIP: ${BROCH_PUBLIC_IP...}`), or a wrong/renamed value
+# passes a key-presence check while the seed silently never reaches broch.
+BROCH_IP_MAP = "API__PUBLICIP: ${BROCH_PUBLIC_IP"
+
+
+ddns_before = len(errors)
+# (a) the default fragment is byte-identical across the two compose dirs (docker-direct ships both;
+#     the appliances GENERATE their own copy at deploy, like tls.caddy).
+ddns_frag = [read(f"{REPO}/docker-compose/{d}/dynamic-dns.caddy") for d in DDNS_DIRS]
+if ddns_frag[0] != ddns_frag[1]:
+    errors.append("dynamic-dns.caddy DIVERGES between with-postgres and with-postgres-external "
+                  "(keep the default fragment byte-identical)")
+for d in DDNS_DIRS:
+    caddyfile = read(f"{REPO}/docker-compose/{d}/Caddyfile")
+    compose = read(f"{REPO}/docker-compose/{d}/docker-compose.yml")
+    dockerfile = read(f"{REPO}/docker-compose/{d}/Caddy.Dockerfile")
+    # (b) import AND mount move together -- an import with no mount boot-fails; a mount with no import
+    #     is silently inert.
+    if DDNS_IMPORT not in caddyfile:
+        errors.append(f"{d}/Caddyfile: missing '{DDNS_IMPORT}' global-options import (auto-DNS never loads)")
+    elif DDNS_MOUNT not in compose:
+        errors.append(f"{d}/docker-compose.yml: imports the fragment but does NOT mount it "
+                      "(caddy fails to boot on the missing import target)")
+    # (c) the escape-hatch on-box Caddy.Dockerfile must compile in caddy-dynamicdns, else an
+    #     escape-hatch build boot-fails on the `dynamic_dns` global option.
+    if DDNS_MODULE not in dockerfile:
+        errors.append(f"{d}/Caddy.Dockerfile: does not compile in {DDNS_MODULE} "
+                      "(escape-hatch build boot-fails on the dynamic_dns option)")
+    # (d) broch must receive the seeded IP via the exact BROCH_PUBLIC_IP -> API__PUBLICIP mapping, or
+    #     caddy's ip_source (http://broch:8080/internal/public-ip) gets no IP and no records are written.
+    if BROCH_IP_MAP not in compose:
+        errors.append(f"{d}/docker-compose.yml: broch service must map `{BROCH_IP_MAP}...}}` -- key "
+                      "presence alone is not enough; a wrong value means the BROCH_PUBLIC_IP seed never "
+                      "reaches broch and no auto-DNS records are written")
+# (e) the byo-cert Caddyfile must NOT import it (no DNS credential -> records stay manual).
+if DDNS_IMPORT in read(f"{REPO}/docker-compose/with-postgres-byo-cert/Caddyfile"):
+    errors.append("with-postgres-byo-cert/Caddyfile: imports the auto-DNS fragment, but byo-cert has "
+                  "no DNS credential -- remove it (records can never be managed there)")
+if len(errors) == ddns_before:
+    notes.append("auto-DNS fragment moves in lockstep (byte-identical, import+mount, dockerfile, seed key, byo-excluded)")
+
+
 # --- report ----------------------------------------------------------------------------------
 for n in notes:
     print(f"OK: {n}")
