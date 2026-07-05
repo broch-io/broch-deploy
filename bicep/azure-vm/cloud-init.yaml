@@ -183,16 +183,29 @@ runcmd:
   # place. Best-effort: a failure must never block the deploy -- Caddy still boots and DNS stays manual.
   - |
     if [ "__DNS_AUTO_RECORDS__" = "Auto" ]; then
-      # Decode base64 rather than substituting the raw values into this executed script: a
-      # dnsZone/shareSubdomain containing $(...), backticks, or quotes would otherwise run as root
-      # here (bicep, unlike CFn, has no param pattern to reject them). base64 is metachar-free.
-      ZONE=$(printf %s '__DNS_ZONE_B64__' | base64 -d)
+      # Decode base64 rather than substituting the raw values into this executed script: a value
+      # containing $(...), backticks, or quotes would otherwise run as root here (bicep, unlike CFn,
+      # has no param pattern to reject them). base64 is metachar-free.
+      DNS_ZONE=$(printf %s '__DNS_ZONE_B64__' | base64 -d)
       SUB=$(printf %s '__SHARE_SUBDOMAIN_B64__' | base64 -d)
-      # Labels WITHIN the zone: the share subdomain (or @ at the apex) and its wildcard. Zone and
-      # subdomain are captured separately, so the share host is within the zone BY CONSTRUCTION --
-      # there is no hostname/zone mismatch to guard against, and no zone to derive.
-      if [ -n "$ZONE" ]; then
-      if [ -z "$SUB" ]; then APEX="@"; STAR="*"; else APEX="$SUB"; STAR="*.$SUB"; fi
+      ZONE_NAME=$(printf %s '__DNS_ZONE_NAME_B64__' | base64 -d)
+      # The public host tls.caddy serves / the URLs use, composed from dnsZone + share subdomain.
+      if [ -z "$SUB" ]; then HOST="$DNS_ZONE"; else HOST="$SUB.$DNS_ZONE"; fi
+      # The zone auto-DNS WRITES into: dnsZone normally, but for a DELEGATED subdomain the real zone is
+      # a subdomain of dnsZone -- passed explicitly as dnsZoneName so we neither assume nor need a
+      # runtime SOA lookup. Resolves to the SAME zone the ACME/tls path uses, so a valid cert can no
+      # longer coexist with an A-record write that 404s (the failure this replaced).
+      ZONE="${ZONE_NAME:-$DNS_ZONE}"
+      # Fail loud, don't guess: a dnsZoneName that is neither the host nor a parent of it (typo / wrong
+      # zone) would strip nothing below and write a garbage record label -- the same silent-misconfig
+      # class this fix closes, moved one field over. Skip the block (leaving the manual stub) and log;
+      # auto-DNS falls back to manual. Never fires when dnsZoneName is empty (host is within dnsZone).
+      if [ "$HOST" != "$ZONE" ] && [ "${HOST%.$ZONE}" = "$HOST" ]; then
+      echo "auto-DNS: dnsZoneName '$ZONE' does not contain host '$HOST' -- skipping auto A-records; set it to the zone that contains the host, or leave it empty. DNS stays manual." >&2
+      elif [ -n "$ZONE" ]; then
+      # Record labels = HOST relative to the write zone: @/* at the zone apex, else the leading
+      # label(s) + their wildcard. ${HOST%.$ZONE} strips the zone suffix; equal means apex.
+      if [ "$HOST" = "$ZONE" ]; then APEX="@"; STAR="*"; else REL="${HOST%.$ZONE}"; APEX="$REL"; STAR="*.$REL"; fi
       TAIL='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
       case "__DNS_PROVIDER__" in
         Cloudflare) printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;

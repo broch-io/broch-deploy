@@ -166,10 +166,20 @@ az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript \
 **creates and maintains the apex + wildcard A records for you**, pointing them at the VM's public IP
 via the same `dnsProvider` credential Caddy uses for the cert — so a deploy goes straight to sign-in,
 no records to create, and a changed IP self-heals. It manages `<shareSubdomain>` + `*.<shareSubdomain>`
-(or the apex `@` + `*` when `shareSubdomain=''`) inside `dnsZone` — the labels come straight from the
-zone + subdomain you supplied, so no zone derivation or suffix-matching is involved. On Cloudflare the records are created
+(or the apex `@` + `*` when `shareSubdomain=''`) inside the **DNS zone that owns the host**. Normally
+that is `dnsZone`; the records are written there and the labels are the host relative to it. On Cloudflare the records are created
 **DNS-only / grey-cloud** (proxying can't carry tunnel traffic). The records live in **your** zone, so
 they **outlive teardown** — delete them by hand if you tear the VM down.
+
+**Delegated (subdomain) zones — `dnsZoneName`.** Auto-DNS writes into the zone that actually **owns**
+the host. Normally that is `dnsZone`, so leave `dnsZoneName` **empty** (default) — behaviour is
+unchanged. But if your DNS is a **delegated subdomain** — the host lives in its own zone that is a
+subdomain of `dnsZone` (e.g. `dnsZone=example.com` for the URLs, but `share.example.com` is delegated
+as its own zone) — set **`dnsZoneName`** to that zone. The appliance then writes the records there and
+derives the labels as the host relative to it. This is the same zone Caddy resolves for the cert, so a
+valid cert can no longer coexist with A-record writes that 404. A `dnsZoneName` that is neither the host
+nor a parent of it is **rejected** (auto-DNS is skipped and logged; DNS stays manual) rather than
+writing a broken record. The Azure Marketplace wizard fills this from the DNS zone you pick.
 
 Set **`dnsAutoRecords=Manual`** when something sits **in front of** the VM (a load balancer, reverse
 proxy, or corporate NAT/egress) — its IP, not the VM's, is what clients must resolve — or when you
