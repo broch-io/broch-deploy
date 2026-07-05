@@ -19,7 +19,7 @@ Metadata:
       - Label: { default: Encryption (required) }
         Parameters: [BrochMasterKey]
       - Label: { default: Domain & TLS }
-        Parameters: [WildcardHostname, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
+        Parameters: [DnsZone, ShareSubdomain, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, DnsAutoRecords, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
       - Label: { default: Database }
         Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId]
       - Label: { default: Identity provider (boot floor) }
@@ -30,8 +30,10 @@ Metadata:
         Parameters: [BrochVersion, BrochImage, RegistryServer, RegistryUsername, RegistryPassword]
     ParameterLabels:
       BrochMasterKey: { default: "Master key (BROCH_MASTER_KEY) - customer-owned, required" }
-      WildcardHostname: { default: Wildcard hostname (e.g. tunnels.example.com) }
+      DnsZone: { default: DNS zone you own (e.g. example.com) }
+      ShareSubdomain: { default: Subdomain for tunnel URLs (default "tunnels"; empty = zone apex) }
       HostedZoneId: { default: Route 53 hosted zone for that domain }
+      DnsAutoRecords: { default: "Auto-create DNS A records? (Auto = deploy then sign in)" }
 
 Parameters:
   # ── Encryption (required) ────────────────────────────────────────────────────
@@ -50,17 +52,31 @@ Parameters:
       orphan an existing database).
 
   # ── Domain & TLS ────────────────────────────────────────────────────────────
-  WildcardHostname:
+  # The public hostname is COMPOSED from DnsZone + ShareSubdomain (Broch serves
+  # <ShareSubdomain>.<DnsZone> and *.<ShareSubdomain>.<DnsZone>), so the share host is always
+  # within the zone by construction -- there is no separate full-hostname parameter that could
+  # disagree with the zone.
+  DnsZone:
     Type: String
-    Description: Apex + wildcard hostname for tunnels and the API, e.g. tunnels.example.com. Broch serves the apex and *.<this>.
+    Description: DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host — put the tunnel label in ShareSubdomain (DnsZone example.com + ShareSubdomain tunnels), NOT DnsZone tunnels.example.com. Combined with ShareSubdomain it fixes the public hostname. For DnsProvider=Route53 this is the domain of HostedZoneId.
     AllowedPattern: "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
+    ConstraintDescription: must be a valid domain name, e.g. example.com.
+  ShareSubdomain:
+    Type: String
+    Default: tunnels
+    Description: Subdomain of DnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<DnsZone> and *.tunnels.<DnsZone>. Leave EMPTY to serve tunnels at the zone apex (<DnsZone> and *.<DnsZone>). Usually a single label; a dotted value (e.g. a.b) is accepted for a deeper subdomain.
+    # Empty (apex) or a DNS subdomain of one or more labels. render-secrets.sh interpolates this into
+    # a single-quoted shell literal inside Fn::Sub, so the hostname charset excludes both the '$'
+    # (CFn-var) and "'" (quoting) hazards.
+    AllowedPattern: "^$|^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+    ConstraintDescription: must be empty (apex) or a DNS subdomain — letters, digits, dots, hyphens only.
   HostedZoneId:
     # Plain String (not AWS::Route53::HostedZone::Id) so it can be empty for the non-Route53
     # providers -- an AWS-specific type validates the "" default unconditionally and would break
     # them. Required only for DnsProvider=Route53 (enforced by the Route53RequiresHostedZone Rule).
     Type: String
     Default: ""
-    Description: Route 53 hosted zone id that owns WildcardHostname -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there, so point its apex + wildcard A records at the PublicIp output yourself.
+    Description: Route 53 hosted zone id that owns DnsZone -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there, so point its apex + wildcard A records at the PublicIp output yourself.
   CertMode:
     Type: String
     AllowedValues: [Auto, Byo]
@@ -91,6 +107,11 @@ Parameters:
     AllowedValues: [Route53, Cloudflare, GoogleCloudDns, DigitalOcean]
     Default: Route53
     Description: ACME DNS-01 provider (CertMode=Auto). Route53 (default) uses the instance IAM role — no secret. Cloudflare / GoogleCloudDns / DigitalOcean authenticate with a credential you supply below (for a domain hosted off Route 53). Ignored when CertMode=Byo.
+  DnsAutoRecords:
+    Type: String
+    AllowedValues: [Auto, Manual]
+    Default: Auto
+    Description: Auto (default) = the appliance auto-creates and maintains the apex + wildcard A records pointing at this instance's Elastic IP (deploy, then sign in) — on Route53 via native RecordSets, on Cloudflare/GoogleCloudDns/DigitalOcean via caddy-dynamicdns reusing the DnsProvider credential. Manual = you create the A records yourself (point them at the PublicIp output) — required when a load balancer, reverse proxy, or NAT gateway sits IN FRONT of this instance, or you manage DNS out-of-band; honored for every provider including Route53. No effect only for CertMode=Byo (records are always Manual there — no DNS credential).
   CloudflareApiToken:
     Type: String
     NoEcho: true
@@ -227,11 +248,14 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.26.0"
+    Default: "1.29.0"
     Description: >-
       Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
       replacement never silently rolls the box across an EF-migration boundary; new releases of this
       template bump this default. Set a newer tag to upgrade deliberately, or "latest" to float.
+      1.29.0+ is required for DnsAutoRecords=Auto on the token-based providers
+      (Cloudflare/GoogleCloudDns/DigitalOcean), which serve /internal/public-ip to
+      caddy-dynamicdns; Route53 uses native RecordSets and needs no specific version.
   BrochImage:
     Type: String
     Default: ghcr.io/broch-io/broch
@@ -249,10 +273,24 @@ Conditions:
   IsExistingDatabase: !Equals [!Ref DatabaseMode, ExistingDatabase]
   IsExistingServer: !Equals [!Ref DatabaseMode, ExistingServer]
   IsByoCert: !Equals [!Ref CertMode, Byo]
+  # The public host is <ShareSubdomain>.<DnsZone>, or the zone apex when ShareSubdomain is empty.
+  HasShareSubdomain: !Not [!Equals [!Ref ShareSubdomain, ""]]
   # Route 53 is the only provider the stack manages DNS for (the apex/wildcard A records and
   # the instance-role DNS-01 policy). The token-based providers run on a domain hosted OFF
   # Route 53, so those resources are skipped and the customer owns their own A records.
   IsRoute53: !Equals [!Ref DnsProvider, Route53]
+  # The native apex/wildcard A records are created only when Route 53 owns the domain, the operator
+  # wants the appliance to manage records (DnsAutoRecords=Auto), AND this is not a Byo-cert deploy.
+  # DnsAutoRecords=Manual skips them so the operator owns the records -- required when an ALB /
+  # reverse proxy / NAT fronts the instance (clients must resolve to that front-end, not the Elastic
+  # IP). CertMode=Byo forces Manual for EVERY provider (matching the bicep sibling's effectiveDnsAuto
+  # and render-secrets.sh's CertMode!=Byo guard on the token path), so a Byo customer is never
+  # surprised by auto-created records. This does NOT gate the DNS-01 IAM policy above: cert issuance
+  # needs the role whether records are auto or manual.
+  IsRoute53AutoRecords: !And
+    - !Equals [!Ref DnsProvider, Route53]
+    - !Equals [!Ref DnsAutoRecords, Auto]
+    - !Not [!Equals [!Ref CertMode, Byo]]
   # UseGoogleDns gates the GcpCredsPath .env value. The other providers are selected at
   # boot by render-secrets.sh switching on ${DnsProvider}, so they need no Condition here.
   UseGoogleDns: !Equals [!Ref DnsProvider, GoogleCloudDns]
@@ -623,24 +661,26 @@ Resources:
       AllocationId: !GetAtt ElasticIp.AllocationId
       InstanceId: !Ref Instance
 
-  # apex + wildcard A records: only when Route 53 owns the domain. Off-Route53 providers
-  # (Cloudflare/GCP/DO) host their own zone -- the customer points A records at PublicIp.
+  # apex + wildcard A records: only when Route 53 owns the domain AND DnsAutoRecords=Auto.
+  # Off-Route53 providers (Cloudflare/GCP/DO) host their own zone -- the customer points A
+  # records at PublicIp. DnsAutoRecords=Manual skips these even on Route 53, so an operator
+  # fronting the instance with an ALB/NAT can point DNS at that front-end instead.
   ApexRecord:
     Type: AWS::Route53::RecordSet
-    Condition: IsRoute53
+    Condition: IsRoute53AutoRecords
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Sub "${WildcardHostname}."
+      Name: !If [HasShareSubdomain, !Sub "${ShareSubdomain}.${DnsZone}.", !Sub "${DnsZone}."]
       Type: A
       TTL: "60"
       ResourceRecords: [!Ref ElasticIp]
 
   WildcardRecord:
     Type: AWS::Route53::RecordSet
-    Condition: IsRoute53
+    Condition: IsRoute53AutoRecords
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Sub "*.${WildcardHostname}."
+      Name: !If [HasShareSubdomain, !Sub "*.${ShareSubdomain}.${DnsZone}.", !Sub "*.${DnsZone}."]
       Type: A
       TTL: "60"
       ResourceRecords: [!Ref ElasticIp]
@@ -740,6 +780,11 @@ Resources:
                     BROCH_VERSION=${BrochVersion}
                     BROCH_IMAGE=${BrochImage}
                     BROCH_WILDCARD_HOSTNAME=${WildcardHostname}
+                    # Seed for broch's public-IP setting (compose maps it to API__PUBLICIP): this stack's
+                    # Elastic IP, known here, so broch serves it to caddy-dynamicdns for the apex+wildcard
+                    # A records (auto-DNS points at the IP we KNOW, not one caddy discovers), and an admin
+                    # can override it at runtime in broch. Non-secret (it's published in DNS anyway).
+                    BROCH_PUBLIC_IP=${ElasticIp}
                     CADDY_ACME_EMAIL=${AcmeEmail}
                     GCP_PROJECT=${GcpProject}
                     GOOGLE_APPLICATION_CREDENTIALS=${GcpCredsPath}
@@ -783,6 +828,40 @@ Resources:
                         esac
                         ;;
                     esac
+
+                    # Automatic apex + wildcard A records (DnsAutoRecords=Auto): render the caddy-dynamicdns
+                    # block into /opt/broch/dynamic-dns.caddy so Caddy keeps them pointed at this instance's
+                    # Elastic IP, reusing the same DnsProvider credential as tls.caddy. ip_source is broch:
+                    # Caddy fetches the IP from broch's internal /internal/public-ip endpoint, which broch
+                    # seeds at deploy from this stack's Elastic IP (BROCH_PUBLIC_IP) and an admin can override
+                    # at runtime -- so the record points at the IP we KNOW, not one Caddy has to discover. SKIPPED
+                    # for Byo (no DNS credential), Manual (you own the records), and Route53 -- which already
+                    # gets native apex+wildcard A records from the stack's AWS::Route53::RecordSet resources,
+                    # so dynamic_dns would double-manage them. Always writes the file (empty when skipped)
+                    # because the Caddyfile's global block imports it. The zone + share subdomain are captured
+                    # separately, so the record labels are read straight off them -- no zone derivation, no
+                    # suffix guard, and no shell suffix-strip (which would clash with Fn::Sub's dollar-brace).
+                    printf '# Automatic A-records disabled (DnsAutoRecords=Manual/Byo, or Route53 native records). Manage DNS yourself.\n' > /opt/broch/dynamic-dns.caddy
+                    # Best-effort: auto-DNS must NEVER abort render-secrets.sh -- a failure here would
+                    # leave .env unhydrated and roll the whole stack back. The subshell inherits `set -e`,
+                    # so any failure aborts IT (leaving the manual stub above intact), and `|| true` keeps
+                    # the parent script going. Mirrors the azure-vm cloud-init "never block the deploy".
+                    (
+                      if [ "${DnsAutoRecords}" = "Auto" ] && [ "${CertMode}" != "Byo" ] && [ "${DnsProvider}" != "Route53" ]; then
+                        zone='${DnsZone}'
+                        sub='${ShareSubdomain}'
+                        # Labels within the zone: the share subdomain (or @ at the apex) and its wildcard.
+                        # The host is <sub>.<zone> by construction, so it is always within the zone.
+                        if [ -z "$sub" ]; then apex='@'; star='*'; else apex="$sub"; star="*.$sub"; fi
+                        tail='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
+                        case "${DnsProvider}" in
+                          Cloudflare)     printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                          DigitalOcean)   printf "dynamic_dns {\n\tprovider digitalocean {env.DO_AUTH_TOKEN}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                          GoogleCloudDns) printf "dynamic_dns {\n\tprovider googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                        esac
+                      fi
+                    ) || true
+
                     get() { aws --region "${AWS::Region}" secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text; }
 
                     # Values are written single-quoted: docker compose's dotenv parser treats a
@@ -925,6 +1004,9 @@ Resources:
             # parameter refs Fn::Sub resolves directly). The RDS endpoint is not a secret;
             # the password it pairs with is fetched from Secrets Manager at boot.
             - DbEndpoint: !If [IsNewServer, !GetAtt BrochDB.Endpoint.Address, ""]
+              # The ONE public hostname, composed from the zone + share subdomain (apex when the
+              # subdomain is empty). Fanned out to Caddy + broch via BROCH_WILDCARD_HOSTNAME in .env.
+              WildcardHostname: !If [HasShareSubdomain, !Sub "${ShareSubdomain}.${DnsZone}", !Ref DnsZone]
               # In-container path Caddy reads the GCP SA JSON from (GoogleCloudDns only).
               GcpCredsPath: !If [UseGoogleDns, "/etc/caddy/certs/gcp-sa.json", ""]
               HasCfToken: !If [HasCloudflareToken, "true", "false"]
@@ -937,9 +1019,9 @@ Resources:
 Outputs:
   Url:
     Description: Broch URL (sign in here once Caddy has issued the cert).
-    Value: !Sub "https://${WildcardHostname}"
+    Value: !If [HasShareSubdomain, !Sub "https://${ShareSubdomain}.${DnsZone}", !Sub "https://${DnsZone}"]
   PublicIp:
-    Description: Elastic IP. Route53 deployments get their apex/wildcard A records created by this stack; with any other DNS provider, point both records here yourself.
+    Description: Elastic IP. With DnsAutoRecords=Auto (the default) on Route53, the stack creates the apex/wildcard A records here for you; with DnsAutoRecords=Manual, or with any other DNS provider, point both records here yourself.
     Value: !Ref ElasticIp
   MasterKeySecretArn:
     Description: Where your supplied BROCH_MASTER_KEY is stored (your account) for the instance to read. Keep the original safe — supply the same value on every redeploy that reuses the DB.

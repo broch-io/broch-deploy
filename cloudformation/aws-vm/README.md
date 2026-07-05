@@ -29,15 +29,15 @@ internet ─ 80/443/443udp ─▶ EC2 instance — Elastic IP, SG       │
 - An **instance IAM role**: Route 53 (scoped to your zone) for DNS-01, read-only on the secrets this stack generates, and `AmazonSSMManagedInstanceCore` for break-glass.
 - `NewServer`: a private, encrypted **RDS Postgres** reachable only from the instance SG; its password is generated into Secrets Manager.
 - Your **`BROCH_MASTER_KEY`** (the required `BrochMasterKey` parameter) stashed in Secrets Manager so the instance can read it at boot — customer-supplied, never generated, never seen by Broch.
-- With `DnsProvider=Route53` (the default): apex + wildcard **A records** in your hosted zone, pointing at the Elastic IP — created with the stack, deleted with it. With the other DNS providers your zone lives outside Route 53, so point the apex + wildcard A records at the `PublicIp` output yourself.
+- With `DnsAutoRecords=Auto` (the default): apex + wildcard **A records** pointing at the Elastic IP, created for you — natively on `Route53` (created with the stack, deleted with it), or via `caddy-dynamicdns` on Cloudflare/GoogleCloudDns/DigitalOcean. With `DnsAutoRecords=Manual` (or `CertMode=Byo`), point the apex + wildcard A records at the `PublicIp` output yourself.
 
 License and telemetry are configured **in-app** (Admin UI) after first sign-in — not at deploy.
 
 ## Prerequisites
 
 - AWS credentials that can create EC2 / IAM / RDS / Route 53 / Secrets Manager / EIP.
-- A **Route 53 hosted zone** for your wildcard hostname's domain. DNS-01 (the instance role) and the A records both use it. If your DNS is elsewhere, either delegate a subdomain to Route 53, or set `DnsProvider=Cloudflare` and supply a token.
-- An **identity provider** app (Auth0, Entra ID, Okta, or any OIDC) — Broch has no local login. Register the callback `https://<WildcardHostname>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
+- A **Route 53 hosted zone** for your `DnsZone`. DNS-01 (the instance role) and the A records both use it. If your DNS is elsewhere, either delegate a subdomain to Route 53, or set `DnsProvider=Cloudflare` and supply a token.
+- An **identity provider** app (Auth0, Entra ID, Okta, or any OIDC) — Broch has no local login. Register the callback `https://<ShareSubdomain>.<DnsZone>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A Broch license — activated in-app after first sign-in. Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Build & deploy
@@ -58,7 +58,8 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
       BrochMasterKey="$BROCH_MASTER_KEY" \
-      WildcardHostname=tunnels.example.com \
+      DnsZone=example.com \
+      ShareSubdomain=tunnels \
       HostedZoneId=Z0123456789ABCDEFGHIJ \
       AcmeEmail=ops@example.com \
       DbSubnetIds=subnet-aaaa\\,subnet-bbbb \
@@ -92,10 +93,16 @@ Two modes, set by `CertMode`:
   - **`GoogleCloudDns`** — set `GcpProject` + `GcpCredentialsJson` (base64 SA JSON, `roles/dns.admin`).
   - **`DigitalOcean`** — set `DoAuthToken` (DNS write scope).
 
-  With the non-Route53 providers the stack cannot create records in your zone — after deploy, point the apex + wildcard A records at the `PublicIp` output (DNS-only / grey-cloud on Cloudflare). Issuance itself doesn't wait on them: DNS-01 is TXT-based, so the cert is typically ready before you cut DNS over.
+  With the non-Route53 providers the stack creates no native Route 53 records, but `DnsAutoRecords=Auto` (the default) still creates the apex + wildcard A records for you via `caddy-dynamicdns` (see [DNS records](#dns-records--automatic-by-default) below); set `DnsAutoRecords=Manual` to point them at the `PublicIp` output yourself (DNS-only / grey-cloud on Cloudflare). Issuance itself doesn't wait on them: DNS-01 is TXT-based, so the cert is typically ready before you cut DNS over.
 - **`Byo`** — supply your own wildcard cert + key: set `TlsCertificate` and `TlsCertificateKey` (both base64 PEM, e.g. `base64 -w0 fullchain.pem`). No ACME, no `DnsProvider`; **renewal is your responsibility** (replace the secret + redeploy, or swap the files on the instance and `caddy reload`).
 
 Every credential above is stashed in Secrets Manager and fetched at boot via the instance role — none ride in UserData. Mis-set combinations (Cloudflare/DigitalOcean without a token, GoogleCloudDns without creds, Byo without cert+key, NewServer without subnets) **fail fast** at stack create via template `Rules`, before any resource is built.
+
+### DNS records — automatic by default
+
+- **`Route53`** — with `DnsAutoRecords=Auto` (the default) the stack **creates the apex + wildcard A records natively** (`AWS::Route53::RecordSet` → Elastic IP). Nothing to do.
+- **`Cloudflare` / `GoogleCloudDns` / `DigitalOcean`** — with `DnsAutoRecords=Auto` (the default) the appliance **creates and maintains** the apex + wildcard A records for you, pointing them at the Elastic IP via the same `DnsProvider` credential — deploy, then sign in. It manages `<ShareSubdomain>` + `*.<ShareSubdomain>` (or the apex `@` + `*` when `ShareSubdomain` is empty) inside `DnsZone` — the labels come straight from the zone + subdomain you supplied, no derivation. On Cloudflare the records are **DNS-only / grey-cloud**. They live in **your** zone, so they **outlive teardown** — remove them by hand.
+- Set **`DnsAutoRecords=Manual`** when a load balancer, reverse proxy, or corporate NAT/egress sits **in front of** the instance (its IP, not the instance's, is what clients resolve), or you manage DNS yourself — then point the apex + wildcard at the `PublicIp` output. Honored for **every** provider, **including Route53** (the native RecordSets are skipped, so you own the records). Only `CertMode=Byo` forces Manual regardless (no DNS credential).
 
 After deploy, watch issuance over SSM:
 
@@ -104,7 +111,7 @@ aws ssm start-session --target <instance-id>
 sudo docker compose -f /opt/broch/docker-compose.yml logs -f caddy
 ```
 
-Then sign in at `https://<WildcardHostname>`.
+Then sign in at `https://<ShareSubdomain>.<DnsZone>`.
 
 ## Teardown
 

@@ -8,6 +8,25 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.29.0
+
+### Added
+
+- **Automatic DNS management for VM appliance deployments.** Self-hosted VM appliances (Azure, AWS) can now automatically create and self-heal the apex and wildcard DNS A records that Share/Access tunnels need, removing the manual post-deploy DNS step. The Azure Marketplace listing now asks for your DNS zone and tunnel subdomain (instead of a single hostname), with an Auto/Manual toggle for record management.
+
+### Changed
+
+- **More complete audit trail.** Purchase and billing-portal actions, and the Share-registry-removal count recorded during seat eviction, now appear in the audit trail — closing gaps for compliance-focused deployments.
+
+### Fixed
+
+- **Telemetry service name on VM deployments.** App Insights previously showed no application name for VM-hosted deployments; logs and traces now report a consistent name, and the admin UI shows a single Service Name field instead of two overlapping ones.
+
+### Deploy impact
+
+- **`CONNECTIONSTRINGS__DEFAULTCONNECTION` is no longer read.** The server now reads `CONNECTIONSTRINGS__BROCHCONNECTION` only. If your deployment sets only the legacy `DefaultConnection` variable, set `BrochConnection` before upgrading or the server will fail to start.
+- **Automatic DNS record management may activate on upgrade.** If your deployment already uses automatic (DNS-01) certificate issuance, upgrading the `broch-caddy` image also enables automatic creation and maintenance of your apex and wildcard A records in that DNS zone. BYO-certificate deployments are unaffected.
+
 ## 1.28.0
 
 ### Added

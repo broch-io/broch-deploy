@@ -54,7 +54,7 @@ At **idle** (Local mode), the three containers total **~700 MB** resident — Ca
 - Azure CLI logged in (`az login`), Contributor on the target resource group. **Owner or User Access Administrator** is needed only if you let the template auto-grant the Azure-DNS role (below) or set `adminObjectId` — both create role assignments.
 - A database — **one of**: an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)); let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`); or run it **on the VM** with nothing to pre-arrange (`databaseMode=Local` — you manage backups; see [Local database](#local-database)).
 - For `certMode=Auto`, DNS for your wildcard hostname on a supported provider: **Cloudflare** (API token, Zone:Read + DNS:Edit) **or** **Azure DNS** (no secret — uses the VM's managed identity). With Azure DNS, set `dnsZoneResourceGroup` and the template **grants the identity *DNS Zone Contributor* on that resource group automatically** (needs Owner/UAA there); if you only have Contributor, leave it empty and grant the role by hand. For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
-- An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<wildcardHostname>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
+- An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<shareSubdomain>.<dnsZone>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - **A master key** — generate with `openssl rand -base64 48` and store it in your own secret store. **Required** (≥32 chars); supply the same value on every (re)deploy. Broch never sees it. For an existing Broch database it must be that database's key.
 - **No SSH key to prepare** — SSH is closed by default and the VM gets a generated break-glass password (`adminSshPublicKey` is an optional advanced override; the password lands in a Key Vault — see [Secrets & break-glass](#secrets--break-glass)).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
@@ -140,7 +140,7 @@ az deployment group show -g broch-rg -n main \
 
 ## TLS — certificate & DNS
 
-Broch serves tunnels on `*.<wildcardHostname>`, so it needs a **wildcard** cert covering the apex + `*.`. `certMode` / `dnsProvider` decide how Caddy gets it:
+You give the domain as two parts — `dnsZone` (a zone you own, e.g. `example.com`) and `shareSubdomain` (the label that hosts tunnels, default `tunnels`) — and Broch composes the public host `<shareSubdomain>.<dnsZone>` (e.g. `tunnels.example.com`), serving that apex and `*.<shareSubdomain>.<dnsZone>`. Capturing them separately means the tunnel host is **always within the zone** by construction. Set `shareSubdomain=''` to serve at the zone apex (`example.com` and `*.example.com`). Broch needs a **wildcard** cert covering both; `certMode` / `dnsProvider` decide how Caddy gets it:
 
 **`certMode=Auto` — Let's Encrypt, auto-renewing.** Caddy issues + renews the apex + wildcard via ACME DNS-01 (the only ACME challenge that issues wildcards), minting the cert against the DNS provider's API *before* any DNS points at the VM — so you validate first, cut DNS over last.
 
@@ -162,14 +162,26 @@ az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript \
   --scripts 'cd /opt/broch && docker compose logs --tail 50 caddy'
 ```
 
-Then point DNS at the public IP, **DNS-only / grey-cloud**:
+**DNS records — automatic by default.** With `dnsAutoRecords=Auto` (the default) the appliance
+**creates and maintains the apex + wildcard A records for you**, pointing them at the VM's public IP
+via the same `dnsProvider` credential Caddy uses for the cert — so a deploy goes straight to sign-in,
+no records to create, and a changed IP self-heals. It manages `<shareSubdomain>` + `*.<shareSubdomain>`
+(or the apex `@` + `*` when `shareSubdomain=''`) inside `dnsZone` — the labels come straight from the
+zone + subdomain you supplied, so no zone derivation or suffix-matching is involved. On Cloudflare the records are created
+**DNS-only / grey-cloud** (proxying can't carry tunnel traffic). The records live in **your** zone, so
+they **outlive teardown** — delete them by hand if you tear the VM down.
+
+Set **`dnsAutoRecords=Manual`** when something sits **in front of** the VM (a load balancer, reverse
+proxy, or corporate NAT/egress) — its IP, not the VM's, is what clients must resolve — or when you
+manage DNS out-of-band. `certMode=Byo` forces Manual (no DNS credential). In Manual mode, point DNS at
+the public IP yourself, **DNS-only / grey-cloud**:
 
 ```text
 A   tunnels.example.com    → <public-ip>
 A   *.tunnels.example.com  → <public-ip>
 ```
 
-Sign in at `https://<wildcardHostname>` — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
+Sign in at `https://<shareSubdomain>.<dnsZone>` (e.g. `https://tunnels.example.com`) — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
 
 ## Secrets & break-glass
 
@@ -193,7 +205,7 @@ The deployment writes these via the control plane and grants the VM identity rea
 **Runtime config.** `/opt/broch/.env` (mode `0600`) holds the config the compose reads. cloud-init writes the **non-secret** keys (hostname, provider names, IdP client id, etc.) from the deploy parameters; at boot the VM's identity **fetches the secrets from Key Vault and appends them** to the same file:
 
 - `BROCH_MASTER_KEY` → broch's at-rest encryption root
-- `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__DefaultConnection` (mapped in compose)
+- `BROCH_DB_CONNECTION_STRING` → `ConnectionStrings__BrochConnection` (mapped in compose)
 - `AUTHENTICATION__CLIENTSECRET` → the IdP client secret
 - `CLOUDFLARE_API_TOKEN` → Caddy's DNS-01 credential (Cloudflare mode)
 - `AZURE_DNS_SUBSCRIPTION_ID` / `AZURE_DNS_RESOURCE_GROUP` / `AZURE_DNS_TENANT_ID` / `AZURE_DNS_CLIENT_ID` → Caddy's DNS-01 config for **Azure DNS** (cert issuance only — *not* the `AUTHENTICATION__*` IdP sign-in config; managed-identity mode uses only subscription + resource group; service-principal mode adds `AZURE_DNS_CLIENT_SECRET`, fetched from Key Vault)

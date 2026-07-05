@@ -16,6 +16,12 @@
 
 	# Default issuer: ACME (Let's Encrypt prod) with DNS-01 via Cloudflare.
 	# Applied to every site below unless overridden.
+
+	# Automatic apex + wildcard A-record management. Empty by default
+	# (records are manual); the VM appliances regenerate it with a `dynamic_dns { … }`
+	# block when DnsAutoRecords=Auto. Must be a valid, present file — imports here run
+	# before parsing, so the global options block picks up the block when set.
+	import /etc/caddy/dynamic-dns.caddy
 }
 
 # Apex (the API endpoint the CLI/customers talk to) AND the per-tunnel wildcard

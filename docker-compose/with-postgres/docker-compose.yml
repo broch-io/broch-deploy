@@ -30,6 +30,10 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      # The public IP broch advertises for auto-DNS: caddy-dynamicdns fetches it from broch and
+      # writes the apex+wildcard A records at it. Seeded at deploy (the VM's allocated IP), and
+      # admin-overridable at runtime in broch. Optional/empty for a plain docker-direct run.
+      API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a
@@ -48,7 +52,7 @@ services:
       AUTHENTICATION__AUTHORITY: ${AUTHENTICATION__AUTHORITY:-}
       AUTHENTICATION__AUDIENCE: ${AUTHENTICATION__AUDIENCE:-}
       DATABASE__PROVIDER: PostgreSQL
-      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+      ConnectionStrings__BrochConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
     # No host port mapping — only Caddy is reachable from outside the docker
     # network. broch is reachable internally as `http://broch:8080`.
     expose:
@@ -130,6 +134,9 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./tls.caddy:/etc/caddy/tls.caddy:ro
+      # Automatic A-record management, imported by the Caddyfile's global block.
+      # Empty (manual DNS) by default; the VM appliance regenerates it for DnsAutoRecords=Auto.
+      - ./dynamic-dns.caddy:/etc/caddy/dynamic-dns.caddy:ro
       # BYO-cert mode places the wildcard cert+key here and uses a Caddyfile that references them
       # (auto-TLS deployments leave this empty). Required for certMode=Byo on the VM appliance.
       - ./certs:/etc/caddy/certs:ro

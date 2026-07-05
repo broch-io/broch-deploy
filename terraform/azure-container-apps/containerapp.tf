@@ -100,7 +100,7 @@ resource "azurerm_container_app" "broch" {
         secret_name = "master-key"
       }
       env {
-        name        = "ConnectionStrings__DefaultConnection"
+        name        = "ConnectionStrings__BrochConnection"
         secret_name = "postgres-connection-string"
       }
       # Identity provider — part of the boot floor (client secret injected from

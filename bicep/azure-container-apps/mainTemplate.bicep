@@ -641,7 +641,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                 value: 'PostgreSQL'
               }
               {
-                name: 'ConnectionStrings__DefaultConnection'
+                name: 'ConnectionStrings__BrochConnection'
                 secretRef: 'db-connection'
               }
             ]

@@ -56,6 +56,15 @@ write_files:
     encoding: b64
     content: __TLS_CADDY_B64__
 
+  # Automatic A-record config the Caddyfile's global block imports. Empty stub by default so the
+  # import ALWAYS resolves (Manual + Byo keep it empty; a failed render leaves this valid, not a
+  # missing-file boot failure). The runcmd below overwrites it with a caddy-dynamicdns block when
+  # dnsAutoRecords=Auto.
+  - path: /opt/broch/dynamic-dns.caddy
+    permissions: "0644"
+    content: |
+      # Automatic A-records disabled (dnsAutoRecords=Manual or Byo-cert). Manage DNS yourself.
+
   # BYO-cert mode: the supplied wildcard cert + key. Empty in Auto mode (Caddy ignores them).
   - path: /opt/broch/certs/fullchain.pem
     permissions: "0644"
@@ -79,7 +88,7 @@ write_files:
     content: |
       # The compose maps BROCH_WILDCARD_HOSTNAME to BOTH Caddy's TLS host and
       # broch's API__WILDCARDHOSTNAME -- one knob, they cannot diverge. Likewise
-      # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__DefaultConnection. Do not
+      # BROCH_DB_CONNECTION_STRING -> ConnectionStrings__BrochConnection. Do not
       # add raw API__/ConnectionStrings__ keys here. Telemetry, logging, and the
       # license are configured in-app (Admin UI); CentralServer URL defaults in code.
       # Pin the compose project name so the container + named-volume names (broch-postgres-1,
@@ -89,6 +98,12 @@ write_files:
       BROCH_VERSION=__BROCH_VERSION__
       BROCH_IMAGE=__BROCH_IMAGE__
       BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
+      # Seed for broch's public-IP setting (compose maps it to API__PUBLICIP). This is the Static
+      # public IP this template allocated -- broch serves it to caddy-dynamicdns for the apex+wildcard
+      # A records (so auto-DNS points at the IP we KNOW, not one caddy discovers), and an admin can
+      # override it at runtime in broch. Always the VM's IP; inert in Manual/Byo (the dynamic-dns.caddy
+      # stub has no dynamic_dns block there, so nothing fetches it). Non-secret (it's published in DNS).
+      BROCH_PUBLIC_IP=__PUBLIC_IP__
       CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
       # Azure DNS credentials for Caddy's ACME DNS-01 challenge (issuing the wildcard
       # TLS cert by writing TXT records in your DNS zone). These are NOT sign-in/identity
@@ -155,6 +170,41 @@ runcmd:
     fi
 
   - chmod 0600 /opt/broch/.env
+
+  # Automatic apex + wildcard A records (dnsAutoRecords=Auto): render the caddy-dynamicdns block into
+  # /opt/broch/dynamic-dns.caddy so Caddy keeps them pointed at this VM's public IP, reusing the SAME
+  # dnsProvider credential as tls.caddy (the {env.*} refs are read at runtime from the container env,
+  # populated by the kv-fetch below -- so no secret value is written here). ip_source is broch: Caddy
+  # fetches the IP from broch's internal /internal/public-ip endpoint every check_interval. broch is
+  # the source of truth for the IP -- seeded at deploy from the Static public IP we allocated
+  # (BROCH_PUBLIC_IP above) and admin-overridable at runtime -- so the record points at the IP we KNOW,
+  # not one Caddy has to discover (no egress==ingress assumption). If broch is briefly down, Caddy just
+  # retries next interval and never blanks the record. Manual/Byo leave the empty write_files stub in
+  # place. Best-effort: a failure must never block the deploy -- Caddy still boots and DNS stays manual.
+  - |
+    if [ "__DNS_AUTO_RECORDS__" = "Auto" ]; then
+      # Decode base64 rather than substituting the raw values into this executed script: a
+      # dnsZone/shareSubdomain containing $(...), backticks, or quotes would otherwise run as root
+      # here (bicep, unlike CFn, has no param pattern to reject them). base64 is metachar-free.
+      ZONE=$(printf %s '__DNS_ZONE_B64__' | base64 -d)
+      SUB=$(printf %s '__SHARE_SUBDOMAIN_B64__' | base64 -d)
+      # Labels WITHIN the zone: the share subdomain (or @ at the apex) and its wildcard. Zone and
+      # subdomain are captured separately, so the share host is within the zone BY CONSTRUCTION --
+      # there is no hostname/zone mismatch to guard against, and no zone to derive.
+      if [ -n "$ZONE" ]; then
+      if [ -z "$SUB" ]; then APEX="@"; STAR="*"; else APEX="$SUB"; STAR="*.$SUB"; fi
+      TAIL='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
+      case "__DNS_PROVIDER__" in
+        Cloudflare) printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        AzureDns) printf "dynamic_dns {\n\tprovider azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        AzureDnsServicePrincipal) printf "dynamic_dns {\n\tprovider azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t\ttenant_id {env.AZURE_DNS_TENANT_ID}\n\t\tclient_id {env.AZURE_DNS_CLIENT_ID}\n\t\tclient_secret {env.AZURE_DNS_CLIENT_SECRET}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        Route53) printf "dynamic_dns {\n\tprovider route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        GoogleCloudDns) printf "dynamic_dns {\n\tprovider googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        DigitalOcean) printf "dynamic_dns {\n\tprovider digitalocean {env.DO_AUTH_TOKEN}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+      esac
+      chmod 0644 /opt/broch/dynamic-dns.caddy
+      fi
+    fi
 
   # databaseMode=Local only: a dedicated data disk is attached at LUN 0, holding the bundled
   # Postgres data. Mount it at /var/lib/docker/volumes BEFORE Docker installs, so the named volume

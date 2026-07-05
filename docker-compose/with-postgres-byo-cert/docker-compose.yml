@@ -28,6 +28,9 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      # Public IP broch advertises for auto-DNS (seeded at deploy, admin-overridable). See with-postgres.
+      # Byo-cert has auto-DNS off, so this is inert here, but kept for parity across the compose files.
+      API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a
@@ -46,7 +49,7 @@ services:
       AUTHENTICATION__AUTHORITY: ${AUTHENTICATION__AUTHORITY:-}
       AUTHENTICATION__AUDIENCE: ${AUTHENTICATION__AUDIENCE:-}
       DATABASE__PROVIDER: PostgreSQL
-      ConnectionStrings__DefaultConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
+      ConnectionStrings__BrochConnection: Host=postgres;Database=${POSTGRES_DB:-brochdb};Username=${POSTGRES_USER:-broch};Password=${POSTGRES_PASSWORD}
     expose:
       - "8080"
     healthcheck:

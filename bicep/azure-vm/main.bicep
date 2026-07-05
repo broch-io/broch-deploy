@@ -34,8 +34,12 @@ param adminObjectId string = ''
 ])
 param adminObjectType string = 'User'
 
-@description('Wildcard hostname for tunnels + API, e.g. tunnels.example.com. You must own this domain and point its DNS at this VM (see README).')
-param wildcardHostname string
+@description('DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host: put the tunnel label in shareSubdomain below (dnsZone=example.com + shareSubdomain=tunnels), NOT dnsZone=tunnels.example.com. You must control this zone at a supported DNS provider (see README). Combined with shareSubdomain, it fixes the public hostname: Broch serves <shareSubdomain>.<dnsZone> and *.<shareSubdomain>.<dnsZone>.')
+@minLength(1)
+param dnsZone string
+
+@description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<dnsZone> and *.tunnels.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain. Because the host is composed from the zone + this label, it is ALWAYS within the zone — no separate full-hostname param that could disagree with it.')
+param shareSubdomain string = 'tunnels'
 
 // --- TLS. Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a
 // dnsProvider). Byo = you supply the wildcard cert + key, no ACME. ---
@@ -56,6 +60,15 @@ param certMode string = 'Auto'
 ])
 @description('DNS-01 provider when certMode=Auto. AzureDns uses the VM\'s managed identity and the template auto-grants it DNS Zone Contributor (needs Owner/UAA on the zone RG). Every other provider authenticates with a credential you supply — no role assignment, so Contributor is enough to deploy.')
 param dnsProvider string = 'Cloudflare'
+
+// --- Automatic DNS records. Auto = the appliance creates + maintains the apex + wildcard
+// A records itself; Manual = you own the records (required if anything fronts this VM). ---
+@allowed([
+  'Auto'
+  'Manual'
+])
+@description('Auto (default): the appliance auto-creates and maintains the apex + wildcard A records pointing at this VM\'s public IP (deploy → sign in), reusing the dnsProvider credential. Manual: you create the A records yourself — required when a load balancer, reverse proxy, or NAT gateway sits IN FRONT of this VM (its public IP is then not what clients should resolve to), or when you manage DNS out-of-band. certMode=Byo forces Manual (no DNS credential).')
+param dnsAutoRecords string = 'Auto'
 
 @description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
 param acmeEmail string = ''
@@ -104,8 +117,8 @@ param tlsCertificate string = ''
 @secure()
 param tlsCertificateKey string = ''
 
-@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set to a newer tag to upgrade deliberately, or "latest" to float.')
-param brochVersion string = '1.26.0'
+@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set to a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
+param brochVersion string = '1.29.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
 param brochImage string = 'ghcr.io/broch-io/broch'
@@ -249,6 +262,16 @@ var tlsGoogle = loadTextContent('../../docker-compose/caddy-tls/googleclouddns.c
 var tlsDigitalOcean = loadTextContent('../../docker-compose/caddy-tls/digitalocean.caddy')
 var autoTlsCaddy = dnsProvider == 'Cloudflare' ? tlsCloudflare : (dnsProvider == 'AzureDns' ? tlsAzureMi : (dnsProvider == 'AzureDnsServicePrincipal' ? tlsAzureSpn : (dnsProvider == 'Route53' ? tlsRoute53 : (dnsProvider == 'GoogleCloudDns' ? tlsGoogle : tlsDigitalOcean))))
 var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Caddyfile; this fragment is unused.\n' : autoTlsCaddy
+// The ONE public hostname, composed from the zone + share subdomain — a single structural
+// definition, so there is no separate full-hostname param that could disagree with the zone. Empty
+// shareSubdomain => the share lives at the zone apex. Fanned out to both Caddy and broch in the
+// compose (via BROCH_WILDCARD_HOSTNAME); the auto-DNS runcmd derives the record labels from the
+// zone + subdomain directly.
+var wildcardHostname = empty(shareSubdomain) ? dnsZone : '${shareSubdomain}.${dnsZone}'
+// Automatic apex+wildcard A-record management (dynamic-dns.caddy). Byo-cert has no DNS
+// credential, so it can never auto-manage records — force Manual there. cloud-init renders
+// the caddy-dynamicdns block from this + dnsProvider + the zone + share subdomain when Auto.
+var effectiveDnsAuto = certMode == 'Byo' ? 'Manual' : dnsAutoRecords
 // Mirror selectedCompose's mode branch so a Local-mode VM loads the Caddyfile from the same template
 // dir as its compose. The Auto-mode Caddyfiles are byte-identical today, so this is drift-insurance,
 // not a behaviour change; Byo mode uses its own variant.
@@ -288,7 +311,25 @@ var cloudInitTokens = [
   ['__REGISTRY_USERNAME__', registryUsername]
   ['__REGISTRY_PASSWORD__', registryPassword]
   ['__WILDCARD_HOSTNAME__', wildcardHostname]
+  // Seed for broch's own public-IP setting (Api:PublicIp): the Static public IP this template
+  // allocated, known here at deploy time. broch serves it to caddy-dynamicdns (which writes the
+  // apex+wildcard A records), and an admin can override it at runtime — so auto-DNS points at the
+  // IP we KNOW rather than one caddy has to discover. Always populated (unconditional); inert in
+  // Manual/Byo, where the dynamic-dns.caddy stub has no dynamic_dns block so nothing fetches it.
+  // Non-secret (it's published in DNS anyway), so plain in .env is fine.
+  ['__PUBLIC_IP__', publicIp.properties.ipAddress]
   ['__CADDY_ACME_EMAIL__', acmeEmail]
+  // Automatic A-record management: cloud-init renders /opt/broch/dynamic-dns.caddy from these.
+  // effectiveDnsAuto is 'Manual' whenever certMode=Byo (no DNS credential to manage records).
+  ['__DNS_AUTO_RECORDS__', effectiveDnsAuto]
+  ['__DNS_PROVIDER__', dnsProvider]
+  // dnsZone + shareSubdomain are free-text (bicep can't AllowedPattern-validate a string param like
+  // CFn does), and the auto-DNS runcmd EXECUTES them, so pass them base64-encoded and decode at
+  // runtime — base64 is [A-Za-z0-9+/=] only, so a `$(...)`/backtick/quote in the value can't break
+  // out of the shell. (The raw __WILDCARD_HOSTNAME__ above stays — it's the composed host, and it
+  // only lands in the non-executed .env content, where it's inert.)
+  ['__DNS_ZONE_B64__', base64(dnsZone)]
+  ['__SHARE_SUBDOMAIN_B64__', base64(shareSubdomain)]
   // The __AZURE_*__ token names are intentionally NOT renamed — they are internal
   // substitution placeholders. The .env var NAMES they populate were renamed to
   // AZURE_DNS_* in cloud-init.yaml; "correcting" this apparent mismatch breaks substitution.
