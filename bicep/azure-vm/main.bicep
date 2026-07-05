@@ -38,8 +38,11 @@ param adminObjectType string = 'User'
 @minLength(1)
 param dnsZone string
 
-@description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<dnsZone> and *.tunnels.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain. Because the host is composed from the zone + this label, it is ALWAYS within the zone — no separate full-hostname param that could disagree with it.')
+@description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<dnsZone> and *.tunnels.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain.')
 param shareSubdomain string = 'tunnels'
+
+@description('Advanced. The DNS zone that actually OWNS the records, when it differs from dnsZone — i.e. the tunnel host lives on a DELEGATED subdomain that is its own DNS zone (e.g. dnsZone=example.com for the URLs, but the delegated zone is share.example.com). Leave EMPTY (default) for the common case where dnsZone IS the DNS zone. When set, auto-DNS writes the A records into THIS zone and derives the record labels as the host relative to it — the same zone the ACME/cert path already resolves, so a valid cert can no longer coexist with an A-record write that 404s. The Azure Marketplace wizard fills this from the DNS zone you pick; direct-Bicep users set it only for a delegated zone.')
+param dnsZoneName string = ''
 
 // --- TLS. Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a
 // dnsProvider). Byo = you supply the wildcard cert + key, no ACME. ---
@@ -330,6 +333,9 @@ var cloudInitTokens = [
   // only lands in the non-executed .env content, where it's inert.)
   ['__DNS_ZONE_B64__', base64(dnsZone)]
   ['__SHARE_SUBDOMAIN_B64__', base64(shareSubdomain)]
+  // The zone auto-DNS actually writes into — dnsZone unless a delegated subzone was supplied. Empty
+  // in the common case; the render falls back to dnsZone then, so existing deploys are unchanged.
+  ['__DNS_ZONE_NAME_B64__', base64(dnsZoneName)]
   // The __AZURE_*__ token names are intentionally NOT renamed — they are internal
   // substitution placeholders. The .env var NAMES they populate were renamed to
   // AZURE_DNS_* in cloud-init.yaml; "correcting" this apparent mismatch breaks substitution.
@@ -812,6 +818,11 @@ module dnsRoleAssignment 'dns-role.bicep' = if (azureDnsManagedIdentity && !empt
 var sshState = empty(sshAllowedCidr) ? 'closed' : 'limited to ${sshAllowedCidr}'
 var sshStateWithHint = empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to open it)' : 'limited to ${sshAllowedCidr}'
 
+// Cold-start expectation for the customer: the ARM deployment reports success several minutes
+// before the appliance is reachable (VM boot + image pull + DNS propagation + ACME issuance).
+// Surface it as an output so the portal shows it right when the customer is about to hit the URL,
+// so the first-boot wait is not misread as a failed deploy.
+output readiness string = 'First boot takes ~3-10 minutes: VM provisioning, container pulls, DNS propagation, and Let\'s Encrypt TLS issuance. https://${wildcardHostname} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${wildcardHostname}/healthz returns 200.'
 output publicIpAddress string = publicIp.properties.ipAddress
 output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
 output databaseHost string = databaseMode == 'Managed' ? pgHost : (databaseMode == 'Local' ? 'local (PostgreSQL on this VM)' : 'external (you supplied the connection string)')

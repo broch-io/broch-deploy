@@ -151,3 +151,24 @@ jobs:
         run: python3 -m pip install --user pyyaml
       - name: Assert Caddy DNS-01 tls fragments + tuning are in sync across all deploy targets
         run: python3 scripts/check-caddy-dns-sync.py
+
+  # Render guard: in DnsAutoRecords=Auto (the DEFAULT) the appliances GENERATE
+  # /opt/broch/dynamic-dns.caddy at boot via a provider-specific `printf` -- azure-vm cloud-init
+  # (6 arms) and aws-vm render-secrets.sh (3 arms). That block is imported by the Caddyfile's GLOBAL
+  # OPTIONS block, so a malformed arm (unbalanced brace, bad tab, typo'd sub-key) => Caddy can't parse
+  # global options => never starts => dead appliance on first deploy, with no CI catch. The deploy
+  # DNS smokes cover only Azure/Cloudflare + AWS/DigitalOcean (private, token-gated); check-caddy-dns-sync
+  # checks the WIRING, not the rendered syntax. This runs the EXACT printf for every arm and
+  # `caddy adapt`s the result inside broch-caddy (which has caddy-dynamicdns + all libdns providers, so
+  # adapt instantiates the provider module and rejects a bad sub-key). Cloud-free, token-free.
+  dynamic-dns-render:
+    name: auto-DNS render -> caddy adapt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Public GHCR package -- `docker run` pulls it directly, unauthenticated (like the `boot`
+      # job's `docker compose up`, which pulls the same broch-caddy image).
+      - name: Render every dynamic_dns arm and caddy adapt it (broch-caddy image)
+        env:
+          BROCH_CADDY_IMAGE: ghcr.io/broch-io/broch-caddy:latest
+        run: python3 scripts/check-dynamic-dns-render.py
