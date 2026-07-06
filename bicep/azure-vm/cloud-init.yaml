@@ -206,12 +206,21 @@ runcmd:
       # Record labels = HOST relative to the write zone: @/* at the zone apex, else the leading
       # label(s) + their wildcard. ${HOST%.$ZONE} strips the zone suffix; equal means apex.
       if [ "$HOST" = "$ZONE" ]; then APEX="@"; STAR="*"; else REL="${HOST%.$ZONE}"; APEX="$REL"; STAR="*.$REL"; fi
+      # Dot-terminated zone (canonical libdns FQDN form) for providers whose zone lookup compares
+      # verbatim -- ZONE itself must stay bare because the label derivation above strips ".$ZONE".
+      ZONE_FQDN="${ZONE%.}."
       TAIL='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
+      # Route53's arm below gets the zone DOT-TERMINATED ("${ZONE%.}." -- canonical libdns FQDN
+      # form): libdns/route53's getZoneID compares the configured zone VERBATIM against the API's
+      # always-dot-terminated HostedZone.Name, so a bare "zone.tld" is never found ->
+      # "HostedZoneNotFound" and the A records are never written. (The certificate path is
+      # unaffected: certmagic already passes libdns dot-terminated zones.) Scoped to Route53 --
+      # the other providers trim the trailing dot themselves and work with the bare form.
       case "__DNS_PROVIDER__" in
         Cloudflare) printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
         AzureDns) printf "dynamic_dns {\n\tprovider azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
         AzureDnsServicePrincipal) printf "dynamic_dns {\n\tprovider azure {\n\t\tsubscription_id {env.AZURE_DNS_SUBSCRIPTION_ID}\n\t\tresource_group_name {env.AZURE_DNS_RESOURCE_GROUP}\n\t\ttenant_id {env.AZURE_DNS_TENANT_ID}\n\t\tclient_id {env.AZURE_DNS_CLIENT_ID}\n\t\tclient_secret {env.AZURE_DNS_CLIENT_SECRET}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
-        Route53) printf "dynamic_dns {\n\tprovider route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
+        Route53) printf "dynamic_dns {\n\tprovider route53 {\n\t\taccess_key_id {env.AWS_ACCESS_KEY_ID}\n\t\tsecret_access_key {env.AWS_SECRET_ACCESS_KEY}\n\t}$TAIL" "$ZONE_FQDN" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
         GoogleCloudDns) printf "dynamic_dns {\n\tprovider googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
         DigitalOcean) printf "dynamic_dns {\n\tprovider digitalocean {env.DO_AUTH_TOKEN}$TAIL" "$ZONE" "$APEX" "$STAR" > /opt/broch/dynamic-dns.caddy ;;
       esac

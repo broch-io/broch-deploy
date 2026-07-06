@@ -199,16 +199,18 @@ param authAuthority string = ''
 param authAudience string = ''
 
 // Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
-// the deterministic private-DNS FQDN (no resource reference, so it stays valid when Managed
-// is off). The private DNS zone is named to match, so the VM resolves it inside the VNet.
+// the server's deterministic FQDN (no resource reference, so it stays valid when Managed is
+// off) — the same construction the azure-container-apps template uses.
 var pgServerName = '${vmName}-pg'
 var pgAdminUser = 'brochadmin'
 var pgDatabaseName = 'brochdb'
-// The private DNS zone is named independently of the server. A VNet-integrated Flex Server
-// registers an A record for <serverName> INSIDE the zone, so the resolvable FQDN is
-// <serverName>.<zone> — the connection Host must include the server label.
+// The private DNS zone is required for VNet injection but must NOT be used to build the
+// connection Host: Azure registers the zone's A record under an instance-specific label, not
+// under <serverName>, so '<serverName>.<zone>' does not resolve. The name that resolves inside
+// the VNet is the server's real FQDN, <serverName>.postgres.database.azure.com — Azure DNS
+// aliases it to the zone record.
 var pgDnsZone = '${vmName}-db.private.postgres.database.azure.com'
-var pgHost = '${pgServerName}.${pgDnsZone}'
+var pgHost = '${pgServerName}.postgres.database.azure.com'
 var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
 var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
 

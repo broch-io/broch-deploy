@@ -61,13 +61,12 @@ jobs:
       # sed-replace (not append) so the values hold regardless of which
       # duplicate-key precedence the dotenv parser uses.
       #
-      # The dummy IdP is an interim concession: broch <= 1.23.0 crashes when
-      # AUTHENTICATION__PROVIDER arrives as the empty string the compose files
-      # pass for unset vars (empty != absent in the enum binder), so the
-      # template-default "boot first, configure IdP in-app" path cannot pass
-      # against :latest yet. Once the server fix ships in a stable image,
-      # drop the AUTHENTICATION__* lines so this job covers the empty-IdP
-      # first-run boot floor — the customer default — again.
+      # AUTHENTICATION__* stays at the template default (empty) on purpose:
+      # this is the customer's "boot first, configure IdP in-app" first-run
+      # path, and empty-provider boot is the floor this job asserts. broch
+      # < 1.26.0 crashed on the empty string (empty != absent in the enum
+      # binder; fixed in 1.26.0, the compose default this job boots); keep
+      # the values empty so a regression surfaces here.
       - name: Fill .env from the customer template
         run: |
           cp .env.example .env
@@ -76,10 +75,6 @@ jobs:
             -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=boot-test-pg-password|" \
             -e "s|^CADDY_ACME_EMAIL=.*|CADDY_ACME_EMAIL=boot-test@example.invalid|" \
             -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=$(openssl rand -hex 20)|" \
-            -e "s|^AUTHENTICATION__PROVIDER=.*|AUTHENTICATION__PROVIDER=Auth0|" \
-            -e "s|^AUTHENTICATION__CLIENTID=.*|AUTHENTICATION__CLIENTID=boot-test-client|" \
-            -e "s|^AUTHENTICATION__CLIENTSECRET=.*|AUTHENTICATION__CLIENTSECRET=boot-test-secret|" \
-            -e "s|^AUTHENTICATION__DOMAIN=.*|AUTHENTICATION__DOMAIN=boot-test.auth0.invalid|" \
             .env
 
       # The byo-cert variant bind-mounts ./certs/*.pem; the files must exist
