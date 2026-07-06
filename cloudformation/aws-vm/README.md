@@ -75,6 +75,8 @@ aws cloudformation describe-stacks --stack-name broch \
 
 `broch.example.params.json` is a ready-to-edit parameter file for `--parameters file://...` in `create-stack`. (For a console-based deploy, upload `dist/template.yaml` to an S3 bucket and open it via a CloudFormation "Launch Stack" URL.)
 
+> **First boot takes ~3-10 minutes** — instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. `https://<ShareSubdomain>.<DnsZone>` will not load until this finishes; that is **expected, not a failed deploy**. `aws cloudformation deploy` blocks until the box reports healthy (the appliance is ready when `https://<host>/healthz` returns `200`), and the stack **rolls back** rather than reporting a false success if boot never goes healthy. The `Readiness` and `DnsHint` stack outputs restate this and the exact A records to create.
+
 > **The master key is yours.** `BrochMasterKey` is **required** and customer-supplied — Broch never generates or sees it. It's stashed in Secrets Manager (`<stack>/broch-master-key`) in your account only so the instance can read it at boot. Keep the original safe and supply the **same** value on any redeploy that reuses the database (a fresh key can't decrypt existing data).
 
 ## Database modes
@@ -90,7 +92,7 @@ Two modes, set by `CertMode`:
 - **`Auto`** (default) — Caddy auto-issues and renews the wildcard via ACME DNS-01. Pick a `DnsProvider`:
   - **`Route53`** (default) — needs **no secret**; Caddy's `route53` module authenticates with the instance role (the `.env` sets no AWS keys, so it falls through to instance-metadata credentials).
   - **`Cloudflare`** — set `CloudflareApiToken` (Zone:Read + DNS:Edit).
-  - **`GoogleCloudDns`** — set `GcpProject` + `GcpCredentialsJson` (base64 SA JSON, `roles/dns.admin`).
+  - **`GoogleCloudDns`** (experimental) — set `GcpProject` + `GcpCredentialsJson` (base64 SA JSON, `roles/dns.admin`). Less exercised than the other providers; validate the certificate path in a non-production account before relying on it.
   - **`DigitalOcean`** — set `DoAuthToken` (DNS write scope).
 
   With the non-Route53 providers the stack creates no native Route 53 records, but `DnsAutoRecords=Auto` (the default) still creates the apex + wildcard A records for you via `caddy-dynamicdns` (see [DNS records](#dns-records--automatic-by-default) below); set `DnsAutoRecords=Manual` to point them at the `PublicIp` output yourself (DNS-only / grey-cloud on Cloudflare). Issuance itself doesn't wait on them: DNS-01 is TXT-based, so the cert is typically ready before you cut DNS over.
@@ -101,7 +103,8 @@ Every credential above is stashed in Secrets Manager and fetched at boot via the
 ### DNS records — automatic by default
 
 - **`Route53`** — with `DnsAutoRecords=Auto` (the default) the stack **creates the apex + wildcard A records natively** (`AWS::Route53::RecordSet` → Elastic IP). Nothing to do.
-- **`Cloudflare` / `GoogleCloudDns` / `DigitalOcean`** — with `DnsAutoRecords=Auto` (the default) the appliance **creates and maintains** the apex + wildcard A records for you, pointing them at the Elastic IP via the same `DnsProvider` credential — deploy, then sign in. It manages `<ShareSubdomain>` + `*.<ShareSubdomain>` (or the apex `@` + `*` when `ShareSubdomain` is empty) inside `DnsZone` — the labels come straight from the zone + subdomain you supplied, no derivation. On Cloudflare the records are **DNS-only / grey-cloud**. They live in **your** zone, so they **outlive teardown** — remove them by hand.
+- **`Cloudflare` / `GoogleCloudDns` / `DigitalOcean`** — with `DnsAutoRecords=Auto` (the default) the appliance **creates and maintains** the apex + wildcard A records for you, pointing them at the Elastic IP via the same `DnsProvider` credential — deploy, then sign in. It manages `<ShareSubdomain>` + `*.<ShareSubdomain>` (or the apex `@` + `*` when `ShareSubdomain` is empty) inside `DnsZone` — the labels come straight from the zone + subdomain you supplied, no derivation (unless the host is on a delegated subdomain — see below). On Cloudflare the records are **DNS-only / grey-cloud**. They live in **your** zone, so they **outlive teardown** — remove them by hand.
+- **Delegated subdomain** — if the host lives on a subdomain that is **its own DNS zone** (e.g. `DnsZone=example.com` for the URLs, but `share.example.com` is delegated as a separate zone at your token provider), set **`DnsZoneName`** to that zone. Auto-DNS then writes the A records into it and derives the record labels relative to it — the same zone the ACME/cert path resolves, so a valid cert can't coexist with an A-record write that 404s. A `DnsZoneName` that is neither the host nor a parent of it is **rejected** — auto-DNS is skipped and logged to the instance boot output, and DNS stays Manual, rather than writing a broken record. Leave it **empty** (the default) for the common case where `DnsZone` is itself the zone. Route 53's native records ignore it (they resolve the zone from `HostedZoneId`).
 - Set **`DnsAutoRecords=Manual`** when a load balancer, reverse proxy, or corporate NAT/egress sits **in front of** the instance (its IP, not the instance's, is what clients resolve), or you manage DNS yourself — then point the apex + wildcard at the `PublicIp` output. Honored for **every** provider, **including Route53** (the native RecordSets are skipped, so you own the records). Only `CertMode=Byo` forces Manual regardless (no DNS credential).
 
 After deploy, watch issuance over SSM:

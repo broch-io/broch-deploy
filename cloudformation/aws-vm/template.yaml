@@ -19,7 +19,7 @@ Metadata:
       - Label: { default: Encryption (required) }
         Parameters: [BrochMasterKey]
       - Label: { default: Domain & TLS }
-        Parameters: [DnsZone, ShareSubdomain, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, DnsAutoRecords, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
+        Parameters: [DnsZone, ShareSubdomain, DnsZoneName, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, DnsAutoRecords, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
       - Label: { default: Database }
         Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId]
       - Label: { default: Identity provider (boot floor) }
@@ -32,6 +32,7 @@ Metadata:
       BrochMasterKey: { default: "Master key (BROCH_MASTER_KEY) - customer-owned, required" }
       DnsZone: { default: DNS zone you own (e.g. example.com) }
       ShareSubdomain: { default: Subdomain for tunnel URLs (default "tunnels"; empty = zone apex) }
+      DnsZoneName: { default: "Delegated DNS zone that owns the records (advanced; empty = DnsZone is the zone)" }
       HostedZoneId: { default: Route 53 hosted zone for that domain }
       DnsAutoRecords: { default: "Auto-create DNS A records? (Auto = deploy then sign in)" }
 
@@ -70,6 +71,20 @@ Parameters:
     # (CFn-var) and "'" (quoting) hazards.
     AllowedPattern: "^$|^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
     ConstraintDescription: must be empty (apex) or a DNS subdomain — letters, digits, dots, hyphens only.
+  DnsZoneName:
+    # Advanced. The zone that auto-DNS WRITES the apex/wildcard A records into, for the DELEGATED case
+    # where the DNS zone that owns the records is a subdomain of DnsZone (e.g. DnsZone=example.com for
+    # the URLs, but share.example.com is its own delegated zone). Empty (the common case) makes the
+    # render fall back to DnsZone, so existing deploys are unchanged. Only the token-provider
+    # (Cloudflare/GoogleCloudDns/DigitalOcean) caddy-dynamicdns path reads this; the Route53 native
+    # RecordSet path resolves its zone from HostedZoneId and ignores it. render-secrets.sh interpolates
+    # this into a single-quoted shell literal inside Fn::Sub, so the same "$"- and "'"-free charset as
+    # DnsZone/ShareSubdomain applies (the AllowedPattern enforces it).
+    Type: String
+    Default: ""
+    Description: "Advanced. The DNS zone that actually OWNS the records when it differs from DnsZone -- i.e. the host is on a delegated subdomain that is its own zone (e.g. DnsZone=example.com for the URLs, but the delegated zone is share.example.com). Leave EMPTY (default) for the common case where DnsZone IS the DNS zone. When set, the token-provider auto-DNS (Cloudflare/GoogleCloudDns/DigitalOcean) writes the A records into THIS zone and derives the record labels as the host relative to it -- the same zone the ACME/cert path resolves, so a valid cert can no longer coexist with an A-record write that 404s. Route53 native records ignore this (they resolve the zone from HostedZoneId)."
+    AllowedPattern: "^$|^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
+    ConstraintDescription: must be empty or a valid domain name, e.g. share.example.com.
   HostedZoneId:
     # Plain String (not AWS::Route53::HostedZone::Id) so it can be empty for the non-Route53
     # providers -- an AWS-specific type validates the "" default unconditionally and would break
@@ -86,7 +101,11 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — only when CertMode=Byo. e.g. base64 -w0 fullchain.pem
+    Description: >-
+      Base64-encoded PEM fullchain (cert + intermediates) -- only when CertMode=Byo. e.g. base64 -w0 fullchain.pem.
+      It MUST cover BOTH the apex host and the wildcard: a plain *.<host> wildcard does NOT match the apex <host>
+      itself, and the admin console + API are served on the apex -- a cert without an apex SAN fails TLS there.
+      Include the apex host AND *.<host> as SANs.
   TlsCertificateKey:
     Type: String
     NoEcho: true
@@ -838,9 +857,12 @@ Resources:
                     # for Byo (no DNS credential), Manual (you own the records), and Route53 -- which already
                     # gets native apex+wildcard A records from the stack's AWS::Route53::RecordSet resources,
                     # so dynamic_dns would double-manage them. Always writes the file (empty when skipped)
-                    # because the Caddyfile's global block imports it. The zone + share subdomain are captured
-                    # separately, so the record labels are read straight off them -- no zone derivation, no
-                    # suffix guard, and no shell suffix-strip (which would clash with Fn::Sub's dollar-brace).
+                    # because the Caddyfile's global block imports it. The write zone is DnsZone normally, or
+                    # the DELEGATED DnsZoneName when the host lives on a subdomain that is its own zone; the
+                    # record labels are the host RELATIVE to that write zone (mirrors the azure-vm cloud-init).
+                    # The suffix-strip needs shell brace expansion, which collides with Fn::Sub's dollar-brace,
+                    # so those expansions are written with the Fn::Sub bang-escape (which renders back to a
+                    # plain dollar-brace shell expansion) rather than a bare dollar-brace CFn ref.
                     printf '# Automatic A-records disabled (DnsAutoRecords=Manual/Byo, or Route53 native records). Manage DNS yourself.\n' > /opt/broch/dynamic-dns.caddy
                     # Best-effort: auto-DNS must NEVER abort render-secrets.sh -- a failure here would
                     # leave .env unhydrated and roll the whole stack back. The subshell inherits `set -e`,
@@ -850,15 +872,35 @@ Resources:
                       if [ "${DnsAutoRecords}" = "Auto" ] && [ "${CertMode}" != "Byo" ] && [ "${DnsProvider}" != "Route53" ]; then
                         zone='${DnsZone}'
                         sub='${ShareSubdomain}'
-                        # Labels within the zone: the share subdomain (or @ at the apex) and its wildcard.
-                        # The host is <sub>.<zone> by construction, so it is always within the zone.
-                        if [ -z "$sub" ]; then apex='@'; star='*'; else apex="$sub"; star="*.$sub"; fi
-                        tail='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
-                        case "${DnsProvider}" in
-                          Cloudflare)     printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
-                          DigitalOcean)   printf "dynamic_dns {\n\tprovider digitalocean {env.DO_AUTH_TOKEN}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
-                          GoogleCloudDns) printf "dynamic_dns {\n\tprovider googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}$tail" "$zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
-                        esac
+                        zone_name='${DnsZoneName}'
+                        # The public host tls.caddy serves / the URLs use, composed from DnsZone + share subdomain.
+                        if [ -z "$sub" ]; then host="$zone"; else host="$sub.$zone"; fi
+                        # The zone auto-DNS WRITES into: DnsZone normally, but for a DELEGATED subdomain the real
+                        # zone is a subdomain of DnsZone -- passed explicitly as DnsZoneName so we neither assume
+                        # nor need a runtime SOA lookup. Resolves to the SAME zone the ACME/tls path uses, so a
+                        # valid cert can no longer coexist with an A-record write that 404s. The dollar-brace-bang
+                        # forms below are Fn::Sub ESCAPES: CloudFormation renders each back to a plain dollar-brace
+                        # shell parameter expansion in the boot script, so they are shell code, NOT CFn refs. (A
+                        # bare dollar-brace here WOULD be read as a CFn variable -- hence the escape.)
+                        write_zone="${!zone_name:-$zone}"
+                        # Fail loud, don't guess: a DnsZoneName that is neither the host nor a parent of it (typo /
+                        # wrong zone) would strip nothing below and write a garbage record label -- the same
+                        # silent-misconfig class this closes, moved one field over. Skip the block (leaving the
+                        # manual stub) and log; auto-DNS falls back to manual. Never fires when DnsZoneName is
+                        # empty (host is within DnsZone by construction).
+                        if [ "$host" != "$write_zone" ] && [ "${!host%.$write_zone}" = "$host" ]; then
+                          echo "auto-DNS: DnsZoneName '$write_zone' does not contain host '$host' -- skipping auto A-records; set it to the zone that contains the host, or leave it empty. DNS stays manual." >&2
+                        elif [ -n "$write_zone" ]; then
+                          # Record labels = host relative to the write zone: @/* at the zone apex, else the leading
+                          # label(s) + their wildcard. ${!host%.$write_zone} strips the zone suffix; equal = apex.
+                          if [ "$host" = "$write_zone" ]; then apex='@'; star='*'; else rel="${!host%.$write_zone}"; apex="$rel"; star="*.$rel"; fi
+                          tail='\n\tdomains {\n\t\t%s %s %s\n\t}\n\tip_source simple_http http://broch:8080/internal/public-ip\n\tversions ipv4\n\tcheck_interval 5m\n}\n'
+                          case "${DnsProvider}" in
+                            Cloudflare)     printf "dynamic_dns {\n\tprovider cloudflare {env.CLOUDFLARE_API_TOKEN}$tail" "$write_zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                            DigitalOcean)   printf "dynamic_dns {\n\tprovider digitalocean {env.DO_AUTH_TOKEN}$tail" "$write_zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                            GoogleCloudDns) printf "dynamic_dns {\n\tprovider googleclouddns {\n\t\tgcp_project {env.GCP_PROJECT}\n\t}$tail" "$write_zone" "$apex" "$star" > /opt/broch/dynamic-dns.caddy ;;
+                          esac
+                        fi
                       fi
                     ) || true
 
@@ -1023,6 +1065,18 @@ Outputs:
   PublicIp:
     Description: Elastic IP. With DnsAutoRecords=Auto (the default) on Route53, the stack creates the apex/wildcard A records here for you; with DnsAutoRecords=Manual, or with any other DNS provider, point both records here yourself.
     Value: !Ref ElasticIp
+  DnsHint:
+    Description: The apex + wildcard A records to create when you own the records (DnsAutoRecords=Manual, or a DNS provider off Route 53). No-op when Route53+Auto creates them for you.
+    Value: !If
+      - HasShareSubdomain
+      - !Sub "Create A records: ${ShareSubdomain}.${DnsZone} and *.${ShareSubdomain}.${DnsZone} -> ${ElasticIp} (DNS-only / grey-cloud on Cloudflare)"
+      - !Sub "Create A records: ${DnsZone} and *.${DnsZone} -> ${ElasticIp} (DNS-only / grey-cloud on Cloudflare)"
+  Readiness:
+    Description: Expected first-boot behavior -- the appliance is warming up, not broken, until this completes.
+    Value: !If
+      - HasShareSubdomain
+      - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${ShareSubdomain}.${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${ShareSubdomain}.${DnsZone}/healthz returns 200."
+      - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${DnsZone}/healthz returns 200."
   MasterKeySecretArn:
     Description: Where your supplied BROCH_MASTER_KEY is stored (your account) for the instance to read. Keep the original safe — supply the same value on every redeploy that reuses the DB.
     Value: !Ref MasterKeySecret

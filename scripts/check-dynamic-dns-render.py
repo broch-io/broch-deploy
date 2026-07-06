@@ -49,10 +49,13 @@ ZONE, APEX, STAR = "example.com", "@", "*"
 
 # Each `<Label>) printf "<fmt>" "$zone" "$apex" "$star"` arm. The fmt embeds $TAIL/$tail (the shared
 # domains+ip_source suffix), substituted before running. Non-greedy up to the first arg quote; the
-# fmt contains no literal `"`, so this is unambiguous.
+# fmt contains no literal `"`, so this is unambiguous. The zone arg is either the bare $ZONE or
+# $ZONE_FQDN (dot-terminated; Route53 needs it -- libdns/route53 compares the config zone verbatim
+# against the API's dot-terminated HostedZone.Name, so the bare form is never found). aws-vm's
+# delegated-zone path passes $write_zone (= DnsZoneName or DnsZone) -- accepted above too.
 ARM_RE = re.compile(
     r'(?P<prov>\w+)\)\s+printf\s+"(?P<fmt>dynamic_dns \{.*?)"\s+'
-    r'"\$(?:ZONE|zone)"\s+"\$(?:APEX|apex)"\s+"\$(?:STAR|star)"'
+    r'"\$(?:ZONE_FQDN|ZONE|zone_fqdn|zone|write_zone|WRITE_ZONE)"\s+"\$(?:APEX|apex)"\s+"\$(?:STAR|star)"'
 )
 TAIL_RE = re.compile(r"(?m)^\s*(?:TAIL|tail)='(?P<tail>[^']*)'\s*$")
 
