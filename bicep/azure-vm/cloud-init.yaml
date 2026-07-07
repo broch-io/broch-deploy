@@ -15,9 +15,10 @@
 # AUTHENTICATION__CLIENTSECRET, the DNS-01 tokens) are NOT in this file or in customData -- they are
 # stored in Key Vault and fetched at boot by the VM's user-assigned identity (the kv-fetch runcmd),
 # which appends them to .env. BROCH_MASTER_KEY is the at-rest encryption root -- always
-# customer-supplied (required, >=32 chars), never generated; for an Existing DB it must be the key
-# that DB was encrypted with (a fresh key can't decrypt stored state). Telemetry/logging and the
-# license are configured IN-APP (Admin UI).
+# customer-supplied (required on a first deployment; the server rejects values under 32 bytes),
+# never generated; a reuseExistingSecrets redeploy may leave the param blank to keep the stored
+# key. For an Existing DB it must be the key that DB was encrypted with (a fresh key can't decrypt
+# stored state). Telemetry/logging and the license are configured IN-APP (Admin UI).
 #
 # Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
 # main.bicep before base64. The base64 blobs are pure base64 (no underscores), so

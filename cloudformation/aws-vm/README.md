@@ -84,6 +84,7 @@ aws cloudformation describe-stacks --stack-name broch \
 - **`NewServer`** (default) — provisions the private RDS above. Broch connects as the RDS master to a `brochdb` database.
 - **`ExistingDatabase`** — set `DatabaseConnectionString` to a ready Npgsql string; the stack creates no database.
 - **`ExistingServer`** — reuse a Postgres server you already run. Supply `DbServerHost`, `DbServerPort` (default 5432), `DbAdminUsername`, `DbAdminPassword`, and `DbServerSecurityGroupId`. The stack opens Postgres on that SG to this instance and, at boot, uses the admin creds **once** to carve a `brochdb` database + a least-privilege `broch` role (generated password in Secrets Manager, PG15+ `public`-schema owner grant) — idempotent, and it never touches the server's other databases. The admin password is fetched only for the carve and is not written to the instance's `.env`. **Prerequisites:** the instance must be able to reach the server (same VPC or peered/routable), and `DbAdminUsername` must be a role that can `CREATE ROLE`/`CREATE DATABASE` (e.g. the RDS master / `rds_superuser`).
+- **`Local`** — runs Postgres **on this instance** (the bundled `with-postgres` compose) on a dedicated, encrypted **EBS gp3 data volume** — zero DB prerequisites, deploy → sign in. The volume is mounted at `/var/lib/docker/volumes` before Docker installs, so Postgres's data lives on it. Set **`DataVolumeAz`** to the AZ of `InstanceSubnetId` (**required** — an EBS volume attaches only within its own AZ, and CloudFormation can't derive a subnet's AZ); optionally set `DataVolumeSize` (GiB, default 20) and `LocalDbAdminPassword` (leave empty for a generated password — a supplied one must be letters/digits/`._~-` only, since it is spliced into the DB connection string). **No automated backups / PITR — you own the backups via EBS snapshots** (use `NewServer` for managed backups). The data volume is a separate resource with a `Snapshot` deletion policy, so it survives an instance **stop/start** and a stack **delete** (as a snapshot). To move to a fresh instance, do an explicit **delete + redeploy** — an in-place update that *replaces* the instance is **not** supported (the new instance can't attach the volume the old one still holds). If you redeploy against a snapshot-restored volume, supply the **same** `LocalDbAdminPassword` the data was first initialised with.
 
 ## TLS
 
@@ -122,7 +123,7 @@ Then sign in at `https://<ShareSubdomain>.<DnsZone>`.
 aws cloudformation delete-stack --stack-name broch
 ```
 
-The RDS instance is created with a `Snapshot` deletion policy — a final snapshot is taken on delete (`ExistingDatabase` deployments leave your DB untouched). Record the master key before deleting if you intend to redeploy against the same data.
+The RDS instance is created with a `Snapshot` deletion policy — a final snapshot is taken on delete (`ExistingDatabase` deployments leave your DB untouched). In `Local` mode the on-box Postgres data volume likewise has a `Snapshot` deletion policy — a final EBS snapshot is taken on delete; to reuse that data, restore the snapshot into a volume and supply the same `LocalDbAdminPassword` on redeploy. Record the master key before deleting if you intend to redeploy against the same data.
 
 ## Status
 
@@ -130,4 +131,5 @@ The template is lint-validated (`cfn-lint`) and the appliance boot path is exerc
 (create → boot-to-healthy → teardown). Before relying on it in production, validate the specific
 configuration you intend to run in a non-production account — in particular the automatic-certificate
 path for your `DnsProvider` (including the default Route 53 instance-role DNS-01) and the
-`ExistingDatabase` / `ExistingServer` database modes.
+`ExistingDatabase` / `ExistingServer` / `Local` database modes. (The `Local` EBS data-volume
+mount + device-resolution path has no automated CI smoke yet — validate it on a real deploy.)

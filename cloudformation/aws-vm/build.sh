@@ -14,6 +14,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 auto="$here/../../docker-compose/with-postgres-external"
+local_pg="$here/../../docker-compose/with-postgres"
 byo="$here/../../docker-compose/with-postgres-byo-cert"
 tls="$here/../../docker-compose/caddy-tls"
 out="$here/dist"
@@ -22,7 +23,12 @@ mkdir -p "$out"
 # `base64 -w0` is GNU-only (BSD/macOS base64 rejects -w and wraps at 76 cols,
 # producing malformed single-line YAML scalars). `| tr -d '\n'` strips the wrapping
 # portably on both GNU and BSD.
+# The external-Postgres compose (default, all modes except Local) and the bundled-Postgres compose
+# (DatabaseMode=Local -- runs Postgres ON the box). cfn-init picks one by DatabaseMode. The Caddyfile
+# is byte-identical between the two dirs (CertMode, not DatabaseMode, selects Auto vs Byo), so only
+# ONE Caddyfile pair is embedded.
 compose_b64="$(base64 "$auto/docker-compose.yml" | tr -d '\n')"
+compose_local_b64="$(base64 "$local_pg/docker-compose.yml" | tr -d '\n')"
 caddyfile_auto_b64="$(base64 "$auto/Caddyfile" | tr -d '\n')"
 caddyfile_byo_b64="$(base64 "$byo/Caddyfile" | tr -d '\n')"
 
@@ -38,6 +44,7 @@ tls_googleclouddns_b64="$(base64 "$tls/googleclouddns.caddy" | tr -d '\n')"
 # Substitute the placeholders. Python avoids sed-delimiter clashes with the
 # +/= in base64 and keeps each blob on a single line.
 COMPOSE_B64="$compose_b64" \
+COMPOSE_LOCAL_B64="$compose_local_b64" \
 CADDYFILE_AUTO_B64="$caddyfile_auto_b64" \
 CADDYFILE_BYO_B64="$caddyfile_byo_b64" \
 TLS_CLOUDFLARE_B64="$tls_cloudflare_b64" \
@@ -50,6 +57,7 @@ src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
 for placeholder, env in (
     ("__COMPOSE_B64__", "COMPOSE_B64"),
+    ("__COMPOSE_LOCAL_B64__", "COMPOSE_LOCAL_B64"),
     ("__CADDYFILE_AUTO_B64__", "CADDYFILE_AUTO_B64"),
     ("__CADDYFILE_BYO_B64__", "CADDYFILE_BYO_B64"),
     ("__TLS_CLOUDFLARE_B64__", "TLS_CLOUDFLARE_B64"),

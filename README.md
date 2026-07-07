@@ -1,6 +1,6 @@
 # broch-deploy
 
-Deployment examples for self-hosting the [Broch](https://broch.io) SSH tunnel server.
+Deployment examples for self-hosting the [Broch](https://broch.io) identity-aware tunnel server.
 
 If you're looking for **the application** itself, the public docs at <https://broch.io/docs> are the entry point. This repo is for the people running it on their own infrastructure — Dockerfiles, Terraform modules, compose files, all version-aware.
 
