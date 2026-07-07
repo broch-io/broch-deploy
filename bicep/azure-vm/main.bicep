@@ -139,10 +139,12 @@ param registryPassword string = ''
 @description('CIDR allowed to reach SSH (port 22). Empty (default) creates NO inbound SSH rule — the box is managed via `az vm run-command` / Azure Serial Console, the secure default. Set a CIDR (e.g. your admin network) to allow SSH break-glass.')
 param sshAllowedCidr string = ''
 
-@description('REQUIRED. The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). The server also rejects values under 32 bytes at boot.')
-@minLength(32)
+@description('REQUIRED on a first deployment (only a reuseExistingSecrets redeploy may leave it empty). The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy — or left empty with reuseExistingSecrets=true to reuse the stored one. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). No @minLength: an empty value must be accepted for the redeploy path; the server still rejects values under 32 bytes at boot, and a first deploy without a key fails closed at the boot-fetch (see kvSecretMap).')
 @secure()
-param brochMasterKey string
+param brochMasterKey string = ''
+
+@description('Retry a FAILED deployment in the SAME resource group without re-entering secrets. The deploy-time secrets survive a failed deployment in this deployment\'s Key Vault (written early, deterministic names — see kvName), so a retry can reuse them: set true and leave the vault-backed secret params (brochMasterKey, authClientSecret, DNS credentials, databaseConnectionString, localDbAdminPassword) EMPTY — blank then means "keep the stored value" instead of "overwrite with nothing". Repeat the SAME non-secret selections as the failed attempt, and re-supply anything that lives in customData rather than the vault (BYO TLS cert/key, GCP credentials JSON, registry token) plus — Managed mode — the SAME postgresAdminPassword. Assumes the first attempt supplied an OAuth client secret whenever authProvider is set (the marketplace wizard always does): a SECRETLESS-auth deployment must NOT use reuseExistingSecrets — its retry would list an auth-client-secret that was never stored and halt at the boot-fetch (see kvSecretMap). Leave false (default) on a first deployment: first deploys must supply real values (into a FRESH resource group, blank-with-false writes nothing for the boot-fetch to read; an RG with a prior deploy would silently reuse ITS stored values).')
+param reuseExistingSecrets bool = false
 
 @description('Internal — do not set. Entropy for the generated break-glass VM password (used only when no SSH key is supplied).')
 @secure()
@@ -231,8 +233,9 @@ var composeExternal = loadTextContent('../../docker-compose/with-postgres-extern
 var composeLocal = loadTextContent('../../docker-compose/with-postgres/docker-compose.yml')
 var selectedCompose = databaseMode == 'Local' ? composeLocal : composeExternal
 
-// The master key is always customer-supplied (required + @minLength) — never generated. So a
-// (re)deploy can't mint a different key that fails to decrypt an existing database.
+// The master key is always customer-supplied — never generated — so a (re)deploy can't mint a
+// different key that fails to decrypt an existing database. (Empty is allowed ONLY for the
+// reuseExistingSecrets redeploy path, which keeps the stored key rather than writing a new one.)
 // No SSH key supplied => provision a generated break-glass password (Serial Console).
 // Azure complexity needs >=3 of upper/lower/digit/special. The GUID seed always supplies
 // lowercase/digit plus hyphens (which Azure counts as special); appending an uppercase letter
@@ -616,25 +619,40 @@ resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
   }
 }
 
-resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
+// NOT rewritten on a reuseExistingSecrets redeploy: vmPasswordSeed is newGuid(), so this run's
+// generatedVmPassword differs from the one the (already-provisioned) VM actually has — Azure ignores an
+// adminPassword change on a VM re-PUT, so rewriting the secret would rotate the VAULT copy away from the
+// REAL password and break Serial Console break-glass. Skipping keeps them in sync for the common retry
+// (the VM survived the failed attempt). Known edge: if the failure predated the VM itself, the retried
+// VM gets a fresh password while the vault keeps attempt 1's — recover with `az vm user update` if
+// break-glass is ever needed there.
+resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword && !reuseExistingSecrets) {
   parent: bgKeyVault
   name: 'vm-admin-password'
   properties: { value: generatedVmPassword }
 }
 
 // Deploy-time secrets the VM fetches at boot (kept OUT of customData). Each is created only when it has a
-// value, so the boot-fetch list (passed to cloud-init via __KV_SECRETS__) names exactly what exists.
-resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+// value — so blank NEVER overwrites: on a reuseExistingSecrets redeploy the blank params simply leave the
+// stored values from the failed attempt in place, and the boot-fetch list (kvSecretMap) names what SHOULD
+// exist for the selected modes rather than what this run wrote.
+resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(brochMasterKey)) {
   parent: keyVault
   name: 'broch-master-key'
   properties: { value: brochMasterKey }
 }
-resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode != 'Local' && !empty(effectiveConnectionString)) {
+// Managed gates on postgresAdminPassword, not effectiveConnectionString: managedConnectionString is a
+// composed literal that is non-empty even with a BLANK password, so the old `!empty(effectiveConnectionString)`
+// check would let a blank-password redeploy overwrite the good stored connection string with a Password=; one.
+resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if ((databaseMode == 'Managed' && !empty(postgresAdminPassword)) || (databaseMode == 'Existing' && !empty(databaseConnectionString))) {
   parent: keyVault
   name: 'db-connection-string'
   properties: { value: effectiveConnectionString }
 }
-resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local') {
+// Skipped when a reuse redeploy supplies no explicit password: localDbPassword would fall back to the
+// DERIVED default, and writing that would clobber a custom localDbAdminPassword stored by the first
+// attempt (PostgreSQL keeps the password its data dir was initialised with — see localDbPassword above).
+resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local' && (!empty(localDbAdminPassword) || !reuseExistingSecrets)) {
   parent: keyVault
   name: 'postgres-password'
   properties: { value: localDbPassword }
@@ -689,15 +707,24 @@ resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
 
 // Boot-fetch map: ENVKEY=secret-name pairs for every secret that exists, ';'-joined. cloud-init splits
 // this, fetches each from Key Vault via the VM identity, and appends KEY=value to /opt/broch/.env.
+// Each entry is included when this run SUPPLIED the value — or, on a reuseExistingSecrets redeploy, when
+// the selected mode/provider says the secret SHOULD already exist from the first attempt (the blank param
+// wrote nothing this run, but the vault still holds the value). The selection conditions mirror what a
+// valid first deploy of the same selections would have supplied, so the redeploy's customData comes out
+// byte-identical to the first attempt's — which matters when the failure predated the VM: the retried VM
+// then boot-fetches the full list. (On a VM that already exists, Azure ignores customData changes on
+// re-PUT, so cloud-init neither reruns nor cares.) The boot-fetch fails closed on a missing secret — a
+// reuse redeploy into an RG that never had a first attempt halts at the fetch rather than booting
+// half-configured.
 var kvSecretMap = join(filter([
   'BROCH_MASTER_KEY=broch-master-key'
-  databaseMode == 'Local' ? 'POSTGRES_PASSWORD=postgres-password' : (empty(effectiveConnectionString) ? '' : 'BROCH_DB_CONNECTION_STRING=db-connection-string')
-  empty(authClientSecret) ? '' : 'AUTHENTICATION__CLIENTSECRET=auth-client-secret'
-  empty(cloudflareApiToken) ? '' : 'CLOUDFLARE_API_TOKEN=cloudflare-api-token'
-  empty(azureClientSecret) ? '' : 'AZURE_DNS_CLIENT_SECRET=azure-dns-client-secret'
-  empty(awsAccessKeyId) ? '' : 'AWS_ACCESS_KEY_ID=aws-access-key-id'
-  empty(awsSecretAccessKey) ? '' : 'AWS_SECRET_ACCESS_KEY=aws-secret-access-key'
-  empty(doAuthToken) ? '' : 'DO_AUTH_TOKEN=do-auth-token'
+  databaseMode == 'Local' ? 'POSTGRES_PASSWORD=postgres-password' : ((databaseMode == 'Managed' ? !empty(postgresAdminPassword) : !empty(databaseConnectionString)) || reuseExistingSecrets ? 'BROCH_DB_CONNECTION_STRING=db-connection-string' : '')
+  !empty(authClientSecret) || (reuseExistingSecrets && !empty(authProvider)) ? 'AUTHENTICATION__CLIENTSECRET=auth-client-secret' : ''
+  !empty(cloudflareApiToken) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Cloudflare') ? 'CLOUDFLARE_API_TOKEN=cloudflare-api-token' : ''
+  !empty(azureClientSecret) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'AzureDnsServicePrincipal') ? 'AZURE_DNS_CLIENT_SECRET=azure-dns-client-secret' : ''
+  !empty(awsAccessKeyId) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Route53') ? 'AWS_ACCESS_KEY_ID=aws-access-key-id' : ''
+  !empty(awsSecretAccessKey) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Route53') ? 'AWS_SECRET_ACCESS_KEY=aws-secret-access-key' : ''
+  !empty(doAuthToken) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'DigitalOcean') ? 'DO_AUTH_TOKEN=do-auth-token' : ''
 ], item => !empty(item)), ';')
 
 // Dedicated data disk for the Local PostgreSQL (databaseMode=Local). A SEPARATE resource so the DB
