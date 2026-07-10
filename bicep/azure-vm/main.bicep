@@ -11,6 +11,71 @@ param location string = resourceGroup().location
 @description('Base name for the VM and its resources.')
 param vmName string = 'broch'
 
+// --- SECRETS FIRST. Parameter order here IS the field order in the portal's Custom-deployment /
+// Redeploy form (the raw form renders template params top-to-bottom, shows ALL of them, and has no
+// conditional show/hide or conditional-required — the only levers are order, no-default requiredness,
+// and description text). A retry of a failed deployment happens through Azure's Redeploy button, whose
+// form prefills every NON-secret from the failed attempt and blanks these — so the fields a customer
+// must actually act on are grouped at the top instead of buried among thirty prefilled ones. Keep any
+// new secret param in this block. ---
+
+@description('REQUIRED — on every deploy AND every retry of a failed deployment (no default, so the portal Redeploy form and ARM validation both refuse an empty submission; that fail-fast is deliberate). The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). The server also rejects values under 32 bytes at boot.')
+@minLength(32)
+@secure()
+param brochMasterKey string
+
+@description('REQUIRED whenever authProvider is set — on a FIRST deployment (the form cannot enforce this; leaving it empty then makes the appliance halt at the boot-time secret fetch, fail-closed). OIDC client secret the server uses to exchange authorization codes. On a Redeploy retry it may be left blank: the value stored by the failed attempt is reused; supply a value only to overwrite it.')
+@secure()
+param authClientSecret string = ''
+
+@description('REQUIRED when dnsProvider=Cloudflare and certMode=Auto — on a FIRST deployment (the form cannot enforce this; leaving it empty then makes the appliance halt at the boot-time secret fetch, fail-closed). Cloudflare API token (Zone:Read + DNS:Edit). On a Redeploy retry it may be left blank: the stored value is reused.')
+@secure()
+param cloudflareApiToken string = ''
+
+@description('REQUIRED when dnsProvider=AzureDnsServicePrincipal and certMode=Auto — on a FIRST deployment (fail-closed at the boot-time fetch if omitted). Service-principal client secret. On a Redeploy retry it may be left blank: the stored value is reused.')
+@secure()
+param azureClientSecret string = ''
+
+@description('REQUIRED when dnsProvider=Route53 and certMode=Auto — on a FIRST deployment (fail-closed at the boot-time fetch if omitted). AWS access key ID for a principal with Route 53 list+change rights on the zone. On a Redeploy retry it may be left blank: the stored value is reused.')
+@secure()
+param awsAccessKeyId string = ''
+
+@description('REQUIRED when dnsProvider=Route53 and certMode=Auto (same behaviour as awsAccessKeyId). AWS secret access key. On a Redeploy retry it may be left blank: the stored value is reused.')
+@secure()
+param awsSecretAccessKey string = ''
+
+@description('REQUIRED when dnsProvider=DigitalOcean and certMode=Auto (same behaviour as the other DNS credentials). DigitalOcean API token with DNS write scope. On a Redeploy retry it may be left blank: the stored value is reused.')
+@secure()
+param doAuthToken string = ''
+
+@description('REQUIRED when databaseMode=Managed — on a FIRST deployment. Admin password for the provisioned PostgreSQL (8-128 chars; at least 3 of lower/upper/digit/symbol). On a Redeploy retry it may be left blank: the deployment reads the value the failed attempt stored in the Key Vault and applies it to the database server. Supply a value only to set or rotate the password.')
+@secure()
+param postgresAdminPassword string = ''
+
+@description('REQUIRED when databaseMode=Existing — on a FIRST deployment. Npgsql connection string for your existing PostgreSQL. On a Redeploy retry it may be left blank: the stored value is reused. Ignored when databaseMode=Managed/Local.')
+@secure()
+param databaseConnectionString string = ''
+
+@description('Optional password for the bundled Local PostgreSQL (databaseMode=Local). Leave empty for a zero-config default DERIVED from the resource group + VM name. That default is computable by anyone with Reader on the subscription, so SET an explicit value for any deployment where the VM identity could be compromised (Postgres has no host port, so the practical blast radius is limited to in-container code execution). If you set one, STORE IT and re-supply the SAME value on every (re)deploy of the VM (Postgres keeps the password from when its data dir was first initialised). Ignored for Existing/Managed.')
+@secure()
+param localDbAdminPassword string = ''
+
+@description('REQUIRED when dnsProvider=GoogleCloudDns and certMode=Auto. Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone). Re-enter on a Redeploy retry (delivered via customData, not the vault — a blank retry is NOT reused).')
+@secure()
+param gcpCredentialsJson string = ''
+
+@description('REQUIRED when certMode=Byo. Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard. Re-enter on a Redeploy retry (delivered via customData, not the vault).')
+@secure()
+param tlsCertificate string = ''
+
+@description('REQUIRED when certMode=Byo. Base64-encoded PEM private key for the wildcard cert. Re-enter on a Redeploy retry (delivered via customData, not the vault).')
+@secure()
+param tlsCertificateKey string = ''
+
+@description('Registry token/password. Empty (default) = the image is public, no login. Set this (only this) to pull a private pre-release/beta image — the server/username already default to GHCR. Re-enter on a Redeploy retry if set.')
+@secure()
+param registryPassword string = ''
+
 @description('VM size. Default is x86 burstable (widely available). For ARM64 (cheaper, where capacity exists) pick an Ampere size (e.g. Standard_D2ps_v6) AND set imageSku to the arm64 SKU — the broch image is multi-arch.')
 param vmSize string = 'Standard_B2s'
 
@@ -76,10 +141,6 @@ param dnsAutoRecords string = 'Auto'
 @description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
 param acmeEmail string = ''
 
-@description('Cloudflare API token (Zone:Read + DNS:Edit) — dnsProvider=Cloudflare.')
-@secure()
-param cloudflareApiToken string = ''
-
 @description('Resource group of the Azure DNS zone — dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
 param dnsZoneResourceGroup string = ''
 
@@ -89,36 +150,8 @@ param azureTenantId string = ''
 @description('Service-principal (app registration) client ID, pre-granted DNS Zone Contributor on the zone — dnsProvider=AzureDnsServicePrincipal.')
 param azureClientId string = ''
 
-@description('Service-principal client secret — dnsProvider=AzureDnsServicePrincipal.')
-@secure()
-param azureClientSecret string = ''
-
-@description('AWS access key ID for a principal with Route 53 list+change rights on the zone — dnsProvider=Route53.')
-@secure()
-param awsAccessKeyId string = ''
-
-@description('AWS secret access key — dnsProvider=Route53.')
-@secure()
-param awsSecretAccessKey string = ''
-
 @description('GCP project ID hosting the Cloud DNS zone — dnsProvider=GoogleCloudDns.')
 param gcpProject string = ''
-
-@description('Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone) — dnsProvider=GoogleCloudDns.')
-@secure()
-param gcpCredentialsJson string = ''
-
-@description('DigitalOcean API token with DNS write scope — dnsProvider=DigitalOcean.')
-@secure()
-param doAuthToken string = ''
-
-@description('Base64-encoded PEM fullchain (cert + intermediates) covering the apex + wildcard — certMode=Byo.')
-@secure()
-param tlsCertificate string = ''
-
-@description('Base64-encoded PEM private key for the wildcard cert — certMode=Byo.')
-@secure()
-param tlsCertificateKey string = ''
 
 @description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set to a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
 param brochVersion string = '1.29.0'
@@ -132,19 +165,8 @@ param registryServer string = 'ghcr.io'
 @description('Registry login username — defaults to a value GHCR accepts with a valid token. Only used when registryPassword is set.')
 param registryUsername string = 'broch'
 
-@description('Registry token/password. Empty (default) = the image is public, no login. Set this (only this) to pull a private pre-release/beta image — the server/username already default to GHCR.')
-@secure()
-param registryPassword string = ''
-
 @description('CIDR allowed to reach SSH (port 22). Empty (default) creates NO inbound SSH rule — the box is managed via `az vm run-command` / Azure Serial Console, the secure default. Set a CIDR (e.g. your admin network) to allow SSH break-glass.')
 param sshAllowedCidr string = ''
-
-@description('REQUIRED on a first deployment (only a reuseExistingSecrets redeploy may leave it empty). The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy — or left empty with reuseExistingSecrets=true to reuse the stored one. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). No @minLength: an empty value must be accepted for the redeploy path; the server still rejects values under 32 bytes at boot, and a first deploy without a key fails closed at the boot-fetch (see kvSecretMap).')
-@secure()
-param brochMasterKey string = ''
-
-@description('Retry a FAILED deployment in the SAME resource group without re-entering secrets. The deploy-time secrets survive a failed deployment in this deployment\'s Key Vault (written early, deterministic names — see kvName), so a retry can reuse them: set true and leave the vault-backed secret params (brochMasterKey, authClientSecret, DNS credentials, databaseConnectionString, localDbAdminPassword) EMPTY — blank then means "keep the stored value" instead of "overwrite with nothing". Repeat the SAME non-secret selections as the failed attempt, and re-supply anything that lives in customData rather than the vault (BYO TLS cert/key, GCP credentials JSON, registry token) plus — Managed mode — the SAME postgresAdminPassword. Assumes the first attempt supplied an OAuth client secret whenever authProvider is set (the marketplace wizard always does): a SECRETLESS-auth deployment must NOT use reuseExistingSecrets — its retry would list an auth-client-secret that was never stored and halt at the boot-fetch (see kvSecretMap). Leave false (default) on a first deployment: first deploys must supply real values (into a FRESH resource group, blank-with-false writes nothing for the boot-fetch to read; an RG with a prior deploy would silently reuse ITS stored values).')
-param reuseExistingSecrets bool = false
 
 @description('Internal — do not set. Entropy for the generated break-glass VM password (used only when no SSH key is supplied).')
 @secure()
@@ -160,22 +182,10 @@ param vmPasswordSeed string = newGuid()
 @description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment. Local: run PostgreSQL on this VM (the bundled with-postgres compose) on a small dedicated data disk — zero DB prerequisites, but YOU manage backups (no automated backups/PITR; see README).')
 param databaseMode string = 'Existing'
 
-@description('Npgsql connection string for your existing PostgreSQL (Existing mode). Ignored when databaseMode=Managed/Local.')
-@secure()
-param databaseConnectionString string = ''
-
 @description('Size (GiB) of the dedicated data disk that holds the Local PostgreSQL data (databaseMode=Local). Broch\'s database is tiny; the default suits typical use — size up only if you retain large audit/request-log history. The disk is a separate resource, so the database survives VM reboots and recreation. Pick the size at first deploy: INCREASING it on a later redeploy resizes the Azure disk but does NOT auto-grow the ext4 filesystem — run `sudo resize2fs /dev/disk/azure/scsi1/lun0` on the VM afterward (and note some disk tiers require a VM deallocate to resize). Shrinking is not supported.')
 @minValue(4)
 @maxValue(1024)
 param dataDiskSizeGb int = 4
-
-@description('Optional password for the bundled Local PostgreSQL (databaseMode=Local). Leave empty for a zero-config default DERIVED from the resource group + VM name. That default is computable by anyone with Reader on the subscription, so SET an explicit value for any deployment where the VM identity could be compromised (Postgres has no host port, so the practical blast radius is limited to in-container code execution). If you set one, STORE IT and re-supply the SAME value on any from-scratch recreate of a Local-mode VM (Postgres keeps the password from when its data dir was first initialised). Ignored for Existing/Managed.')
-@secure()
-param localDbAdminPassword string = ''
-
-@description('Admin password for the provisioned PostgreSQL (Managed mode). 8-128 chars; at least 3 of lower/upper/digit/symbol.')
-@secure()
-param postgresAdminPassword string = ''
 
 @allowed([
   'Standard_B1ms'
@@ -186,12 +196,12 @@ param postgresAdminPassword string = ''
 @description('Compute size for the provisioned PostgreSQL (Managed mode).')
 param postgresSkuName string = 'Standard_B1ms'
 
-// --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. ---
+// --- Identity provider (boot floor). Set what your provider needs; leave the rest ''. The client
+// SECRET lives in the secrets block at the top (form-order); setting authProvider without it fails
+// closed at the boot-fetch — secretless/public-client OIDC is not supported via this template. ---
 @description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
 param authProvider string = ''
 param authClientId string = ''
-@secure()
-param authClientSecret string = ''
 @description('Comma-separated admin role(s); a user holding any one is granted admin.')
 param authAdminRoles string = ''
 param authDomain string = ''
@@ -213,8 +223,9 @@ var pgDatabaseName = 'brochdb'
 // aliases it to the zone record.
 var pgDnsZone = '${vmName}-db.private.postgres.database.azure.com'
 var pgHost = '${pgServerName}.postgres.database.azure.com'
-var managedConnectionString = 'Host=${pgHost};Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${postgresAdminPassword};SSL Mode=Require'
-var effectiveConnectionString = databaseMode == 'Managed' ? managedConnectionString : databaseConnectionString
+// The Managed-mode connection string is NOT composed here: pg.bicep writes db-connection-string from
+// the SAME getSecret-resolved password that configures the server (one source — the pair cannot be
+// written from different values; see the module header). The parent writes it only for Existing mode.
 
 // Local mode: PostgreSQL runs ON the VM (the bundled with-postgres compose). cloud-init injects
 // this password; the compose builds its own connection string from it. The path passed to
@@ -233,9 +244,9 @@ var composeExternal = loadTextContent('../../docker-compose/with-postgres-extern
 var composeLocal = loadTextContent('../../docker-compose/with-postgres/docker-compose.yml')
 var selectedCompose = databaseMode == 'Local' ? composeLocal : composeExternal
 
-// The master key is always customer-supplied — never generated — so a (re)deploy can't mint a
-// different key that fails to decrypt an existing database. (Empty is allowed ONLY for the
-// reuseExistingSecrets redeploy path, which keeps the stored key rather than writing a new one.)
+// The master key is always customer-supplied (required + @minLength) — never generated — so a
+// (re)deploy can't mint a different key that fails to decrypt an existing database, and a retry
+// re-supplies it (same value, per the stored-key contract).
 // No SSH key supplied => provision a generated break-glass password (Serial Console).
 // Azure complexity needs >=3 of upper/lower/digit/special. The GUID seed always supplies
 // lowercase/digit plus hyphens (which Azure counts as special); appending an uppercase letter
@@ -506,33 +517,36 @@ resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
   }
 }
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = if (databaseMode == 'Managed') {
-  name: pgServerName
-  location: location
-  sku: {
-    name: postgresSkuName
-    tier: startsWith(postgresSkuName, 'Standard_B') ? 'Burstable' : 'GeneralPurpose'
-  }
-  properties: {
-    version: '16'
-    administratorLogin: pgAdminUser
-    administratorLoginPassword: postgresAdminPassword
-    storage: { storageSizeGB: 32 }
-    backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
-    highAvailability: { mode: 'Disabled' }
-    // Private access: injected into the delegated subnet + resolvable via the private DNS
-    // zone. No public endpoint (publicNetworkAccess can't be Enabled with a delegated subnet).
-    network: {
-      delegatedSubnetResourceId: vnet.properties.subnets[1].id
-      privateDnsZoneArmResourceId: postgresDnsZone.id
-    }
-  }
-  dependsOn: [ postgresDnsLink ]
+// The server itself lives in pg.bicep so its admin password can come from kv.getSecret() — a Key
+// Vault reference ARM resolves at deployment time (only module @secure() params accept it). First
+// deploy: the supplied postgresAdminPassword is written to the vault (secPgAdminPassword) and read
+// straight back here. Redeploy retry with a BLANK password: the write is skipped (blank never
+// overwrites) and getSecret returns the FIRST attempt's value — so a retry needs only the master
+// key, and the server's password stays consistent with the stored db-connection-string. A blank
+// password with NO stored secret (misused first deploy) fails LOUDLY at deployment time — getSecret
+// on a missing secret is an ARM error, not a boot-time brick. Requires enabledForTemplateDeployment
+// on the vault (see the keyVault resource).
+resource kvForPgSecret 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: kvName
 }
 
-resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = if (databaseMode == 'Managed') {
-  parent: postgres
-  name: pgDatabaseName
+module postgresServer 'pg.bicep' = if (databaseMode == 'Managed') {
+  name: 'broch-pg-server'
+  params: {
+    location: location
+    kvName: kvName
+    pgServerName: pgServerName
+    pgAdminUser: pgAdminUser
+    pgDatabaseName: pgDatabaseName
+    postgresSkuName: postgresSkuName
+    administratorLoginPassword: kvForPgSecret.getSecret('pg-admin-password')
+    delegatedSubnetResourceId: vnet.properties.subnets[1].id
+    privateDnsZoneArmResourceId: postgresDnsZone.id
+  }
+  // keyVault: the vault (and its enabledForTemplateDeployment) must exist before the nested
+  // deployment resolves the secret reference; secPgAdminPassword: a supplied password must land
+  // before it is read back (skipped-when-blank is a legal dependsOn).
+  dependsOn: [ postgresDnsLink, keyVault, secPgAdminPassword ]
 }
 
 // --- Customer-owned secret store. ALWAYS created now: it holds the deploy-time secrets the VM's
@@ -599,6 +613,12 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
         permissions: { secrets: [ 'get' ] }
       }
     ]
+    // Lets THIS template read pg-admin-password back via getSecret() (the pg module), so a Redeploy
+    // retry can leave the password blank. Trust surface: principals with Microsoft.KeyVault/vaults/
+    // deploy/action (in Contributor) can reference these secrets from their own deployments — the
+    // same class as the accessPolicies/write tradeoff above (an RG Contributor is already inside
+    // this boundary via run-command), accepted for the same reason.
+    enabledForTemplateDeployment: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
   }
@@ -619,40 +639,41 @@ resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
   }
 }
 
-// NOT rewritten on a reuseExistingSecrets redeploy: vmPasswordSeed is newGuid(), so this run's
-// generatedVmPassword differs from the one the (already-provisioned) VM actually has — Azure ignores an
-// adminPassword change on a VM re-PUT, so rewriting the secret would rotate the VAULT copy away from the
-// REAL password and break Serial Console break-glass. Skipping keeps them in sync for the common retry
-// (the VM survived the failed attempt). Known edge: if the failure predated the VM itself, the retried
-// VM gets a fresh password while the vault keeps attempt 1's — recover with `az vm user update` if
-// break-glass is ever needed there.
-resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword && !reuseExistingSecrets) {
+// Rewritten on EVERY deploy (vmPasswordSeed is newGuid() per run). On a retry over an EXISTING VM,
+// Azure ignores the adminPassword change, so the vault copy rotates away from the VM's real password —
+// the documented "rotates on every redeploy" wart (README); re-read it from the vault, or reset with
+// `az vm user update` if Serial Console break-glass is ever needed on such a box.
+resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
   parent: bgKeyVault
   name: 'vm-admin-password'
   properties: { value: generatedVmPassword }
 }
 
-// Deploy-time secrets the VM fetches at boot (kept OUT of customData). Each is created only when it has a
-// value — so blank NEVER overwrites: on a reuseExistingSecrets redeploy the blank params simply leave the
-// stored values from the failed attempt in place, and the boot-fetch list (kvSecretMap) names what SHOULD
-// exist for the selected modes rather than what this run wrote.
-resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(brochMasterKey)) {
+// Deploy-time secrets the VM fetches at boot (kept OUT of customData). Every deploy AND every retry
+// re-supplies them (brochMasterKey is ARM-required; the rest are enforced by the wizard on first
+// deploys and fail closed at the boot-fetch if omitted on a raw Redeploy-form retry — see kvSecretMap).
+resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'broch-master-key'
   properties: { value: brochMasterKey }
 }
-// Managed gates on postgresAdminPassword, not effectiveConnectionString: managedConnectionString is a
-// composed literal that is non-empty even with a BLANK password, so the old `!empty(effectiveConnectionString)`
-// check would let a blank-password redeploy overwrite the good stored connection string with a Password=; one.
-resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if ((databaseMode == 'Managed' && !empty(postgresAdminPassword)) || (databaseMode == 'Existing' && !empty(databaseConnectionString))) {
+// Existing mode only — Managed mode's db-connection-string is written by pg.bicep from the
+// getSecret-resolved password (one source with the server's own password; see the module header).
+resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Existing' && !empty(databaseConnectionString)) {
   parent: keyVault
   name: 'db-connection-string'
-  properties: { value: effectiveConnectionString }
+  properties: { value: databaseConnectionString }
 }
-// Skipped when a reuse redeploy supplies no explicit password: localDbPassword would fall back to the
-// DERIVED default, and writing that would clobber a custom localDbAdminPassword stored by the first
-// attempt (PostgreSQL keeps the password its data dir was initialised with — see localDbPassword above).
-resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local' && (!empty(localDbAdminPassword) || !reuseExistingSecrets)) {
+// The Managed admin password lands in the vault standalone so the pg module can read it back via
+// getSecret() on a blank-password retry. The module then composes db-connection-string from that
+// SAME resolved value (see pg.bicep) — the standalone password and the one inside the connection
+// string share one source and cannot be written from different values.
+resource secPgAdminPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Managed' && !empty(postgresAdminPassword)) {
+  parent: keyVault
+  name: 'pg-admin-password'
+  properties: { value: postgresAdminPassword }
+}
+resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local') {
   parent: keyVault
   name: 'postgres-password'
   properties: { value: localDbPassword }
@@ -705,26 +726,28 @@ resource kvReadGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
   }
 }
 
-// Boot-fetch map: ENVKEY=secret-name pairs for every secret that exists, ';'-joined. cloud-init splits
-// this, fetches each from Key Vault via the VM identity, and appends KEY=value to /opt/broch/.env.
-// Each entry is included when this run SUPPLIED the value — or, on a reuseExistingSecrets redeploy, when
-// the selected mode/provider says the secret SHOULD already exist from the first attempt (the blank param
-// wrote nothing this run, but the vault still holds the value). The selection conditions mirror what a
-// valid first deploy of the same selections would have supplied, so the redeploy's customData comes out
-// byte-identical to the first attempt's — which matters when the failure predated the VM: the retried VM
-// then boot-fetches the full list. (On a VM that already exists, Azure ignores customData changes on
-// re-PUT, so cloud-init neither reruns nor cares.) The boot-fetch fails closed on a missing secret — a
-// reuse redeploy into an RG that never had a first attempt halts at the fetch rather than booting
-// half-configured.
+// Boot-fetch map: ENVKEY=secret-name pairs, ';'-joined. cloud-init splits this, fetches each from Key
+// Vault via the VM identity, and appends KEY=value to /opt/broch/.env. The list is a PURE FUNCTION OF
+// THE SELECTIONS (databaseMode / certMode / dnsProvider / authProvider) — deliberately NOT of which
+// secret params were supplied — for two load-bearing reasons:
+// 1. customData is identical across every same-selection attempt, and Azure REJECTS a customData
+//    change on an existing VM (PropertyChangeNotAllowed). A param-driven list would bake a DIFFERENT
+//    fetch list into the VM whenever a retry's supplied-param set differed from the first attempt's —
+//    leaving a VM that no corrected redeploy can ever fix (only deletion recovers it).
+// 2. Fail closed over half-deployed: the raw Redeploy form cannot make a DNS credential conditionally
+//    required, so an omitted-but-selected secret must brick the boot (fetch halts on the missing vault
+//    secret; broch.service is never enabled) rather than come up without TLS/login and look healthy.
+// Corollary (documented in the param block + README): authProvider set with no client secret —
+// secretless/public-client OIDC — fails closed too, and is unsupported via this template.
 var kvSecretMap = join(filter([
   'BROCH_MASTER_KEY=broch-master-key'
-  databaseMode == 'Local' ? 'POSTGRES_PASSWORD=postgres-password' : ((databaseMode == 'Managed' ? !empty(postgresAdminPassword) : !empty(databaseConnectionString)) || reuseExistingSecrets ? 'BROCH_DB_CONNECTION_STRING=db-connection-string' : '')
-  !empty(authClientSecret) || (reuseExistingSecrets && !empty(authProvider)) ? 'AUTHENTICATION__CLIENTSECRET=auth-client-secret' : ''
-  !empty(cloudflareApiToken) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Cloudflare') ? 'CLOUDFLARE_API_TOKEN=cloudflare-api-token' : ''
-  !empty(azureClientSecret) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'AzureDnsServicePrincipal') ? 'AZURE_DNS_CLIENT_SECRET=azure-dns-client-secret' : ''
-  !empty(awsAccessKeyId) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Route53') ? 'AWS_ACCESS_KEY_ID=aws-access-key-id' : ''
-  !empty(awsSecretAccessKey) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'Route53') ? 'AWS_SECRET_ACCESS_KEY=aws-secret-access-key' : ''
-  !empty(doAuthToken) || (reuseExistingSecrets && certMode == 'Auto' && dnsProvider == 'DigitalOcean') ? 'DO_AUTH_TOKEN=do-auth-token' : ''
+  databaseMode == 'Local' ? 'POSTGRES_PASSWORD=postgres-password' : 'BROCH_DB_CONNECTION_STRING=db-connection-string'
+  empty(authProvider) ? '' : 'AUTHENTICATION__CLIENTSECRET=auth-client-secret'
+  certMode == 'Auto' && dnsProvider == 'Cloudflare' ? 'CLOUDFLARE_API_TOKEN=cloudflare-api-token' : ''
+  certMode == 'Auto' && dnsProvider == 'AzureDnsServicePrincipal' ? 'AZURE_DNS_CLIENT_SECRET=azure-dns-client-secret' : ''
+  certMode == 'Auto' && dnsProvider == 'Route53' ? 'AWS_ACCESS_KEY_ID=aws-access-key-id' : ''
+  certMode == 'Auto' && dnsProvider == 'Route53' ? 'AWS_SECRET_ACCESS_KEY=aws-secret-access-key' : ''
+  certMode == 'Auto' && dnsProvider == 'DigitalOcean' ? 'DO_AUTH_TOKEN=do-auth-token' : ''
 ], item => !empty(item)), ';')
 
 // Dedicated data disk for the Local PostgreSQL (databaseMode=Local). A SEPARATE resource so the DB
@@ -826,7 +849,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   // completion sentinel after every secret lands -- so a missed one fails closed rather than starting
   // broch half-configured.) Managed mode additionally waits for the provisioned DB (broch runs EF
   // migrations against it on boot; the chain pulls in the private DNS link too).
-  dependsOn: databaseMode == 'Managed' ? [kvVmPassword, secMasterKey, secDbConn, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken, postgresDatabase] : [kvVmPassword, secMasterKey, secDbConn, secPgPassword, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken]
+  dependsOn: databaseMode == 'Managed' ? [kvVmPassword, secMasterKey, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken, postgresServer] : [kvVmPassword, secMasterKey, secDbConn, secPgPassword, secAuthSecret, secCloudflare, secAzureDnsSecret, secAwsKeyId, secAwsSecret, secDoToken]
 }
 
 // Auto-grant the VM's managed identity "DNS Zone Contributor" on the DNS zone's resource group,

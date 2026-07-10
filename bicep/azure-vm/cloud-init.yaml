@@ -15,10 +15,9 @@
 # AUTHENTICATION__CLIENTSECRET, the DNS-01 tokens) are NOT in this file or in customData -- they are
 # stored in Key Vault and fetched at boot by the VM's user-assigned identity (the kv-fetch runcmd),
 # which appends them to .env. BROCH_MASTER_KEY is the at-rest encryption root -- always
-# customer-supplied (required on a first deployment; the server rejects values under 32 bytes),
-# never generated; a reuseExistingSecrets redeploy may leave the param blank to keep the stored
-# key. For an Existing DB it must be the key that DB was encrypted with (a fresh key can't decrypt
-# stored state). Telemetry/logging and the license are configured IN-APP (Admin UI).
+# customer-supplied (required, >=32 chars), never generated; re-supplied (same value) on every
+# deploy and retry. For an Existing DB it must be the key that DB was encrypted with (a fresh key
+# can't decrypt stored state). Telemetry/logging and the license are configured IN-APP (Admin UI).
 #
 # Placeholders (UPPER_SNAKE, double-underscore delimited) are substituted by
 # main.bicep before base64. The base64 blobs are pure base64 (no underscores), so
@@ -470,9 +469,11 @@ runcmd:
     # exhausted its retries -- must never start broch with missing secrets.
     test -f /run/kv-fetch-complete || { echo "FATAL: Key Vault secret fetch did not complete -- refusing to start broch with missing secrets" >&2; exit 1; }
     # Existing/Managed modes need a DB connection string (Local needs none -- the sentinel already covers
-    # POSTGRES_PASSWORD, which is always in the fetch map). Catch an Existing deploy with an EMPTY
-    # databaseConnectionString here: it is filtered out of the fetch map, so the sentinel can't see it, and
-    # broch would otherwise start and silently fail every DB connection.
+    # POSTGRES_PASSWORD, which is always in the fetch map). Defense-in-depth: the fetch map is derived
+    # from the SELECTIONS, so an Existing deploy with an empty databaseConnectionString already halts at
+    # the fetch (secret listed but never written) and the sentinel gate above fires first -- this check
+    # only bites if the map derivation ever regresses to param-driven, where the missing entry would let
+    # broch start and silently fail every DB connection.
     if [ "__LOCAL_DB__" != "true" ]; then
       grep -q "^BROCH_DB_CONNECTION_STRING=." /opt/broch/.env || { echo "FATAL: databaseMode=Existing/Managed but no database connection string was provided (set databaseConnectionString) -- refusing to start broch" >&2; exit 1; }
     fi
