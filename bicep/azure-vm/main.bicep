@@ -76,6 +76,9 @@ param tlsCertificateKey string = ''
 @secure()
 param registryPassword string = ''
 
+@description('Set true ONLY when deploying into a RECREATED resource group — same name as a deleted one that hosted Broch. Deleting a resource group soft-deletes its Key Vaults for 7 days, and the recreated group derives the SAME vault names; without this flag the deployment fails with "A vault with the same name already exists in deleted state". True recovers the soft-deleted vaults first (their old secrets come back; the values you supply overwrite them — you enter exactly the same fields either way). Leave false everywhere else: recovering fails loudly when no vault of the name exists in ANY state (e.g. the group never hosted Broch). Over a LIVE vault it is a harmless no-op, so a Redeploy retry that carries the flag over from a recovery deployment is safe. Keep the same auth mode (password vs SSH key) as the deleted deployment — an SSH-key deployment created no break-glass vault, so recreating it in password mode with this flag tries to recover a vault that never existed and fails. Cross-region note: recovery requires the recreated group to be in the SAME region as the deleted one; a different region needs `az keyvault purge` instead.')
+param recoverSoftDeletedVaults bool = false
+
 @description('VM size. Default is x86 burstable (widely available). For ARM64 (cheaper, where capacity exists) pick an Ampere size (e.g. Standard_D2ps_v6) AND set imageSku to the arm64 SKU — the broch image is multi-arch.')
 param vmSize string = 'Standard_B2s'
 
@@ -582,9 +585,24 @@ resource vmIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31
   location: location
 }
 
+// Opt-in soft-delete recovery pre-pass for a RECREATED same-name resource group (see the param and
+// kv-recover.bicep for the mechanism). Runs BEFORE the vault resources below, which then apply the
+// full desired state — the fresh VM identity's access policy, enabledForTemplateDeployment, flags —
+// as a normal update over the recovered vaults.
+module kvRecover 'kv-recover.bicep' = if (recoverSoftDeletedVaults) {
+  name: 'broch-kv-recover'
+  params: {
+    location: location
+    kvName: kvName
+    bgKvName: bgKvName
+    recoverBgVault: usePassword
+  }
+}
+
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
   location: location
+  dependsOn: [ kvRecover ]
   properties: {
     tenantId: subscription().tenantId
     sku: { family: 'A', name: 'standard' }
@@ -630,6 +648,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
   name: bgKvName
   location: location
+  dependsOn: [ kvRecover ]
   properties: {
     tenantId: subscription().tenantId
     sku: { family: 'A', name: 'standard' }
