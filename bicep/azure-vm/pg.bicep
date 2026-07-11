@@ -62,8 +62,13 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 // inside the VNet (same construction the parent used when this was composed there). Written on
 // every Managed deploy — the value derives from this module's resolved password, so overwriting is
 // always convergence, never clobbering.
+// The password is SINGLE-QUOTED with embedded quotes doubled — Npgsql's value-quoting rule. Azure
+// accepts ';' and '\'' in a flexible-server password, and interpolating those raw would silently
+// corrupt the pair syntax: every resource deploys, ARM reports success, and broch crash-loops at
+// boot on a malformed connection string with nothing pointing at the password.
+var pgPasswordQuoted = '\'${replace(administratorLoginPassword, '\'', '\'\'')}\''
 resource secDbConnManaged 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'db-connection-string'
-  properties: { value: 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${administratorLoginPassword};SSL Mode=Require' }
+  properties: { value: 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${pgPasswordQuoted};SSL Mode=Require' }
 }
