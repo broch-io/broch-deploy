@@ -4,8 +4,9 @@
 // full desired state — the new VM identity's access policy, enabledForTemplateDeployment, flags.
 //
 // WHY: deleting a resource group only SOFT-DELETES its
-// vaults, and recreating the group under the same name re-derives the same deterministic vault
-// names. Azure then auto-recovers a soft-deleted vault on a plain PUT **only when the request
+// vaults, and recreating the group under the same name IN THE SAME REGION re-derives the same
+// deterministic vault names (names are region-salted, so a different region derives fresh names and
+// never collides). Azure then auto-recovers a soft-deleted vault on a plain PUT **only when the request
 // matches the vault's state at deletion** — accessPolicies and property flags included. The
 // break-glass vault always matches (RBAC mode, constant properties) and recovers invisibly; the
 // app vault NEVER matches, because its recorded state names the PREVIOUS deployment's VM identity

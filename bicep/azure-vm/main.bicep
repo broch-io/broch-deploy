@@ -76,8 +76,11 @@ param tlsCertificateKey string = ''
 @secure()
 param registryPassword string = ''
 
-@description('Set true ONLY when deploying into a RECREATED resource group — same name as a deleted one that hosted Broch. Deleting a resource group soft-deletes its Key Vaults for 7 days, and the recreated group derives the SAME vault names; without this flag the deployment fails with "A vault with the same name already exists in deleted state". True recovers the soft-deleted vaults first (their old secrets come back; the values you supply overwrite them — you enter exactly the same fields either way). Leave false everywhere else: recovering fails loudly when no vault of the name exists in ANY state (e.g. the group never hosted Broch). Over a LIVE vault it is a harmless no-op, so a Redeploy retry that carries the flag over from a recovery deployment is safe. Keep the same auth mode (password vs SSH key) as the deleted deployment — an SSH-key deployment created no break-glass vault, so recreating it in password mode with this flag tries to recover a vault that never existed and fails. Cross-region note: recovery requires the recreated group to be in the SAME region as the deleted one; a different region needs `az keyvault purge` instead.')
+@description('Set true ONLY when deploying into a RECREATED resource group — same name as a deleted one that hosted Broch, in the SAME region. Deleting a resource group soft-deletes its Key Vaults for 7 days, and the recreated group (same name, same region) derives the SAME vault names; without this flag the deployment fails with "A vault with the same name already exists in deleted state". True recovers the soft-deleted vaults first (their old secrets come back; the values you supply overwrite them — you enter exactly the same fields either way). Leave false everywhere else: recovering fails loudly when no vault of the name exists in ANY state (e.g. the group never hosted Broch). Over a LIVE vault it is a harmless no-op, so a Redeploy retry that carries the flag over from a recovery deployment is safe. Keep the same auth mode (password vs SSH key) as the deleted deployment — an SSH-key deployment created no break-glass vault, so recreating it in password mode with this flag tries to recover a vault that never existed and fails (or set recoverBgVault=false, below). Cross-region note: vault names are salted with the region, so recreating the group in a DIFFERENT region derives fresh names — no collision, leave this false; recovery is a same-region concept only.')
 param recoverSoftDeletedVaults bool = false
+
+@description('Only consulted when recoverSoftDeletedVaults=true AND no SSH key is set (password mode). True (default) also recovers the break-glass vault; set false when the DELETED deployment used an SSH key — it never created a break-glass vault, so there is no ghost to recover and the recover PUT would fail loudly. The marketplace wizard sets this automatically from a live probe of the soft-deleted vaults in the subscription; raw-form deployers switching auth modes across a recreate set it by hand.')
+param recoverBgVault bool = true
 
 @description('VM size. Default is x86 burstable (widely available). For ARM64 (cheaper, where capacity exists) pick an Ampere size (e.g. Standard_D2ps_v6) AND set imageSku to the arm64 SKU — the broch image is multi-arch.')
 param vmSize string = 'Standard_B2s'
@@ -565,12 +568,23 @@ module postgresServer 'pg.bicep' = if (databaseMode == 'Managed') {
 // an obvious pair: <vmName>-app-<id> (app secrets, access-policy) and <vmName>-bg-<id> (break-glass, RBAC).
 // The <id> is not cosmetic randomness -- Key Vault names are unique across ALL of Azure, so a bare
 // <vmName>-app would collide whenever two deployments share a vmName (the Marketplace default is 'broch').
-// uniqueString(rg.id, vmName) is DETERMINISTIC: the same deployment always recomputes the same names, so a
-// redeploy re-targets the same vaults (no churn); a different RG/subscription gets distinct ones. These
-// names are also distinct from the old single-vault template's <vmName>-kv-<hash>, so on an UPGRADE the app
-// vault is created DIRECTLY in access-policy mode -- never an RBAC->access-policy flip, which would need
-// Owner/UAA and break Contributor-deployability. Length <= 24: take(vmName,12) + '-app-' (5) + id (7) = 24.
-var kvId = take(uniqueString(resourceGroup().id, vmName), 7)
+// uniqueString(rg.id, vmName, location) is DETERMINISTIC: the same deployment always recomputes the same
+// names, so a redeploy re-targets the same vaults (no churn); a different RG/subscription/region gets
+// distinct ones. The LOCATION salt is deliberate: a soft-deleted vault reserves its global
+// name for 7 days across ALL regions but is recoverable only in its own region. Without the salt, a
+// same-name RG recreated in a DIFFERENT region derived the ghost's exact names and failed with
+// VaultAlreadyExists — unfixable except by purge/wait. With it, cross-region recreation derives fresh
+// names (clean create, ghosts expire harmlessly) while the one recoverable case — same RG name, same
+// region — still re-derives identical names, so the recoverSoftDeletedVaults pre-pass targets the right
+// vaults. These names are also distinct from the old single-vault template's <vmName>-kv-<hash>, so on an
+// UPGRADE the app vault is created DIRECTLY in access-policy mode -- never an RBAC->access-policy flip,
+// which would need Owner/UAA and break Contributor-deployability. Length <= 24: take(vmName,12) + '-app-'
+// (5) + id (7) = 24.
+// The naming scheme is a STABLE CONTRACT, load-bearing beyond this file: the Azure Marketplace offer's
+// create wizard probes soft-deleted vaults by these literal prefixes (with the default vmName) to drive
+// recoverSoftDeletedVaults automatically. Changing the vmName default, the '-app-'/'-bg-' infixes, or
+// this derivation silently disables that auto-recovery.
+var kvId = take(uniqueString(resourceGroup().id, vmName, location), 7)
 var kvBaseName = take(vmName, 12)
 var kvName = '${kvBaseName}-app-${kvId}'
 var bgKvName = '${kvBaseName}-bg-${kvId}'
@@ -595,7 +609,10 @@ module kvRecover 'kv-recover.bicep' = if (recoverSoftDeletedVaults) {
     location: location
     kvName: kvName
     bgKvName: bgKvName
-    recoverBgVault: usePassword
+    // Recover the break-glass vault only when this deployment will have one (password mode) AND the
+    // deleted deployment left a ghost of it (recoverBgVault=false covers the SSH-key-then-password
+    // auth-mode flip, where no bg ghost exists and a recover PUT would fail loudly).
+    recoverBgVault: usePassword && recoverBgVault
   }
 }
 
