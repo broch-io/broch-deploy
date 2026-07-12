@@ -54,7 +54,7 @@ docker compose up -d --build
 docker compose logs -f broch caddy
 
 # 4. Verify
-curl -fsS https://tunnels.example.com/healthz
+curl -fsS https://broch.example.com/healthz
 ```
 
 If broch fails to connect to the DB at startup, the most common causes:

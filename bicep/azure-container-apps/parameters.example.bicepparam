@@ -11,7 +11,7 @@ using './mainTemplate.bicep'
 
 // ── Required ─────────────────────────────────────────────────────────────────
 
-param wildcardHostname = 'tunnels.example.com'
+param wildcardHostname = 'broch.example.com'
 
 // At-rest encryption root. Customer-owned — Broch, LLC never sees it. Wraps the
 // DataProtection keyring (IdP refresh tokens, persisted license token, usage
@@ -57,7 +57,7 @@ param adminRoles = 'broch_admin'
 
 // Custom domain + wildcard TLS (see README — Azure managed certs don't issue
 // wildcards, so a wildcard cert is supplied as a base64 PFX here).
-// param customDomainHostname = 'tunnels.example.com'
-// param customDomainWildcardHostname = '*.tunnels.example.com'
+// param customDomainHostname = 'broch.example.com'
+// param customDomainWildcardHostname = '*.broch.example.com'
 // param sslCertificatePfxBase64 = '<base64-encoded PFX>'
 // param sslCertificatePassword = '<pfx-password>'

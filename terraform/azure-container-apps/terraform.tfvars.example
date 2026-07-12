@@ -2,7 +2,7 @@
 
 # ── Required ─────────────────────────────────────────────────────────────────
 
-wildcard_hostname = "tunnels.example.com"
+wildcard_hostname = "broch.example.com"
 
 # Identity provider — required at boot. Broch has no built-in local login, so
 # no one can sign in (or finish first-run setup) until this is set. Your first

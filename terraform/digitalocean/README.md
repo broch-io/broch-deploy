@@ -57,7 +57,7 @@ terraform apply
 
 # 3. After apply, point DNS at the reserved IP
 echo "Reserved IP: $(terraform output -raw droplet_ip)"
-# Add an A record: *.tunnels.example.com → <reserved IP>
+# Add an A record: *.broch.example.com → <reserved IP>
 
 # 4. Wait for Caddy to issue certs (~30-60s after DNS propagates), then verify
 curl -fsS "$(terraform output -raw broch_url)/healthz"

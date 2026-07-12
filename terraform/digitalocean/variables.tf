@@ -53,7 +53,7 @@ variable "central_server_url" {
 }
 
 variable "wildcard_hostname" {
-  description = "Wildcard hostname for tunnel subdomains (e.g., tunnels.company.com)"
+  description = "Wildcard hostname for tunnel subdomains (e.g., broch.company.com)"
   type        = string
 }
 

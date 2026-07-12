@@ -2,7 +2,7 @@
   { "ParameterKey": "BrochMasterKey", "ParameterValue": "REPLACE-WITH-openssl-rand-base64-48-AND-REUSE-ON-EVERY-REDEPLOY" },
 
   { "ParameterKey": "DnsZone", "ParameterValue": "example.com" },
-  { "ParameterKey": "ShareSubdomain", "ParameterValue": "tunnels" },
+  { "ParameterKey": "ShareSubdomain", "ParameterValue": "broch" },
   { "ParameterKey": "HostedZoneId", "ParameterValue": "Z0123456789ABCDEFGHIJ" },
   { "ParameterKey": "AcmeEmail", "ParameterValue": "ops@example.com" },
 

@@ -2,7 +2,7 @@
 
 # ── Required ─────────────────────────────────────────────────────────────────
 
-wildcard_hostname = "tunnels.example.com"
+wildcard_hostname = "broch.example.com"
 route53_zone_id   = "Z0123456789ABCDEFGHIJ"     # Route 53 hosted zone ID
 
 # Identity provider — required at boot. Broch has no built-in local login, so

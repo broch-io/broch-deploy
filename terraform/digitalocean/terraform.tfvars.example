@@ -4,7 +4,7 @@
 
 do_token            = "dop_v1_<your-digitalocean-api-token>"
 ssh_key_fingerprint = "aa:bb:cc:dd:ee:ff:..."   # `doctl compute ssh-key list`
-wildcard_hostname   = "tunnels.example.com"
+wildcard_hostname   = "broch.example.com"
 
 # DNS provider for Caddy's wildcard cert (DNS-01 challenge).
 # digitalocean, cloudflare (default), and godaddy are supported (single-token DNS-01 providers) --

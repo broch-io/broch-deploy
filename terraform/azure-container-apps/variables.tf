@@ -1,7 +1,7 @@
 # ─── Required ────────────────────────────────────────────────────────────────
 
 variable "wildcard_hostname" {
-  description = "Wildcard DNS hostname for Broch tunnels (e.g. tunnels.example.com). You must own the DNS zone — Azure does not manage your DNS unless you also use Azure DNS."
+  description = "Wildcard DNS hostname for Broch tunnels (e.g. broch.example.com). You must own the DNS zone — Azure does not manage your DNS unless you also use Azure DNS."
   type        = string
 }
 

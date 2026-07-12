@@ -63,7 +63,7 @@ param postgresSkuName string = 'Standard_B1ms'
 @description('Central server URL for license validation and config delivery')
 param centralServerUrl string = 'https://api.broch.io'
 
-@description('Wildcard hostname for tunnel subdomains (e.g., tunnels.company.com). Required — the server fails to start without it.')
+@description('Wildcard hostname for tunnel subdomains (e.g., broch.company.com). Required — the server fails to start without it.')
 @minLength(1)
 param wildcardHostname string
 
@@ -249,16 +249,25 @@ var effectiveDatabasePassword = empty(databasePassword) ? uniqueString(resourceG
 // naming pattern (<name>.postgres.database.azure.com) rather than read off the
 // resource, so resolvedConnectionString never references a conditionally-deployed
 // resource (which would fail to resolve in the other modes).
-var managedPgServerName = '${siteName}-pg'
+// Deterministically salted: flexible-server names are GLOBAL (the server owns
+// <name>.postgres.database.azure.com), and while the siteName DEFAULT already embeds a
+// uniqueString, an explicit siteName override would otherwise derive a bare global name that
+// the first deployment anywhere claims — every later one dies with ServerNameAlreadyExists.
+var managedPgServerName = '${siteName}-pg-${take(uniqueString(resourceGroup().id, siteName, location), 7)}'
 var managedPgFqdn = '${managedPgServerName}.postgres.database.azure.com'
 
 // Resolve connection string by mode: external (Shared), provisioned flexible
 // server (Managed), or the localhost sidecar (Embedded).
+// Passwords are SINGLE-QUOTED with embedded quotes doubled — Npgsql's value-quoting rule.
+// Interpolating them raw would silently corrupt the Key=Value;... pair syntax on any password
+// containing ';' or a quote: everything deploys, ARM reports success, broch crash-loops at boot.
+var managedPgPasswordQuoted = '\'${replace(postgresAdminPassword, '\'', '\'\'')}\''
+var embeddedPgPasswordQuoted = '\'${replace(effectiveDatabasePassword, '\'', '\'\'')}\''
 var resolvedConnectionString = databaseMode == 'Shared'
   ? databaseConnectionString
   : databaseMode == 'Managed'
-      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${postgresAdminPassword};SSL Mode=Require;Trust Server Certificate=true'
-      : 'Host=localhost;Database=brochdb;Username=broch;Password=${effectiveDatabasePassword}'
+      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${managedPgPasswordQuoted};SSL Mode=Require;Trust Server Certificate=true'
+      : 'Host=localhost;Database=brochdb;Username=broch;Password=${embeddedPgPasswordQuoted}'
 
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName

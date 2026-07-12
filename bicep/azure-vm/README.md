@@ -140,7 +140,7 @@ az deployment group show -g broch-rg -n main \
 
 ## TLS — certificate & DNS
 
-You give the domain as two parts — `dnsZone` (a zone you own, e.g. `example.com`) and `shareSubdomain` (the label that hosts tunnels, default `tunnels`) — and Broch composes the public host `<shareSubdomain>.<dnsZone>` (e.g. `tunnels.example.com`), serving that apex and `*.<shareSubdomain>.<dnsZone>`. Capturing them separately means the tunnel host is **always within the zone** by construction. Set `shareSubdomain=''` to serve at the zone apex (`example.com` and `*.example.com`). Broch needs a **wildcard** cert covering both; `certMode` / `dnsProvider` decide how Caddy gets it:
+You give the domain as two parts — `dnsZone` (a zone you own, e.g. `example.com`) and `shareSubdomain` (the label that hosts tunnels, default `broch`) — and Broch composes the public host `<shareSubdomain>.<dnsZone>` (e.g. `broch.example.com`), serving that apex and `*.<shareSubdomain>.<dnsZone>`. Capturing them separately means the tunnel host is **always within the zone** by construction. Set `shareSubdomain=''` to serve at the zone apex (`example.com` and `*.example.com`). Broch needs a **wildcard** cert covering both; `certMode` / `dnsProvider` decide how Caddy gets it:
 
 **`certMode=Auto` — Let's Encrypt, auto-renewing.** Caddy issues + renews the apex + wildcard via ACME DNS-01 (the only ACME challenge that issues wildcards), minting the cert against the DNS provider's API *before* any DNS points at the VM — so you validate first, cut DNS over last.
 
@@ -187,11 +187,11 @@ manage DNS out-of-band. `certMode=Byo` forces Manual (no DNS credential). In Man
 the public IP yourself, **DNS-only / grey-cloud**:
 
 ```text
-A   tunnels.example.com    → <public-ip>
-A   *.tunnels.example.com  → <public-ip>
+A   broch.example.com    → <public-ip>
+A   *.broch.example.com  → <public-ip>
 ```
 
-Sign in at `https://<shareSubdomain>.<dnsZone>` (e.g. `https://tunnels.example.com`) — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
+Sign in at `https://<shareSubdomain>.<dnsZone>` (e.g. `https://broch.example.com`) — the first user holding an `AUTHENTICATION__ADMINROLES` role becomes admin.
 
 ## Secrets & break-glass
 

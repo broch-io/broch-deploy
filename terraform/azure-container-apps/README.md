@@ -88,7 +88,7 @@ az containerapp hostname bind \
 # Re-run as needed if cert provisioning hasn't propagated yet (~5-10 min).
 ```
 
-**Wildcard cert is a separate problem.** Azure Container Apps' built-in managed certs **don't issue wildcards**. For tunnel subdomains (`*.tunnels.example.com`), you have three options:
+**Wildcard cert is a separate problem.** Azure Container Apps' built-in managed certs **don't issue wildcards**. For tunnel subdomains (`*.broch.example.com`), you have three options:
 
 1. **Front Door / Application Gateway with a managed wildcard** in front of Container Apps. Adds ~$35/mo for Front Door but is the cleanest production answer.
 2. **Provision a wildcard cert separately** (Let's Encrypt via certbot+DNS, or commercial CA) and upload it via `az containerapp env certificate upload` + `az containerapp hostname bind`.

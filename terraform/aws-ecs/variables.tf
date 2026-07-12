@@ -2,7 +2,7 @@
 # Required values you must set in terraform.tfvars (see terraform.tfvars.example).
 
 variable "wildcard_hostname" {
-  description = "Wildcard DNS hostname for Broch tunnels (e.g. tunnels.example.com). The ACM cert covers both this hostname AND *.<hostname>. You must own the Route 53 zone."
+  description = "Wildcard DNS hostname for Broch tunnels (e.g. broch.example.com). The ACM cert covers both this hostname AND *.<hostname>. You must own the Route 53 zone."
   type        = string
 }
 

@@ -105,12 +105,12 @@ param adminObjectId string = ''
 ])
 param adminObjectType string = 'User'
 
-@description('DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host: put the tunnel label in shareSubdomain below (dnsZone=example.com + shareSubdomain=tunnels), NOT dnsZone=tunnels.example.com. You must control this zone at a supported DNS provider (see README). Combined with shareSubdomain, it fixes the public hostname: Broch serves <shareSubdomain>.<dnsZone> and *.<shareSubdomain>.<dnsZone>.')
+@description('DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host: put the tunnel label in shareSubdomain below (dnsZone=example.com + shareSubdomain=broch), NOT dnsZone=broch.example.com. You must control this zone at a supported DNS provider (see README). Combined with shareSubdomain, it fixes the public hostname: Broch serves <shareSubdomain>.<dnsZone> and *.<shareSubdomain>.<dnsZone>.')
 @minLength(1)
 param dnsZone string
 
-@description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<dnsZone> and *.tunnels.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain.')
-param shareSubdomain string = 'tunnels'
+@description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "broch" → Broch serves broch.<dnsZone> and *.broch.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain.')
+param shareSubdomain string = 'broch'
 
 @description('Advanced. The DNS zone that actually OWNS the records, when it differs from dnsZone — i.e. the tunnel host lives on a DELEGATED subdomain that is its own DNS zone (e.g. dnsZone=example.com for the URLs, but the delegated zone is share.example.com). Leave EMPTY (default) for the common case where dnsZone IS the DNS zone. When set, auto-DNS writes the A records into THIS zone and derives the record labels as the host relative to it — the same zone the ACME/cert path already resolves, so a valid cert can no longer coexist with an A-record write that 404s. The Azure Marketplace wizard fills this from the DNS zone you pick; direct-Bicep users set it only for a delegated zone.')
 param dnsZoneName string = ''
@@ -219,7 +219,13 @@ param authAudience string = ''
 // Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
 // the server's deterministic FQDN (no resource reference, so it stays valid when Managed is
 // off) — the same construction the azure-container-apps template uses.
-var pgServerName = '${vmName}-pg'
+// The name carries the SAME deterministic salt as the Key Vaults (kvId, below): flexible-server
+// names are GLOBAL — the server owns <name>.postgres.database.azure.com even in private-access
+// mode (the private DNS zone only changes how it resolves inside the VNet, not the reservation).
+// A bare '<vmName>-pg' means the first Managed-mode deployment anywhere claims the name and every
+// later one dies late with ServerNameAlreadyExists; the salt keeps redeploys of the SAME
+// RG+region converging on the same server while making every other deployment distinct.
+var pgServerName = '${vmName}-pg-${kvId}'
 var pgAdminUser = 'brochadmin'
 var pgDatabaseName = 'brochdb'
 // The private DNS zone is required for VNet injection but must NOT be used to build the
