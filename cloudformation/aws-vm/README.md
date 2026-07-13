@@ -117,6 +117,16 @@ sudo docker compose -f /opt/broch/docker-compose.yml logs -f caddy
 
 Then sign in at `https://<ShareSubdomain>.<DnsZone>`.
 
+## Recovering an existing installation
+
+Recovering a broken box is a **stack update / redeploy of your existing stack — not a fresh deploy**. The state that matters is the database; the instance is stateless and rebuildable. The one hazard is the **version**: Broch runs EF migrations on boot, so coming back at a *newer* `BrochVersion` than the database silently migrates it **irreversibly** — recovery must return at the version you were running, and upgrades stay a separate, deliberate step.
+
+The recovery path preserves the version for free: a **stack update** (replace the instance, fix parameters) defaults every parameter — `BrochVersion` included — to **Use previous value**. Leave it that way. (`DatabaseMode=Local` is the exception: an update that *replaces* the instance is **not** supported there — the new instance can't attach the data volume the old one still holds. Recover Local via the explicit delete + snapshot-restore + redeploy path under [Database modes](#database-modes) / [Teardown](#teardown), and pin `BrochVersion` to the value you find below.)
+
+**A stack re-create is the risky path**: a fresh template/quick-create launch (e.g. from a re-published marketplace listing) defaults `BrochVersion` to the *latest* release — newer than your database if you have not upgraded since. Before deleting the old stack, note its **Parameters** tab and enter that `BrochVersion` in the new one.
+
+Where to find the version you were running: the (old) stack's **Parameters** tab when the box is dead; Admin → System (or `BROCH_VERSION` in `/opt/broch/.env` over SSM) when it is alive.
+
 ## Teardown
 
 ```sh
