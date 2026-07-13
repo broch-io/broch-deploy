@@ -19,13 +19,16 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.26.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.30.0}
     restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
       # Public IP broch advertises for auto-DNS (seeded at deploy, admin-overridable). See with-postgres.
       API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
+      # Trusted-proxy CIDRs so Caddy's X-Forwarded-For/-Proto are honored (first boot only,
+      # admin-overridable). See with-postgres for the full rationale.
+      API__TRUSTEDPROXYCIDRS: ${BROCH_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a

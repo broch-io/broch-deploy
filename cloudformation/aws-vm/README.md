@@ -59,7 +59,7 @@ aws cloudformation deploy \
   --parameter-overrides \
       BrochMasterKey="$BROCH_MASTER_KEY" \
       DnsZone=example.com \
-      ShareSubdomain=tunnels \
+      ShareSubdomain=broch \
       HostedZoneId=Z0123456789ABCDEFGHIJ \
       AcmeEmail=ops@example.com \
       DbSubnetIds=subnet-aaaa\\,subnet-bbbb \

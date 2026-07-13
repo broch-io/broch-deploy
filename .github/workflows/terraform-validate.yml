@@ -113,3 +113,61 @@ jobs:
         # Quoted glob: cfn-lint expands ** itself (recursive), so new cloudformation/<target>/
         # templates are covered automatically.
         run: cfn-lint "cloudformation/**/*.yaml"
+
+  # cfn-lint's YAML loader is MORE PERMISSIVE than AWS CloudFormation's parser: an unquoted
+  # `?`, `:`, `#`, or `,` inside a `{ default: ... }` flow scalar passes cfn-lint but is
+  # rejected at CreateChangeSet — and nothing per-PR exercises a real deploy (the aws-vm
+  # smokes run on dispatch/schedule/push, and the auto-DNS ones are secret-gated no-ops), so
+  # the class merged once already (the DnsAutoRecords ParameterLabel). PyYAML's
+  # parser has AWS's strictness, so strict-parsing the RENDERED template (build.sh output —
+  # what a customer actually deploys) reproduces AWS's parse error per-PR, cloud-free.
+  # CFN short-form intrinsics (!Ref/!Sub/!If ...) are legal YAML local tags that SafeLoader
+  # alone would reject, so a pass-through multi-constructor accepts the tags while keeping
+  # the strict parse — this covers the whole template, not just the tag-free region.
+  cfn-strict-parse:
+    name: strict-parse rendered aws-vm template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Render the deployable template (build.sh)
+        run: ./cloudformation/aws-vm/build.sh
+      # Don't rely on the runner image's ambient PyYAML — install explicitly, matching the
+      # boot-test caddy-dns-sync job and the cfn-lint job above.
+      - name: Install PyYAML
+        run: python3 -m pip install --user --quiet pyyaml
+      - name: Strict-parse dist/template.yaml (PyYAML = AWS parser strictness)
+        run: |
+          python3 - <<'PY'
+          import yaml
+
+          class StrictCfnLoader(yaml.SafeLoader):
+              pass
+
+          def cfn_tag(loader, tag_suffix, node):
+              # Accept CloudFormation short-form intrinsics; the value itself is irrelevant —
+              # only the strict PARSE matters here.
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              return loader.construct_mapping(node)
+
+          StrictCfnLoader.add_multi_constructor('!', cfn_tag)
+
+          path = 'cloudformation/aws-vm/dist/template.yaml'
+          with open(path) as f:
+              yaml.load(f, Loader=StrictCfnLoader)
+          print(f'{path}: strict YAML parse OK')
+          PY
+
+  # The pinned broch image version is deliberately concrete (never :latest) and appears in many
+  # template sites. scripts/BROCH_VERSION is the single source of truth; the bump script owns
+  # every site. This guard fails any PR where a site drifts from BROCH_VERSION (a hand-edited
+  # pin) or where a pin moved so the script's catalog no longer finds it.
+  pin-sync:
+    name: broch image pin sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify every pin site matches BROCH_VERSION
+        run: python3 scripts/bump-broch-version.py --check

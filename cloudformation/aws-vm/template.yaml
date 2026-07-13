@@ -31,7 +31,7 @@ Metadata:
     ParameterLabels:
       BrochMasterKey: { default: "Master key (BROCH_MASTER_KEY) - customer-owned, required" }
       DnsZone: { default: DNS zone you own (e.g. example.com) }
-      ShareSubdomain: { default: Subdomain for tunnel URLs (default "tunnels"; empty = zone apex) }
+      ShareSubdomain: { default: Subdomain for tunnel URLs (default "broch"; empty = zone apex) }
       DnsZoneName: { default: "Delegated DNS zone that owns the records (advanced; empty = DnsZone is the zone)" }
       HostedZoneId: { default: Route 53 hosted zone for that domain }
       DnsAutoRecords: { default: "Auto-create DNS A records? (Auto = deploy then sign in)" }
@@ -62,13 +62,13 @@ Parameters:
   # disagree with the zone.
   DnsZone:
     Type: String
-    Description: DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host — put the tunnel label in ShareSubdomain (DnsZone example.com + ShareSubdomain tunnels), NOT DnsZone tunnels.example.com. Combined with ShareSubdomain it fixes the public hostname. For DnsProvider=Route53 this is the domain of HostedZoneId.
+    Description: DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host — put the tunnel label in ShareSubdomain (DnsZone example.com + ShareSubdomain broch), NOT DnsZone broch.example.com. Combined with ShareSubdomain it fixes the public hostname. For DnsProvider=Route53 this is the domain of HostedZoneId.
     AllowedPattern: "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
     ConstraintDescription: must be a valid domain name, e.g. example.com.
   ShareSubdomain:
     Type: String
-    Default: tunnels
-    Description: Subdomain of DnsZone that hosts the public tunnel URLs. Default "tunnels" → Broch serves tunnels.<DnsZone> and *.tunnels.<DnsZone>. Leave EMPTY to serve tunnels at the zone apex (<DnsZone> and *.<DnsZone>). Usually a single label; a dotted value (e.g. a.b) is accepted for a deeper subdomain.
+    Default: broch
+    Description: Subdomain of DnsZone that hosts the public tunnel URLs. Default "broch" → Broch serves broch.<DnsZone> and *.broch.<DnsZone>. Leave EMPTY to serve tunnels at the zone apex (<DnsZone> and *.<DnsZone>). Usually a single label; a dotted value (e.g. a.b) is accepted for a deeper subdomain.
     # Empty (apex) or a DNS subdomain of one or more labels. render-secrets.sh interpolates this into
     # a single-quoted shell literal inside Fn::Sub, so the hostname charset excludes both the '$'
     # (CFn-var) and "'" (quoting) hazards.
@@ -327,7 +327,7 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.29.0"
+    Default: "1.30.0"
     Description: >-
       Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
       replacement never silently rolls the box across an EF-migration boundary; new releases of this

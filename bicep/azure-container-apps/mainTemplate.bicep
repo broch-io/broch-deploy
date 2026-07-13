@@ -31,7 +31,7 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 param masterKey string
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.26.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.30.0'
 
 // ============================================================================
 // Database Parameters
@@ -63,7 +63,7 @@ param postgresSkuName string = 'Standard_B1ms'
 @description('Central server URL for license validation and config delivery')
 param centralServerUrl string = 'https://api.broch.io'
 
-@description('Wildcard hostname for tunnel subdomains (e.g., tunnels.company.com). Required — the server fails to start without it.')
+@description('Wildcard hostname for tunnel subdomains (e.g., broch.company.com). Required — the server fails to start without it.')
 @minLength(1)
 param wildcardHostname string
 
@@ -249,16 +249,47 @@ var effectiveDatabasePassword = empty(databasePassword) ? uniqueString(resourceG
 // naming pattern (<name>.postgres.database.azure.com) rather than read off the
 // resource, so resolvedConnectionString never references a conditionally-deployed
 // resource (which would fail to resolve in the other modes).
-var managedPgServerName = '${siteName}-pg'
+// Deterministically salted: flexible-server names are GLOBAL (the server owns
+// <name>.postgres.database.azure.com), and while the siteName DEFAULT already embeds a
+// uniqueString, an explicit siteName override would otherwise derive a bare global name that
+// the first deployment anywhere claims — every later one dies with ServerNameAlreadyExists.
+var managedPgServerName = '${siteName}-pg-${take(uniqueString(resourceGroup().id, siteName, location), 7)}'
 var managedPgFqdn = '${managedPgServerName}.postgres.database.azure.com'
+
+// Managed-mode VNet integration (databaseMode=Managed ONLY — Embedded/Shared deploy none of
+// the resources below and their behaviour is unchanged). The Flexible Server is VNet-injected
+// into a delegated subnet with a private DNS zone and NO public endpoint, and the Container App
+// environment is integrated into the SAME VNet so it reaches the DB privately. This replaces the
+// previous 'publicNetworkAccess: Enabled' + all-Azure (0.0.0.0) firewall rule, which exposed the
+// DB to any Azure-hosted source in ANY tenant, gated only by the admin password. Mirrors the
+// bicep/azure-vm sibling's private-Postgres pattern (delegated subnet + private DNS zone).
+// Subnet IDs are built by resourceId() (not read off the conditional VNet) so they resolve in all
+// modes; ordering is enforced with explicit dependsOn on the VNet / DNS link.
+var managedVnetName = '${siteName}-vnet'
+var managedAcaSubnetName = 'aca-infra'
+var managedPgSubnetName = 'postgres'
+var managedAcaSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', managedVnetName, managedAcaSubnetName)
+var managedPgSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', managedVnetName, managedPgSubnetName)
+var managedPgDnsZoneName = '${siteName}-db.private.postgres.database.azure.com'
 
 // Resolve connection string by mode: external (Shared), provisioned flexible
 // server (Managed), or the localhost sidecar (Embedded).
+// Passwords are SINGLE-QUOTED with embedded quotes doubled — Npgsql's value-quoting rule.
+// Interpolating them raw would silently corrupt the Key=Value;... pair syntax on any password
+// containing ';' or a quote: everything deploys, ARM reports success, broch crash-loops at boot.
+var managedPgPasswordQuoted = '\'${replace(postgresAdminPassword, '\'', '\'\'')}\''
+var embeddedPgPasswordQuoted = '\'${replace(effectiveDatabasePassword, '\'', '\'\'')}\''
 var resolvedConnectionString = databaseMode == 'Shared'
   ? databaseConnectionString
   : databaseMode == 'Managed'
-      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${postgresAdminPassword};SSL Mode=Require;Trust Server Certificate=true'
-      : 'Host=localhost;Database=brochdb;Username=broch;Password=${effectiveDatabasePassword}'
+      // SSL Mode=Require with server-certificate VALIDATION (Npgsql's default under Require).
+      // No 'Trust Server Certificate=true' override: Azure Database for PostgreSQL Flexible
+      // Server presents a DigiCert-chained certificate Npgsql validates against the OS trust
+      // store, so disabling validation would only open the door to an on-path MITM of the DB
+      // session (which carries every DataProtection-wrapped secret and all tunnel/user data).
+      // Matches the azure-vm sibling (pg.bicep) and the Terraform ACA module — both validating.
+      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${managedPgPasswordQuoted};SSL Mode=Require'
+      : 'Host=localhost;Database=brochdb;Username=broch;Password=${embeddedPgPasswordQuoted}'
 
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName
@@ -271,7 +302,20 @@ var resolvedEnvironmentName = !empty(environmentName) ? environmentName : '${sit
 resource containerAppEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
   name: resolvedEnvironmentName
   location: location
+  // Managed mode: the environment must exist inside the VNet before it can inject the
+  // infrastructure subnet. Ignored in Embedded/Shared (no VNet is deployed).
+  dependsOn: databaseMode == 'Managed' ? [managedVnet] : []
   properties: {
+    // Managed mode: integrate the environment into the dedicated VNet's infrastructure subnet so
+    // the app can reach the VNet-private Flexible Server. internal:false keeps EXTERNAL (public)
+    // ingress — the app's public *.azurecontainerapps.io FQDN and any custom domain still work;
+    // only the DB is private. Null in Embedded/Shared, so those modes stay non-VNet as before.
+    // NOTE: vnetConfiguration is immutable once the environment exists — switching an already-
+    // deployed environment into/out of Managed mode requires recreating the environment.
+    vnetConfiguration: databaseMode == 'Managed' ? {
+      infrastructureSubnetId: managedAcaSubnetId
+      internal: false
+    } : null
     appLogsConfiguration: ((telemetryProvider == 'ApplicationInsights') && empty(applicationInsightsConnectionString)) ? {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -310,9 +354,69 @@ var managedPgTier = startsWith(postgresSkuName, 'Standard_B')
   ? 'Burstable'
   : (startsWith(postgresSkuName, 'Standard_D') ? 'GeneralPurpose' : 'MemoryOptimized')
 
+// Dedicated VNet for Managed mode: one subnet delegated to the Container App environment and
+// one delegated to the Flexible Server. The DB is injected into its subnet and reachable ONLY
+// from inside this VNet (no public endpoint), replacing the former all-Azure firewall opening.
+resource managedVnet 'Microsoft.Network/virtualNetworks@2023-09-01' = if (databaseMode == 'Managed') {
+  name: managedVnetName
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: ['10.2.0.0/16'] }
+    subnets: [
+      {
+        // Container App environment infrastructure subnet (workload-profiles environments
+        // require a subnet delegated to Microsoft.App/environments, /27 or larger).
+        name: managedAcaSubnetName
+        properties: {
+          addressPrefix: '10.2.0.0/23'
+          delegations: [
+            {
+              name: 'aca-env'
+              properties: { serviceName: 'Microsoft.App/environments' }
+            }
+          ]
+        }
+      }
+      {
+        // Flexible Server VNet-injection subnet.
+        name: managedPgSubnetName
+        properties: {
+          addressPrefix: '10.2.2.0/28'
+          delegations: [
+            {
+              name: 'pgflex'
+              properties: { serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers' }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+
+// Private DNS zone for the Flexible Server, linked to the VNet so both the DB subnet and the
+// Container App environment resolve the server's FQDN to its private address. Mirrors azure-vm.
+resource managedPgDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (databaseMode == 'Managed') {
+  name: managedPgDnsZoneName
+  location: 'global'
+}
+
+resource managedPgDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (databaseMode == 'Managed') {
+  parent: managedPgDnsZone
+  name: '${siteName}-pg-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: managedVnet.id }
+  }
+}
+
 resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (databaseMode == 'Managed') {
   name: managedPgServerName
   location: location
+  // The delegated subnet and the linked private DNS zone must both exist before the server is
+  // VNet-injected; the DNS link transitively depends on the VNet (and thus its subnets).
+  dependsOn: [managedPgDnsLink]
   sku: {
     name: postgresSkuName
     tier: managedPgTier
@@ -331,22 +435,14 @@ resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' =
     highAvailability: {
       mode: 'Disabled'
     }
+    // VNet-injected + private DNS: NO public endpoint (publicNetworkAccess cannot be Enabled
+    // alongside a delegated subnet), so the DB is unreachable from other tenants / the public
+    // internet. Only workloads in managedVnet (the Container App) can connect, over validating
+    // TLS as the admin. This is the azure-vm sibling's posture, adapted to ACA's VNet model.
     network: {
-      publicNetworkAccess: 'Enabled'
+      delegatedSubnetResourceId: managedPgSubnetId
+      privateDnsZoneArmResourceId: managedPgDnsZone.id
     }
-  }
-}
-
-// Allow Azure-internal traffic (the Container App's Consumption egress has no stable
-// IP to allow-list individually) to reach the server. Connections are still gated by
-// SSL + the admin password. For stricter isolation, VNet-integrate the environment and
-// use a private endpoint — tracked as future hardening.
-resource postgresAzureFirewall 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (databaseMode == 'Managed') {
-  parent: postgresServer
-  name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
   }
 }
 
@@ -369,7 +465,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
   // In Managed mode, wait for the flexible server + database before starting the app:
   // Broch runs migrations on boot, and the server takes several minutes to provision.
   // The dependency is ignored in modes where these resources are not deployed.
-  dependsOn: databaseMode == 'Managed' ? [postgresDatabase, postgresAzureFirewall] : []
+  dependsOn: databaseMode == 'Managed' ? [postgresDatabase] : []
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {

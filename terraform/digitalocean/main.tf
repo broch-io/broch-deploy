@@ -47,9 +47,15 @@ resource "digitalocean_droplet" "broch" {
   #
   # The IdP client secret (auth_client_secret) and the DNS-01 token (dns_api_token) DO still
   # ride in user_data: they are values you hold off-box and the droplet must receive them
-  # somehow, and DigitalOcean has no per-droplet managed-secret store (the azure-vm Key Vault
-  # boot-fetch equivalent). A future revision may fetch these from a secret store at first
-  # boot; the residual exposure is documented in README.md ("Secret exposure").
+  # somehow, and DigitalOcean has no per-droplet managed-secret store (the azure-vm Key Vault /
+  # aws-vm Secrets Manager boot-fetch equivalent). cloud-init installs a DOCKER-USER firewall rule
+  # that DROPS bridge traffic to the link-local metadata endpoint (169.254.169.254), so a compromised
+  # container in the (bridge-networked) stack can no longer read user_data via metadata -- closing the
+  # in-container path. (DOCKER-USER only governs bridge-forwarded traffic; a --network=host container
+  # would bypass it, but the shipped stack uses none.)
+  # The DO-API read path (any holder of the account token) is the remaining residual, documented in
+  # README.md ("Secret exposure") with scoping + rotation guidance. A future revision may close it
+  # fully by fetching these from a secret store at first boot.
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     deployment_name    = var.deployment_name
     central_server_url = var.central_server_url

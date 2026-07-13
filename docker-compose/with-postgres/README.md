@@ -7,8 +7,8 @@ Production-shape Broch on a single VM: server + bundled Postgres + Caddy as a re
 ```
                   ┌──────────────────────────────────────────┐
 internet ──────▶  │ caddy (80/443/443udp)                    │
-                  │   ↳ TLS for tunnels.example.com (apex)   │
-                  │   ↳ TLS for *.tunnels.example.com (wild) │
+                  │   ↳ TLS for broch.example.com (apex)     │
+                  │   ↳ TLS for *.broch.example.com (wild)   │
                   │   ↳ ACME DNS-01 via Cloudflare           │
                   └────────────────┬─────────────────────────┘
                                    │ HTTP
@@ -38,8 +38,8 @@ Only Caddy is reachable from outside the host. Broch and Postgres are on a priva
 In your Cloudflare zone, create:
 
 ```
-A     tunnels.example.com    →  <your-VM-public-IPv4>
-AAAA  tunnels.example.com    →  <your-VM-public-IPv6>    (if available)
+A     broch.example.com    →  <your-VM-public-IPv4>
+AAAA  broch.example.com    →  <your-VM-public-IPv6>    (if available)
 ```
 
 You do **not** need to pre-create wildcard records — Caddy uses DNS-01 to prove zone control and Let's Encrypt issues the wildcard from there. The wildcard subdomains resolve via your apex routing, not via DNS.
@@ -60,7 +60,7 @@ docker compose up -d --build
 docker compose logs -f caddy
 
 # 4. Once you see "certificate obtained successfully", verify the endpoint
-curl -fsS https://tunnels.example.com/healthz
+curl -fsS https://broch.example.com/healthz
 ```
 
 ## What's required in `.env`

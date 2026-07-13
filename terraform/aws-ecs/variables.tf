@@ -2,7 +2,7 @@
 # Required values you must set in terraform.tfvars (see terraform.tfvars.example).
 
 variable "wildcard_hostname" {
-  description = "Wildcard DNS hostname for Broch tunnels (e.g. tunnels.example.com). The ACM cert covers both this hostname AND *.<hostname>. You must own the Route 53 zone."
+  description = "Wildcard DNS hostname for Broch tunnels (e.g. broch.example.com). The ACM cert covers both this hostname AND *.<hostname>. You must own the Route 53 zone."
   type        = string
 }
 
@@ -75,7 +75,7 @@ variable "auth_audience" {
 variable "broch_image" {
   description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a task redeploy never silently rolls the service across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or :latest to float (not recommended in production)."
   type        = string
-  default     = "ghcr.io/broch-io/broch:1.26.0"
+  default     = "ghcr.io/broch-io/broch:1.30.0"
 }
 
 variable "aws_region" {
