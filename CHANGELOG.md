@@ -8,6 +8,32 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.30.0
+
+### Added
+
+- **Trusted reverse-proxy CIDR seeding on first boot.** Set `API__TRUSTEDPROXYCIDRS` to your ingress/proxy network and new deployments will trust forwarded headers from it automatically — no more manually configuring Trusted Proxy CIDRs in the admin UI just to get correct client-IP attribution in audit logs, rate limiting, and checkout redirects. An admin-configured value always takes precedence on later boots.
+
+### Changed
+
+- **More resilient Azure Marketplace deployments.** The wizard now checks PostgreSQL region availability before deploying (avoiding partial failures), automatically detects and recovers soft-deleted Key Vaults when you recreate a resource group under the same name, and points you at Azure's native Redeploy button as the one clear way to retry a failed deployment. The default tunnel subdomain is now `broch` (e.g. `broch.yourzone.com`) instead of `tunnels`.
+
+### Security
+
+- **Closed a login denial-of-service.** Behind a reverse proxy that isn't marked as trusted, an unauthenticated attacker could previously exhaust the shared login rate limit and lock out every user; the limiter now tracks real clients separately.
+- **Login now fails closed on backend errors.** A transient database fault during sign-in could previously issue a degraded session token that bypassed seat revocation and consumed an extra licensed seat; it's now rejected with a retryable error instead.
+- **`broch share --inspect` is hardened against DNS-rebinding attacks** that could otherwise exfiltrate captured request/response data through a malicious webpage.
+
+### Fixed
+
+- **More reliable tunnel reconnects.** Fixed a race that could kill an in-flight Share/Access reconnect mid-handshake, and a CLI crash under bursty multi-port forwarding load.
+- **Creating a Share policy with a duplicate or over-length name now returns a clear error** instead of a generic server failure.
+- **Azure Marketplace warns about delegated DNS zones.** If your domain's zone is delegated to a non-Azure DNS provider, the wizard now tells you automatic A-record management won't apply and to create the records yourself.
+
+### Deploy impact
+
+- **Sessions issued during a past authentication-backend fault are invalidated.** Login now always stamps an identity issuer on the token; any rare pre-existing session that lacked one (only possible from a past transient database fault during sign-in) will be signed out and asked to re-authenticate. This resolves itself on next login — no action needed.
+
 ## 1.29.0
 
 ### Added
