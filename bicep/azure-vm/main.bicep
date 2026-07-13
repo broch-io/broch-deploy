@@ -159,7 +159,7 @@ param azureClientId string = ''
 @description('GCP project ID hosting the Cloud DNS zone — dnsProvider=GoogleCloudDns.')
 param gcpProject string = ''
 
-@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set to a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
+@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Redeploying an existing installation? Enter the version it currently runs — the Deployments history of the resource group shows it, and the Redeploy button on the prior deployment pre-fills it — because a newer version migrates the database irreversibly. Set a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
 param brochVersion string = '1.30.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')

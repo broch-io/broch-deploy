@@ -247,6 +247,22 @@ Rules of the retry:
 
 The Azure Marketplace wizard is deliberately **first-deployments-only** (conditional required/visible fields, which the raw form cannot do); the Redeploy button is the one retry surface.
 
+## Recovering an existing installation
+
+Recovering a broken or dead box (VM corrupted, region incident, accidental delete) is a **redeploy of the prior deployment — not a fresh deploy**. The state that matters is the database; the VM is stateless and rebuildable. The one hazard is the **version**: Broch runs EF migrations on boot, so a redeploy at a *newer* version than the database silently migrates it **irreversibly** — recovery must come back at the version you were running, and upgrades stay a separate, deliberate step.
+
+The recovery path preserves the version for free:
+
+- **Azure portal** — resource group → **Deployments** → select the prior successful deployment → **Redeploy**. Every non-secret parameter — `brochVersion` included — comes back prefilled; re-enter the master key (same value) as in [Retrying a failed deployment](#retrying-a-failed-deployment).
+- **CLI** — re-run `az deployment group create` with your original parameter file.
+
+**Do not recover through a fresh marketplace wizard run.** The listing republishes with each Broch release, so a fresh wizard defaults `brochVersion` to the *latest* release — newer than your database if you have not upgraded since. If the wizard is your only option, overwrite the version default with the version you were running.
+
+Where to find the version you were running:
+
+- **Box dead**: resource group → **Deployments** → the prior deployment → **Inputs** shows `brochVersion`.
+- **Box alive**: Admin → System shows the server version, or read `BROCH_VERSION` from `/opt/broch/.env` via `az vm run-command`.
+
 ## Pulling a new Broch image
 
 The documented upgrade is the same in-place flow for everyone — edit one line + recreate:

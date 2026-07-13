@@ -331,7 +331,10 @@ Parameters:
     Description: >-
       Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
       replacement never silently rolls the box across an EF-migration boundary; new releases of this
-      template bump this default. Set a newer tag to upgrade deliberately, or "latest" to float.
+      template bump this default. Redeploying an existing installation from a fresh stack? Enter the
+      version it currently runs (the old stack's Parameters tab shows it; a stack UPDATE keeps it
+      automatically) — a newer version migrates the database irreversibly. Set a newer tag to
+      upgrade deliberately, or "latest" to float.
       1.29.0+ is required for DnsAutoRecords=Auto on the token-based providers
       (Cloudflare/GoogleCloudDns/DigitalOcean), which serve /internal/public-ip to
       caddy-dynamicdns; Route53 uses native RecordSets and needs no specific version.
