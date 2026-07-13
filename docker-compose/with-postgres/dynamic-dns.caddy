@@ -34,11 +34,11 @@
 #   dynamic_dns {
 #       # Same provider + credential as tls.caddy (Cloudflare shown):
 #       provider cloudflare {env.CLOUDFLARE_API_TOKEN}
-#       # <zone> then the labels to keep pointed here. For tunnels.example.com in
-#       # zone example.com:  example.com tunnels *.tunnels
+#       # <zone> then the labels to keep pointed here. For broch.example.com in
+#       # zone example.com:  example.com broch *.broch
 #       # If the wildcard host IS your zone apex, use:  example.com @ *
 #       domains {
-#           example.com tunnels *.tunnels
+#           example.com broch *.broch
 #       }
 #       ip_source simple_http http://broch:8080/internal/public-ip
 #       versions ipv4

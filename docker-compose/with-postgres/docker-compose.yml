@@ -22,7 +22,7 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.26.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.30.0}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -34,6 +34,14 @@ services:
       # writes the apex+wildcard A records at it. Seeded at deploy (the VM's allocated IP), and
       # admin-overridable at runtime in broch. Optional/empty for a plain docker-direct run.
       API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
+      # Trusted-proxy CIDRs for X-Forwarded-For/-Proto: broch trusts only loopback by default
+      # (fail-closed), but Caddy reaches it from this stack's Docker network, so without this
+      # seed audit logs attribute every request to the proxy IP and the checkout return URL
+      # falls back to http. 172.16.0.0/12 covers Docker's default address pool; membership in
+      # this stack's network is the trust boundary (broch's port is not published to the host).
+      # Override if your Docker daemon uses custom address pools. First boot only — the value
+      # in Admin → Share Settings wins afterwards.
+      API__TRUSTEDPROXYCIDRS: ${BROCH_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
       BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a

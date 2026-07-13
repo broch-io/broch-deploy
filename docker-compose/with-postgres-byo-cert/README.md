@@ -34,8 +34,8 @@ internet ──────▶  │ caddy (80/443/443udp)                    │
 
 - Docker 24+ with `docker compose` v2
 - A wildcard cert + key pair in PEM format covering BOTH:
-  - The apex hostname (e.g. `tunnels.example.com`)
-  - The wildcard (`*.tunnels.example.com`)
+  - The apex hostname (e.g. `broch.example.com`)
+  - The wildcard (`*.broch.example.com`)
   - One cert with both as SANs is typical; two separate certs also works but requires Caddyfile edits
 - Routine to refresh those files before expiry (see [Renewal](#renewal))
 - An identity provider (Auth0, Entra ID, Okta, or any OIDC) — Broch has no built-in local login, so you configure your IdP at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
@@ -61,7 +61,7 @@ docker compose up -d
 
 # 4. Verify (give Postgres a minute on first run)
 docker compose ps
-curl -fsS https://tunnels.example.com/healthz
+curl -fsS https://broch.example.com/healthz
 ```
 
 ## Renewal
@@ -73,10 +73,10 @@ Set up your own renewal pipeline:
 ```sh
 # certbot example — run as a cron job a few times a week
 certbot certonly --dns-<your-provider> \
-  -d 'tunnels.example.com' -d '*.tunnels.example.com' \
-  --deploy-hook "cp /etc/letsencrypt/live/tunnels.example.com/fullchain.pem \
+  -d 'broch.example.com' -d '*.broch.example.com' \
+  --deploy-hook "cp /etc/letsencrypt/live/broch.example.com/fullchain.pem \
                     $(pwd)/certs/fullchain.pem && \
-                 cp /etc/letsencrypt/live/tunnels.example.com/privkey.pem \
+                 cp /etc/letsencrypt/live/broch.example.com/privkey.pem \
                     $(pwd)/certs/privkey.pem && \
                  docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile"
 ```

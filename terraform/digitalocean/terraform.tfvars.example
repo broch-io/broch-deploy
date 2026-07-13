@@ -4,7 +4,7 @@
 
 do_token            = "dop_v1_<your-digitalocean-api-token>"
 ssh_key_fingerprint = "aa:bb:cc:dd:ee:ff:..."   # `doctl compute ssh-key list`
-wildcard_hostname   = "tunnels.example.com"
+wildcard_hostname   = "broch.example.com"
 
 # DNS provider for Caddy's wildcard cert (DNS-01 challenge).
 # digitalocean, cloudflare (default), and godaddy are supported (single-token DNS-01 providers) --
@@ -29,7 +29,7 @@ auth_tenant_id      = "<azure-tenant-id>"       # required for AzureAd / EntraEx
 # deployment_name     = "broch-server"
 # volume_size         = 10
 # image               = "ghcr.io/broch-io/broch"
-# image_tag           = "1.26.0"   # defaults to a pinned version; set a newer tag to upgrade, or "latest" to float
+# image_tag           = "1.30.0"   # defaults to a pinned version; set a newer tag to upgrade, or "latest" to float
 # auth_provider       = "AzureAd"
 # auth_instance       = "https://login.microsoftonline.com/"
 # ssh_allowed_cidrs   = ["203.0.113.0/24"]   # break-glass SSH; default [] = no port-22 rule

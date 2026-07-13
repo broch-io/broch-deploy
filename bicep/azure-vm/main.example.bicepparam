@@ -38,9 +38,9 @@ param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database
 
 // --- Domain + TLS (bring your own domain) ---
 // The public hostname is composed from the zone + share subdomain: this serves
-// tunnels.example.com and *.tunnels.example.com. Set shareSubdomain = '' to serve at the apex.
+// broch.example.com and *.broch.example.com. Set shareSubdomain = '' to serve at the apex.
 param dnsZone = 'example.com'
-param shareSubdomain = 'tunnels'
+param shareSubdomain = 'broch'
 param certMode = 'Auto' // Auto (Let's Encrypt) | Byo (your own cert)
 param acmeEmail = 'ops@example.com'
 // DNS-01 provider (certMode=Auto). Pick one and set its credentials:

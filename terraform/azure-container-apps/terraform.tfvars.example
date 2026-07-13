@@ -2,7 +2,7 @@
 
 # ── Required ─────────────────────────────────────────────────────────────────
 
-wildcard_hostname = "tunnels.example.com"
+wildcard_hostname = "broch.example.com"
 
 # Identity provider — required at boot. Broch has no built-in local login, so
 # no one can sign in (or finish first-run setup) until this is set. Your first
@@ -28,7 +28,7 @@ auth_admin_roles   = "broch_admin"
 # A Broch license is activated in-app on first sign-in (Admin → License) — there
 # is no license env var. Buy a license at https://broch.io/pricing.
 
-# broch_image         = "ghcr.io/broch-io/broch:1.26.0"   # defaults to a pinned version; set a newer tag to upgrade
+# broch_image         = "ghcr.io/broch-io/broch:1.30.0"   # defaults to a pinned version; set a newer tag to upgrade
 # location            = "eastus"
 # name_prefix         = "broch"
 # container_cpu       = 0.5

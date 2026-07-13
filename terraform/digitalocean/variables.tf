@@ -53,7 +53,7 @@ variable "central_server_url" {
 }
 
 variable "wildcard_hostname" {
-  description = "Wildcard hostname for tunnel subdomains (e.g., tunnels.company.com)"
+  description = "Wildcard hostname for tunnel subdomains (e.g., broch.company.com)"
   type        = string
 }
 
@@ -66,7 +66,7 @@ variable "image" {
 variable "image_tag" {
   description = "Docker image tag. Defaults to a concrete pinned version (NOT latest) so a droplet recreate never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or \"latest\" to float (not recommended in production)."
   type        = string
-  default     = "1.26.0"
+  default     = "1.30.0"
 }
 
 

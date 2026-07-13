@@ -175,8 +175,8 @@ resource "azurerm_container_app" "broch" {
 #
 # Container Apps' built-in managed certs handle the apex hostname fine but
 # DON'T issue wildcards. So:
-#   - The apex (tunnels.example.com) uses an Azure-managed cert
-#   - The wildcard (*.tunnels.example.com) needs a cert you provision yourself
+#   - The apex (broch.example.com) uses an Azure-managed cert
+#   - The wildcard (*.broch.example.com) needs a cert you provision yourself
 #     and upload to the environment
 #
 # Until you upload a wildcard cert, tunnel URLs will return cert errors. The

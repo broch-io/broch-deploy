@@ -202,6 +202,11 @@ resource "aws_ecs_task_definition" "broch" {
       { name = "ASPNETCORE_ENVIRONMENT", value = "Production" },
       { name = "ASPNETCORE_URLS", value = "http://0.0.0.0:8080" },
       { name = "API__WILDCARDHOSTNAME", value = var.wildcard_hostname },
+      # Trusted-proxy CIDRs so the ALB's X-Forwarded-For/-Proto are honored (broch trusts only
+      # loopback by default). The ALB fronts the task from this VPC's subnets, and the task's
+      # security group only admits the ALB on 8080. First boot only — the value in
+      # Admin -> Share Settings wins afterwards.
+      { name = "API__TRUSTEDPROXYCIDRS", value = var.vpc_cidr },
       { name = "DATABASE__PROVIDER", value = "PostgreSQL" },
       # Identity provider — part of the boot floor (the client secret is injected
       # separately via Secrets Manager below). Unused provider-specific values

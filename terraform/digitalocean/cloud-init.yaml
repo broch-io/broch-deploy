@@ -27,6 +27,11 @@ write_files:
           environment:
             - ASPNETCORE_ENVIRONMENT=Production
             - ASPNETCORE_URLS=http://+:8080
+            # Trusted-proxy CIDRs so Caddy's X-Forwarded-For/-Proto are honored (broch trusts
+            # only loopback by default). Covers Docker's default address pool, which the
+            # broch-network bridge below is allocated from. First boot only -- the value in
+            # Admin -> Share Settings wins afterwards.
+            - API__TRUSTEDPROXYCIDRS=172.16.0.0/12
             - DATABASE__PROVIDER=PostgreSQL
             # POSTGRES_PASSWORD is generated on-box at first boot and lives in .env (compose
             # interpolates $${POSTGRES_PASSWORD} from /opt/broch/.env). It is never baked into
@@ -203,6 +208,57 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
+  # Metadata-firewall helper -- drops container access to the DO link-local metadata endpoint.
+  - path: /opt/broch/metadata-firewall.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # Drop traffic from the docker bridges to the DigitalOcean link-local metadata endpoint.
+      #
+      # Droplet user_data carries the IdP client secret (AUTHENTICATION__CLIENTSECRET) and the DNS-01
+      # token, and DigitalOcean serves it at http://169.254.169.254/metadata/v1/user_data to ANY
+      # process in ANY container on the box. The broch/caddy/postgres containers have no legitimate use
+      # for droplet metadata, so drop it in DOCKER-USER -- the chain Docker guarantees is traversed for
+      # bridge-forwarded traffic -- closing the in-container read path. (The DO-API path, readable by an
+      # account-token holder, is a separate residual documented in README.md; this does not address it.)
+      #
+      # This is the zero-operator-cost partial the azure-vm (Key Vault) / aws-vm (Secrets Manager)
+      # boot-fetch achieves fully; DigitalOcean has no per-droplet managed-secret store to fetch from.
+      #
+      # Installed by broch-metadata-firewall.service before dockerd starts (Before=docker.service) and
+      # re-applied on any dockerd restart (PartOf=docker.service). On reboot the kernel tables start empty
+      # so the rule must be rebuilt before containers come back; across a mid-uptime daemon restart Docker
+      # preserves DOCKER-USER, so the re-apply is a harmless no-op that guarantees the rule regardless.
+      set -eu
+      # Create the chain ourselves: this runs before dockerd (Before=docker.service), so DOCKER-USER may
+      # not exist yet. dockerd reuses this same chain and adds the FORWARD -> DOCKER-USER jump itself.
+      iptables -N DOCKER-USER 2>/dev/null || true
+      iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
+
+  # Installs the metadata firewall before dockerd starts containers, re-applied on any dockerd restart.
+  - path: /etc/systemd/system/broch-metadata-firewall.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Broch -- block container access to the droplet metadata endpoint
+      # The DROP rule must be in DOCKER-USER BEFORE dockerd starts containers. The compose services carry
+      # restart: unless-stopped, so on reboot dockerd itself resurrects them as docker.service starts -- an
+      # After=docker.service rule would land after the containers are already running, leaving a window on
+      # 169.254.169.254. Before=docker.service installs the rule first (the script creates the DOCKER-USER
+      # chain itself with iptables -N; Docker preserves user rules in that chain across its start and only
+      # adds the FORWARD -> DOCKER-USER jump). PartOf=docker.service restarts this oneshot with
+      # docker.service, so a mid-uptime dockerd restart re-applies the rule before the containers return too.
+      Before=docker.service
+      PartOf=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/opt/broch/metadata-firewall.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
 runcmd:
   # Swap: the s-1vcpu-1gb default has too little RAM for the one-time `xcaddy`
   # build of the custom Caddy image (a Go compile of the DNS plugins), which gets
@@ -235,6 +291,21 @@ runcmd:
   # failure here is far better than a silently broken DB / non-recoverable Data Protection keys.
   - mkdir -p /mnt/broch-data
   - |
+    # Fail-closed mount guard for broch.service, written FIRST. It is load-bearing on SUBSEQUENT
+    # REBOOTS: cloud-init/runcmd runs only on first boot, but systemd still starts broch.service on
+    # every boot (WantedBy=multi-user.target), so a later boot where the volume fails to remount needs
+    # a guard runcmd cannot provide. (On first boot the mount hard-fail above already halts the rest of
+    # runcmd -- items concatenate into one #!/bin/sh script -- before broch.service is ever enabled.)
+    # ConditionPathIsMountPoint keeps broch.service from starting -- at first boot OR any reboot --
+    # unless the block volume is actually mounted at /mnt/broch-data; RequiresMountsFor orders it
+    # after the fstab-generated .mount so it WAITS for the mount instead of racing it. Without this,
+    # an unmounted volume lets docker bind-mount an EMPTY /mnt/broch-data/postgresql on the ephemeral
+    # rootfs and Postgres initialises a blank database -- silent data loss on the recreate upgrade
+    # path. Mirrors bicep/azure-vm + cloudformation/aws-vm (which guard /var/lib/docker/volumes the
+    # same way, with a comment naming this exact hazard). Error-check the write: if it silently failed
+    # (e.g. a full OS disk) broch would later start unguarded against an empty path -- abort loud.
+    mkdir -p /etc/systemd/system/broch.service.d
+    printf '[Unit]\nConditionPathIsMountPoint=/mnt/broch-data\nRequiresMountsFor=/mnt/broch-data\n' > /etc/systemd/system/broch.service.d/10-require-data-mount.conf || { echo "FATAL: could not write broch mount guard" >&2; exit 1; }
     DEV_LINK=/dev/disk/by-id/scsi-0DO_Volume_${deployment_name}-data
     # Let any pending udev events drain so the by-id symlink is materialised.
     udevadm settle --timeout=60 || true
@@ -253,11 +324,24 @@ runcmd:
       echo "FATAL: block volume not attached; aborting cloud-init." >&2
       exit 1
     fi
-    # Only format if not already formatted
-    if ! blkid "$DEVICE" | grep -q ext4; then
-      mkfs.ext4 -F "$DEVICE"
-    fi
-    mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data
+    # Settle udev BEFORE format-detection so a just-attached volume's uevents are fully replayed
+    # (the wait loop breaks the instant the symlink exists, which can be before the kernel finishes).
+    udevadm settle --timeout=30 || true
+    # blkid exit codes (util-linux): 0=filesystem found (KEEP -- a reattached volume with surviving
+    # Postgres data + master key + password), 2=nothing found (a BLANK volume -- the normal
+    # first-deploy case -> mkfs), 4=usage error, 8=ambiguous/garbled probe. mkfs ONLY on rc 2. On
+    # ANYTHING else (4/8 or an unexpected code) ABORT rather than `mkfs -F`, which would WIPE a volume
+    # that may hold the surviving data dir. The old `if ! blkid "$DEVICE" | grep -q ext4; then mkfs -F`
+    # reformatted on EVERY non-zero blkid (a transient probe error, rc 4/8, or any non-ext4 signature)
+    # -- a data-loss bug. Branch on the exact code instead, matching azure-vm/aws-vm. (An abort leaves
+    # the volume unformatted+unmounted; the drop-in above keeps broch from starting blank. runcmd is
+    # first-boot-only -- recover by redeploying once the volume is healthy.)
+    blkid_rc=0
+    blkid "$DEVICE" >/dev/null 2>&1 || blkid_rc=$?
+    if [ "$blkid_rc" -eq 2 ]; then mkfs.ext4 -F "$DEVICE"; elif [ "$blkid_rc" -ne 0 ]; then echo "FATAL: blkid rc $blkid_rc on $DEVICE -- not a clean blank(2)/formatted(0) result; refusing to format a possibly-populated volume" >&2; exit 1; fi
+    # Fail LOUD on mount failure: an unchecked mount silently drops the Postgres data dir, master key,
+    # and DB password onto the ephemeral rootfs (destroyed on the next recreate). runcmd has no `set -e`.
+    mount -o defaults,nofail,discard "$DEVICE" /mnt/broch-data || { echo "FATAL: mounting the data volume at /mnt/broch-data failed -- refusing to continue (postgres password + master key would land on ephemeral rootfs)" >&2; exit 1; }
     # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
     # would schedule systemd-fsck@<dev> which can escalate to emergency.target if the volume is slow
     # to attach or absent (a real race on DigitalOcean). Mirrors the azure-vm side.
@@ -329,7 +413,11 @@ runcmd:
       chmod 0600 /opt/broch/.env
     fi
 
-  # Start Broch
+  # Start Broch via the (guarded) systemd unit rather than a bare `docker compose up -d`, so the
+  # ConditionPathIsMountPoint drop-in gates FIRST boot too: if the data volume did not mount,
+  # broch.service is skipped (fails closed) instead of initialising Postgres on the ephemeral rootfs.
   - systemctl daemon-reload
-  - systemctl enable broch.service
-  - cd /opt/broch && docker compose up -d
+  # Install the metadata-endpoint DROP rule BEFORE any container starts, so a container can never read
+  # the IdP client secret / DNS-01 token from droplet user_data via 169.254.169.254.
+  - systemctl enable --now broch-metadata-firewall.service
+  - systemctl enable --now broch.service

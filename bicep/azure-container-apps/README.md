@@ -74,8 +74,8 @@ Broch issues tunnels on `*.<wildcardHostname>`, so you need the base host **and*
 # Convert your wildcard PFX to base64 and pass it in:
 #   sslCertificatePfxBase64 = "$(base64 -w0 wildcard.pfx)"
 #   sslCertificatePassword  = "<pfx-password>"
-#   customDomainHostname         = "tunnels.example.com"
-#   customDomainWildcardHostname = "*.tunnels.example.com"
+#   customDomainHostname         = "broch.example.com"
+#   customDomainWildcardHostname = "*.broch.example.com"
 ```
 
 Before the binding validates, Azure needs to prove you control the domain:
@@ -86,9 +86,9 @@ APP_FQDN=$(az containerapp show -g broch-rg -n <siteName> --query properties.con
 VERIF_ID=$(az containerapp env show -g broch-rg -n <siteName>-env --query properties.customDomainConfiguration.customDomainVerificationId -o tsv)
 
 # Add DNS records at your provider:
-#   A     tunnels.example.com        → IP of $APP_FQDN
-#   TXT   asuid.tunnels.example.com  → $VERIF_ID
-#   A/CNAME for the wildcard *.tunnels.example.com → same target
+#   A     broch.example.com        → IP of $APP_FQDN
+#   TXT   asuid.broch.example.com  → $VERIF_ID
+#   A/CNAME for the wildcard *.broch.example.com → same target
 ```
 
 Re-run the deploy once DNS has propagated and the cert/binding will complete.

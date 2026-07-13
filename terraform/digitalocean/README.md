@@ -57,7 +57,7 @@ terraform apply
 
 # 3. After apply, point DNS at the reserved IP
 echo "Reserved IP: $(terraform output -raw droplet_ip)"
-# Add an A record: *.tunnels.example.com → <reserved IP>
+# Add an A record: *.broch.example.com → <reserved IP>
 
 # 4. Wait for Caddy to issue certs (~30-60s after DNS propagates), then verify
 curl -fsS "$(terraform output -raw broch_url)/healthz"
@@ -146,13 +146,15 @@ Block storage volume snapshots via the DigitalOcean console are also fine and co
 This module is **not** yet at the azure-vm secret-handling baseline. Two classes of secret are handled differently:
 
 - **Generated on-box, never in user_data (good):** the `BROCH_MASTER_KEY` at-rest encryption root and the **bundled Postgres password** are both generated on the droplet at first boot and written to `/opt/broch/.env` (mode `0600`). They never enter the droplet's cloud-init user_data. Both are also persisted to the block volume (`/mnt/broch-data/master-key`, `/mnt/broch-data/postgres-password`, mode `0600`) and restored on a droplet recreate, so the surviving database stays both reachable and decryptable (see [Upgrading the broch image](#upgrading-the-broch-image)).
-- **Still rendered into user_data (residual exposure):** the **IdP client secret** (`auth_client_secret`) and the **DNS-01 API token** (`dns_api_token`) are interpolated into cloud-init user_data by `templatefile()`. DigitalOcean droplet user_data is retrievable from the link-local metadata endpoint (`http://169.254.169.254/metadata/v1/user_data`), which is reachable from **inside any container on the droplet** by default, and via the DO API to anyone holding the account token.
+- **Still rendered into user_data (residual exposure, in-container path now closed):** the **IdP client secret** (`auth_client_secret`) and the **DNS-01 API token** (`dns_api_token`) are interpolated into cloud-init user_data by `templatefile()`. DigitalOcean droplet user_data is retrievable from the link-local metadata endpoint (`http://169.254.169.254/metadata/v1/user_data`) and via the DO API to anyone holding the account token.
 
-  **Risk:** a Broch RCE — or any compromised container on the box — can curl the metadata endpoint and lift your IdP client secret and DNS token without ever touching the host filesystem. These are *your own* secrets in *your own* DO account (not a vendor-owned sink), so the blast radius is your IdP app registration and DNS zone, but it is a real, avoidable exposure relative to the azure-vm module, which fetches these from Key Vault at boot so they never enter user_data.
+  **In-container read path — closed for the shipped stack.** cloud-init installs a firewall rule (`DOCKER-USER` chain) that **drops all bridge traffic to `169.254.169.254`**, installed *before* dockerd starts containers and re-applied on any dockerd restart by `broch-metadata-firewall.service`. The broch/caddy/postgres containers all run on the default bridge network, so a Broch RCE — or any compromised container in the stack — can **no longer** curl the metadata endpoint to lift these secrets. (`DOCKER-USER` only governs bridge-forwarded traffic, so a container a customer later runs with `--network=host` would bypass it; the shipped stack uses none.) This is the zero-operator-cost equivalent of the azure-vm (Key Vault) / aws-vm (Secrets Manager) boot-fetch, which DigitalOcean cannot match directly because it has no per-droplet managed-secret store.
 
-  **Mitigations today:** scope the IdP client secret and the DNS token as tightly as your provider allows (e.g. a Cloudflare token limited to `Zone:Read + DNS:Edit` on the one zone); rotate them if you suspect a container compromise.
+  **DO-API read path — remaining residual.** Anyone holding a **DigitalOcean API token** for the account can still read the droplet's user_data through the DO API (the firewall rule only governs on-box container traffic, not the control-plane API). These are *your own* secrets in *your own* DO account (not a vendor-owned sink), so the blast radius is your IdP app registration and DNS zone.
 
-  A future revision may close this gap by fetching `auth_client_secret` and `dns_api_token` from a secret store at first boot (mirroring the azure-vm Key Vault boot-fetch) instead of baking them into user_data — DigitalOcean has no per-droplet managed-secret store, so the likely shape is a first-boot pull from DO Spaces or an external vault. Until then, use the scoping + rotation mitigations above.
+  **Mitigations for the residual:** scope the IdP client secret and the DNS token as tightly as your provider allows (e.g. a Cloudflare token limited to `Zone:Read + DNS:Edit` on the one zone); guard DO API tokens and rotate the IdP/DNS secrets if you suspect either an account-token or a container compromise.
+
+  A future revision may close the DO-API path too by fetching `auth_client_secret` and `dns_api_token` from a secret store at first boot (mirroring the azure-vm Key Vault boot-fetch) instead of baking them into user_data — DigitalOcean has no per-droplet managed-secret store, so the likely shape is a first-boot pull from DO Spaces or an external vault.
 
 ## Teardown
 

@@ -3,8 +3,8 @@
 # Caddy handles TLS termination for both the API endpoint and the wildcard
 # tunnel subdomains. We use ACME DNS-01 with Cloudflare so a single config
 # can mint BOTH:
-#   - the apex cert  (e.g. tunnels.example.com)
-#   - the wildcard   (*.tunnels.example.com)  used by every tunnel
+#   - the apex cert  (e.g. broch.example.com)
+#   - the wildcard   (*.broch.example.com)  used by every tunnel
 #
 # DNS-01 is required because HTTP-01 can't issue wildcard certs. If your
 # DNS isn't on Cloudflare, swap the `dns cloudflare ...` line for your
