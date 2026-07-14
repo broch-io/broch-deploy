@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Automated review is intentionally disabled in this repository. Changes arrive
+# here already reviewed through the internal promotion pipeline; keeping PR
+# threads clean is deliberate. A review can still be requested on demand by
+# commenting `@coderabbitai review` on a PR.
+reviews:
+  auto_review:
+    enabled: false
+  review_status: false
