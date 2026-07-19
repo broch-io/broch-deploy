@@ -471,10 +471,23 @@ Resources:
   # the instance can read it at boot via the instance role (keeping it out of UserData). Storing
   # the same customer value every deploy is idempotent; a generated key would change on redeploy
   # and could no longer decrypt an existing database's keyring.
+  #
+  # Every secret Name is SALTED with this stack incarnation's UUID (the third segment of
+  # AWS::StackId). Secrets Manager delete is a 30-day soft delete with no in-template override
+  # (no RecoveryWindowInDays property in CloudFormation), so a delete+redeploy under the same
+  # stack name — or a retry after a rolled-back first deploy — would otherwise collide with the
+  # soft-deleted ghost ("You can't create this secret because a secret with this name is already
+  # scheduled for deletion"). A new stack incarnation mints a new UUID → fresh names → no
+  # collision, ever. The UUID is stable across in-place UPDATEs of the same stack, so updates
+  # never rename (and thus never replace) the secrets. Consumers reference by !Ref/ARN or fetch
+  # by the SAME salted name (render-secrets builds it from the identical Sub variables) — nothing
+  # depends on an unsalted name.
   MasterKeySecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-master-key"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-master-key"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Description: Broch at-rest encryption root (BROCH_MASTER_KEY). Customer-supplied; the same value must be supplied on every redeploy that reuses the DB.
       SecretString: !Ref BrochMasterKey
 
@@ -482,7 +495,9 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Condition: IsNewServer
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-db-password"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-db-password"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Description: Master password for the provisioned RDS Postgres.
       GenerateSecretString:
         SecretStringTemplate: '{"username":"broch"}'
@@ -494,11 +509,26 @@ Resources:
   # operator supplied LocalDbAdminPassword. render-secrets.sh reads it at boot and writes it as
   # POSTGRES_PASSWORD in .env; the with-postgres compose feeds it to both the postgres service and
   # broch's connection string. ExcludePunctuation so it is safe unquoted through the compose/.env.
+  #
+  # UpdateReplacePolicy Retain: Name is immutable, so a template-version upgrade that renames this
+  # secret REPLACES it — and a replaced GenerateSecretString secret mints a brand-new value, while
+  # the on-box Postgres data dir keeps the password it was initialised with. Retaining the old
+  # secret on replacement keeps that original password readable (live, under the old name) so an
+  # operator can recover it and pass it as LocalDbAdminPassword. Deliberately NOT set on the other
+  # generated secrets: the RDS master password re-syncs from the new secret via its dynamic
+  # reference, and the ExistingServer carve re-ALTERs the broch role on the next boot.
+  # DeletionPolicy stays Delete (explicit for the W3011 pairing): on stack DELETION the secret
+  # soft-deletes normally — the salted names make that ghost harmless to any future deploy, and
+  # retaining on delete would leak a live secret per deleted stack. Only REPLACEMENT retains.
   LocalDbPasswordSecret:
     Type: AWS::SecretsManager::Secret
     Condition: IsLocal
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-local-db-password"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-local-db-password"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Description: Password for the bundled on-box Postgres (DatabaseMode=Local).
       SecretString: !If [HasLocalDbPassword, !Ref LocalDbAdminPassword, !Ref "AWS::NoValue"]
       GenerateSecretString: !If
@@ -514,7 +544,9 @@ Resources:
     # W1030: "" default looks empty to cfn-lint; ExistingServer makes it mandatory (Rule enforces).
     Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-db-admin-password"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-db-admin-password"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref DbAdminPassword
   # Generated password for the least-priv broch role (ExcludePunctuation so it's safe to
   # carry through the carve SQL and the connection string unquoted).
@@ -522,7 +554,9 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Condition: IsExistingServer
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-role-password"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-role-password"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Description: Password for the least-privilege broch role carved onto the existing server.
       GenerateSecretString:
         PasswordLength: 32
@@ -540,7 +574,9 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Condition: HasCloudflareToken
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-cloudflare-token"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-cloudflare-token"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref CloudflareApiToken
 
   ConnStringSecret:
@@ -556,14 +592,18 @@ Resources:
         config:
           ignore_checks: [W1030]
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-conn-string"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-conn-string"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref DatabaseConnectionString
 
   AuthClientSecretSecret:
     Type: AWS::SecretsManager::Secret
     Condition: HasAuthClientSecret
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-auth-client-secret"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-auth-client-secret"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref AuthClientSecret
 
   # BYO-cert: the supplied wildcard cert + key (base64 PEM), fetched at boot and
@@ -573,35 +613,45 @@ Resources:
     Condition: IsByoCert
     Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-tls-cert"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-tls-cert"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref TlsCertificate
   TlsKeySecret:
     Type: AWS::SecretsManager::Secret
     Condition: IsByoCert
     Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-tls-key"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-tls-key"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref TlsCertificateKey
 
   DoTokenSecret:
     Type: AWS::SecretsManager::Secret
     Condition: HasDoToken
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-do-token"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-do-token"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref DoAuthToken
 
   GcpCredsSecret:
     Type: AWS::SecretsManager::Secret
     Condition: HasGcpCreds
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-gcp-creds"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-gcp-creds"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref GcpCredentialsJson
 
   RegistryPasswordSecret:
     Type: AWS::SecretsManager::Secret
     Condition: HasRegistryPassword
     Properties:
-      Name: !Sub "${AWS::StackName}/broch-registry-password"
+      Name: !Sub
+        - "${AWS::StackName}-${Salt}/broch-registry-password"
+        - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       SecretString: !Ref RegistryPassword
 
   # ── Networking ──────────────────────────────────────────────────────────────
@@ -761,12 +811,17 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                # Scoped to THIS stack's secret namespace. Secrets Manager appends a
-                # random 6-char suffix to every secret's ARN, so the trailing "-*"
-                # matches "<stack>/broch-*-AbCdEf" — covering the master key, DB
+                # Scoped to THIS stack incarnation's secret namespace (the StackId-salted
+                # prefix — see the Secrets section). Secrets Manager appends a random
+                # 6-char suffix to every secret's ARN, so the trailing "-*" matches
+                # "<stack>-<uuid>/broch-*-AbCdEf" — covering the master key, DB
                 # password, and any of the conditional user-secrets without having to
-                # enumerate (and !If) each one that may or may not exist.
-                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/broch-*"
+                # enumerate (and !If) each one that may or may not exist. The salt also
+                # means this role can NOT read a previous incarnation's (soft-deleted)
+                # secrets of the same stack name.
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}-${Salt}/broch-*"
+                  - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
         - PolicyName: cfn-helpers
           PolicyDocument:
             Version: "2012-10-17"
@@ -965,28 +1020,31 @@ Resources:
                       fi
                     ) || true
 
-                    get() { aws --region "${AWS::Region}" secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text; }
+                    # Secret names carry the stack incarnation's StackId-UUID salt (see the Secrets
+                    # section); ${StackSalt} below is rendered by Fn::Sub from the SAME expression the
+                    # secret Names use, so the fetch prefix can never drift from the created names.
+                    get() { aws --region "${AWS::Region}" secretsmanager get-secret-value --secret-id "${AWS::StackName}-${StackSalt}/$1" --query SecretString --output text; }
 
                     # Values are written single-quoted: docker compose's dotenv parser treats a
                     # single-quoted value as a literal, so a '#', space, ';' or '$' inside a
                     # secret (e.g. a connection-string password) is preserved verbatim instead
                     # of being read as an inline comment / interpolation.
-                    printf "BROCH_MASTER_KEY='%s'\n" "$(get "${AWS::StackName}/broch-master-key")" >> "$env_file"
+                    printf "BROCH_MASTER_KEY='%s'\n" "$(get "broch-master-key")" >> "$env_file"
 
                     case "${DatabaseMode}" in
                       NewServer)
-                        db_pass="$(get "${AWS::StackName}/broch-db-password" | python3 -c 'import sys,json; print(json.load(sys.stdin)["password"])')"
+                        db_pass="$(get "broch-db-password" | python3 -c 'import sys,json; print(json.load(sys.stdin)["password"])')"
                         printf "BROCH_DB_CONNECTION_STRING='Host=${DbEndpoint};Port=5432;Database=brochdb;Username=broch;Password=%s;SSL Mode=Require'\n" "$db_pass" >> "$env_file"
                         ;;
                       ExistingDatabase)
-                        printf "BROCH_DB_CONNECTION_STRING='%s'\n" "$(get "${AWS::StackName}/broch-conn-string")" >> "$env_file"
+                        printf "BROCH_DB_CONNECTION_STRING='%s'\n" "$(get "broch-conn-string")" >> "$env_file"
                         ;;
                       ExistingServer)
                         # Carve a brochdb + least-priv broch role onto the customer's existing server,
                         # using the admin creds ONCE (not persisted to .env). Idempotent across reboots.
                         apt-get install -y postgresql-client
-                        admin_pass="$(get "${AWS::StackName}/broch-db-admin-password")"
-                        broch_pass="$(get "${AWS::StackName}/broch-role-password")"
+                        admin_pass="$(get "broch-db-admin-password")"
+                        broch_pass="$(get "broch-role-password")"
                         export PGPASSWORD="$admin_pass"
                         psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d postgres -v brochpw="$broch_pass" <<'SQL'
                     SELECT 'CREATE ROLE broch LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'broch')\gexec
@@ -1012,35 +1070,35 @@ Resources:
                         # (Host=postgres) from POSTGRES_PASSWORD, so we write only that here -- no
                         # BROCH_DB_CONNECTION_STRING. The compose defaults POSTGRES_DB=brochdb and
                         # POSTGRES_USER=broch. Postgres keeps this password from first data-dir init.
-                        printf "POSTGRES_PASSWORD='%s'\n" "$(get "${AWS::StackName}/broch-local-db-password")" >> "$env_file"
+                        printf "POSTGRES_PASSWORD='%s'\n" "$(get "broch-local-db-password")" >> "$env_file"
                         ;;
                     esac
 
                     if [ "${HasCfToken}" = "true" ]; then
-                      printf "CLOUDFLARE_API_TOKEN='%s'\n" "$(get "${AWS::StackName}/broch-cloudflare-token")" >> "$env_file"
+                      printf "CLOUDFLARE_API_TOKEN='%s'\n" "$(get "broch-cloudflare-token")" >> "$env_file"
                     fi
                     if [ "${HasAuthSecret}" = "true" ]; then
-                      printf "AUTHENTICATION__CLIENTSECRET='%s'\n" "$(get "${AWS::StackName}/broch-auth-client-secret")" >> "$env_file"
+                      printf "AUTHENTICATION__CLIENTSECRET='%s'\n" "$(get "broch-auth-client-secret")" >> "$env_file"
                     fi
                     if [ "${IsByo}" = "true" ]; then
                       # base64 PEM -> files. The Byo Caddyfile reads these; the private key is 0600.
-                      get "${AWS::StackName}/broch-tls-cert" | base64 -d > /opt/broch/certs/fullchain.pem
-                      get "${AWS::StackName}/broch-tls-key" | base64 -d > /opt/broch/certs/privkey.pem
+                      get "broch-tls-cert" | base64 -d > /opt/broch/certs/fullchain.pem
+                      get "broch-tls-key" | base64 -d > /opt/broch/certs/privkey.pem
                       chmod 0644 /opt/broch/certs/fullchain.pem
                       chmod 0600 /opt/broch/certs/privkey.pem
                     fi
                     if [ "${DoTokenSet}" = "true" ]; then
-                      printf "DO_AUTH_TOKEN='%s'\n" "$(get "${AWS::StackName}/broch-do-token")" >> "$env_file"
+                      printf "DO_AUTH_TOKEN='%s'\n" "$(get "broch-do-token")" >> "$env_file"
                     fi
                     if [ "${GcpCredsSet}" = "true" ]; then
                       # SA JSON read by Caddy via GOOGLE_APPLICATION_CREDENTIALS (set in .env).
-                      get "${AWS::StackName}/broch-gcp-creds" | base64 -d > /opt/broch/certs/gcp-sa.json
+                      get "broch-gcp-creds" | base64 -d > /opt/broch/certs/gcp-sa.json
                       chmod 0600 /opt/broch/certs/gcp-sa.json
                     fi
                     if [ "${HasRegistryPw}" = "true" ]; then
                       # --password-stdin via a shell variable: no token ever reaches argv,
                       # and a token containing quotes can't break the command.
-                      reg_pass="$(get "${AWS::StackName}/broch-registry-password")"
+                      reg_pass="$(get "broch-registry-password")"
                       printf '%s' "$reg_pass" | docker login "${RegistryServer}" -u "${RegistryUsername}" --password-stdin
                     fi
                     chmod 0600 "$env_file"
@@ -1051,6 +1109,8 @@ Resources:
                     IsByo: !If [IsByoCert, "true", "false"]
                     DoTokenSet: !If [HasDoToken, "true", "false"]
                     GcpCredsSet: !If [HasGcpCreds, "true", "false"]
+                    # The stack incarnation UUID — MUST be the same expression the secret Names use.
+                    StackSalt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: !Ref InstanceType

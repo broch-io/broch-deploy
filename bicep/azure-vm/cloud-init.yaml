@@ -137,12 +137,12 @@ write_files:
       Description=Broch (Docker Compose)
       Requires=docker.service
       After=docker.service
-      # databaseMode=Local: do NOT start the stack until the data disk is actually mounted, so Postgres
-      # can never initialise an empty database on the OS disk. RequiresMountsFor waits for the mount; a
-      # Local-only ConditionPathIsMountPoint drop-in (written by cloud-init) additionally refuses to
-      # start when nothing is mounted there -- nofail lets the mount unit go active empty on a
-      # disk-detached reboot, and the condition is what fails closed in that case. No-op for other modes
-      # (RequiresMountsFor resolves to the always-active root mount; no drop-in is written).
+      # Do NOT start the stack until the data disk is actually mounted, so the named volumes (Caddy's
+      # cert store; Local-mode Postgres) can never initialise empty on the OS disk. The disk is attached
+      # in EVERY database mode. RequiresMountsFor waits for the mount; a ConditionPathIsMountPoint
+      # drop-in (written by cloud-init) additionally refuses to start when nothing is mounted there --
+      # nofail lets the mount unit go active empty on a disk-detached reboot, and the condition is what
+      # fails closed in that case.
       RequiresMountsFor=/var/lib/docker/volumes
       [Service]
       Type=oneshot
@@ -228,77 +228,77 @@ runcmd:
       fi
     fi
 
-  # databaseMode=Local only: a dedicated data disk is attached at LUN 0, holding the bundled
-  # Postgres data. Mount it at /var/lib/docker/volumes BEFORE Docker installs, so the named volume
-  # lives on it and survives VM recreation. Gated on __LOCAL_DB__ so it is a true no-op (not a 60s
-  # wait) for Existing/Managed, and so a MISSING disk in Local mode FAILS LOUDLY instead of silently
-  # putting the database on the OS disk (which a reprovision would then destroy). Azure attaches the
-  # disk asynchronously, so wait for the LUN-0 symlink. Format ONLY when blank -- a reattached disk
-  # keeps its data (blkid finds the existing filesystem and we skip mkfs).
+  # EVERY database mode: a dedicated data disk is attached at LUN 0, backing all Docker named
+  # volumes -- Caddy's cert/ACME store (caddy_data) always, so a VM recreate re-uses the issued
+  # certificate instead of re-requesting from Let's Encrypt (whose production rate limits lock out
+  # repeated re-issuance), plus the bundled Postgres data in Local mode. Mount it at
+  # /var/lib/docker/volumes BEFORE Docker installs, so the named volumes live on it and survive VM
+  # recreation. A MISSING disk FAILS LOUDLY instead of silently putting that state on the OS disk
+  # (which a reprovision would then destroy). Azure attaches the disk asynchronously, so wait for
+  # the LUN-0 symlink. Format ONLY when blank -- a reattached disk keeps its data (blkid finds the
+  # existing filesystem and we skip mkfs).
   - |
-    if [ "__LOCAL_DB__" = "true" ]; then
-      # Write the fail-closed guard FIRST -- before anything below can `exit`. runcmd items are
-      # INDEPENDENT subprocesses, so an `exit 1` in this block does NOT stop the later Docker-install or
-      # `systemctl enable --now broch.service` items. The ConditionPathIsMountPoint drop-in is what
-      # actually keeps broch from starting against an unmounted (empty) /var/lib/docker/volumes and
-      # re-initialising a blank database, so it MUST exist even when disk setup then fails (missing LUN,
-      # no UUID). It checks the real mount table at start: disk mounted -> broch starts; not mounted ->
-      # broch is skipped (fails closed), never corrupting. Local-ONLY -- for Existing/Managed the path is
-      # a plain root-fs dir, never a mount point, so the condition would wrongly block broch forever.
-      mkdir -p /etc/systemd/system/broch.service.d
-      # Error-check the write: this drop-in is the ONLY real fail-closed barrier, so if it silently
-      # failed (e.g. a full OS disk) broch would later start unguarded against an empty path. Abort loud.
-      printf '[Unit]\nConditionPathIsMountPoint=/var/lib/docker/volumes\n' > /etc/systemd/system/broch.service.d/10-require-data-mount.conf || { echo "FATAL: could not write broch mount guard" >&2; exit 1; }
-      # Docker ITSELF must also wait for the mount. On a REBOOT (runcmd does not re-run) the disk mounts
-      # via the fstab `nofail` entry -- but `nofail` drops the mount's ordering before local-fs.target, so
-      # dockerd (which starts after local-fs.target) could otherwise initialise /var/lib/docker/volumes on
-      # the OS disk BEFORE the data disk mounts over it, realising the Postgres named volume in the wrong
-      # place. broch.service's guard only governs broch's start, not dockerd's data-root resolution --
-      # dockerd is the process that actually realises the volume -- so order dockerd after the mount too.
-      # With `nofail` this RequiresMountsFor is best-effort ORDERING for the happy path (it generates
-      # Requires=+After= against the generated .mount unit, not BindsTo=, so a never-mounting disk does not
-      # hard-fail dockerd); broch.service's ConditionPathIsMountPoint above is the LOAD-BEARING fail-closed
-      # guard if the disk is ever absent at boot -- it is what actually stops broch from running blank.
-      mkdir -p /etc/systemd/system/docker.service.d
-      printf '[Unit]\nRequiresMountsFor=/var/lib/docker/volumes\n' > /etc/systemd/system/docker.service.d/10-require-data-mount.conf || { echo "FATAL: could not write docker mount-ordering drop-in" >&2; exit 1; }
-      DEV=/dev/disk/azure/scsi1/lun0
-      for i in $(seq 1 30); do [ -e "$DEV" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
-      if [ ! -e "$DEV" ]; then echo "FATAL: databaseMode=Local but the data disk (LUN 0) never appeared" >&2; exit 1; fi
-      DISK=$(readlink -f "$DEV")
-      # Settle udev BEFORE format-detection. The wait loop breaks the instant the LUN symlink exists,
-      # which can be before the kernel finishes replaying the disk's uevents. The --timeout bounds settle
-      # so a stuck udev queue can never hang cloud-init forever.
-      udevadm settle --timeout=30 2>/dev/null || true
-      # blkid exit codes (util-linux): 0=filesystem found, 2=nothing found (a BLANK disk -- the normal
-      # first-deploy case), 4=usage error, 8=ambiguous/garbled probe. mkfs ONLY on rc 2. On rc 0 KEEP the
-      # existing filesystem (a reattached disk with surviving Postgres data). On ANYTHING else (4/8, or an
-      # unexpected code -- e.g. a reattached disk not ready despite settle, conflicting signatures) ABORT
-      # rather than `mkfs -F`, which would WIPE a disk that may hold the surviving data dir. (An abort
-      # leaves the disk unformatted + unmounted; the drop-in above keeps broch from starting blank. runcmd
-      # is first-boot-only, so there is NO auto-retry -- recover by redeploying once the disk is healthy.)
-      # A blind `|| mkfs` reformats on 2, 4 AND 8 alike, so we branch on the exact code.
-      blkid_rc=0
-      blkid "$DISK" >/dev/null 2>&1 || blkid_rc=$?
-      if [ "$blkid_rc" -eq 2 ]; then mkfs.ext4 -F "$DISK"; elif [ "$blkid_rc" -ne 0 ]; then echo "FATAL: blkid rc $blkid_rc on $DISK -- not a clean blank(2)/formatted(0) result; refusing to format a possibly-populated disk" >&2; exit 1; fi
-      mkdir -p /var/lib/docker/volumes
-      # Settle AGAIN so a freshly-mkfs'd filesystem's UUID is queryable -- blkid can otherwise race the
-      # new-fs uevent and return an empty string. An empty UUID would make an unanchored `grep -q ""`
-      # match every fstab line and silently skip the entry, dropping the database onto the OS disk. So
-      # settle, then FAIL LOUDLY if the UUID is still empty, and anchor the grep at line start + trailing
-      # space so it matches only a real fstab line for THIS UUID (never a comment or an embedded substring).
-      udevadm settle --timeout=30 2>/dev/null || true
-      # Poll for the UUID rather than read once: on a busy first boot the new-filesystem uevent can land
-      # AFTER settle's timeout, so a single blkid returns empty and the fatal below would abort a disk that
-      # was in fact formatted correctly (runcmd is first-boot-only -- that fatal needs a manual redeploy to
-      # recover). Retry a few times, settling between attempts, before giving up.
-      UUID=""
-      for i in $(seq 1 10); do UUID=$(blkid -s UUID -o value "$DISK"); [ -n "$UUID" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
-      if [ -z "$UUID" ]; then echo "FATAL: databaseMode=Local but blkid returned no UUID for $DISK after retries" >&2; exit 1; fi
-      # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
-      # would schedule systemd-fsck@<UUID> which can escalate to emergency.target if the disk is absent.
-      grep -q "^UUID=$UUID " /etc/fstab || echo "UUID=$UUID /var/lib/docker/volumes ext4 defaults,nofail 0 0" >> /etc/fstab
-      mountpoint -q /var/lib/docker/volumes || mount /var/lib/docker/volumes || { echo "FATAL: databaseMode=Local but mounting the data disk at /var/lib/docker/volumes failed" >&2; exit 1; }
-    fi
+    # Write the fail-closed guard FIRST -- before anything below can `exit`. runcmd items are
+    # INDEPENDENT subprocesses, so an `exit 1` in this block does NOT stop the later Docker-install or
+    # `systemctl enable --now broch.service` items. The ConditionPathIsMountPoint drop-in is what
+    # actually keeps broch from starting against an unmounted (empty) /var/lib/docker/volumes and
+    # re-initialising a blank database (Local) or a blank cert store, so it MUST exist even when disk
+    # setup then fails (missing LUN, no UUID). It checks the real mount table at start: disk mounted
+    # -> broch starts; not mounted -> broch is skipped (fails closed), never corrupting. The disk is
+    # attached in every mode, so the guard is valid in every mode.
+    mkdir -p /etc/systemd/system/broch.service.d
+    # Error-check the write: this drop-in is the ONLY real fail-closed barrier, so if it silently
+    # failed (e.g. a full OS disk) broch would later start unguarded against an empty path. Abort loud.
+    printf '[Unit]\nConditionPathIsMountPoint=/var/lib/docker/volumes\n' > /etc/systemd/system/broch.service.d/10-require-data-mount.conf || { echo "FATAL: could not write broch mount guard" >&2; exit 1; }
+    # Docker ITSELF must also wait for the mount. On a REBOOT (runcmd does not re-run) the disk mounts
+    # via the fstab `nofail` entry -- but `nofail` drops the mount's ordering before local-fs.target, so
+    # dockerd (which starts after local-fs.target) could otherwise initialise /var/lib/docker/volumes on
+    # the OS disk BEFORE the data disk mounts over it, realising the named volumes in the wrong
+    # place. broch.service's guard only governs broch's start, not dockerd's data-root resolution --
+    # dockerd is the process that actually realises the volumes -- so order dockerd after the mount too.
+    # With `nofail` this RequiresMountsFor is best-effort ORDERING for the happy path (it generates
+    # Requires=+After= against the generated .mount unit, not BindsTo=, so a never-mounting disk does not
+    # hard-fail dockerd); broch.service's ConditionPathIsMountPoint above is the LOAD-BEARING fail-closed
+    # guard if the disk is ever absent at boot -- it is what actually stops broch from running blank.
+    mkdir -p /etc/systemd/system/docker.service.d
+    printf '[Unit]\nRequiresMountsFor=/var/lib/docker/volumes\n' > /etc/systemd/system/docker.service.d/10-require-data-mount.conf || { echo "FATAL: could not write docker mount-ordering drop-in" >&2; exit 1; }
+    DEV=/dev/disk/azure/scsi1/lun0
+    for i in $(seq 1 30); do [ -e "$DEV" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
+    if [ ! -e "$DEV" ]; then echo "FATAL: the data disk (LUN 0) never appeared" >&2; exit 1; fi
+    DISK=$(readlink -f "$DEV")
+    # Settle udev BEFORE format-detection. The wait loop breaks the instant the LUN symlink exists,
+    # which can be before the kernel finishes replaying the disk's uevents. The --timeout bounds settle
+    # so a stuck udev queue can never hang cloud-init forever.
+    udevadm settle --timeout=30 2>/dev/null || true
+    # blkid exit codes (util-linux): 0=filesystem found, 2=nothing found (a BLANK disk -- the normal
+    # first-deploy case), 4=usage error, 8=ambiguous/garbled probe. mkfs ONLY on rc 2. On rc 0 KEEP the
+    # existing filesystem (a reattached disk with surviving cert-store/Postgres data). On ANYTHING else
+    # (4/8, or an unexpected code -- e.g. a reattached disk not ready despite settle, conflicting
+    # signatures) ABORT rather than `mkfs -F`, which would WIPE a disk that may hold the surviving data.
+    # (An abort leaves the disk unformatted + unmounted; the drop-in above keeps broch from starting
+    # blank. runcmd is first-boot-only, so there is NO auto-retry -- recover by redeploying once the
+    # disk is healthy.) A blind `|| mkfs` reformats on 2, 4 AND 8 alike, so we branch on the exact code.
+    blkid_rc=0
+    blkid "$DISK" >/dev/null 2>&1 || blkid_rc=$?
+    if [ "$blkid_rc" -eq 2 ]; then mkfs.ext4 -F "$DISK"; elif [ "$blkid_rc" -ne 0 ]; then echo "FATAL: blkid rc $blkid_rc on $DISK -- not a clean blank(2)/formatted(0) result; refusing to format a possibly-populated disk" >&2; exit 1; fi
+    mkdir -p /var/lib/docker/volumes
+    # Settle AGAIN so a freshly-mkfs'd filesystem's UUID is queryable -- blkid can otherwise race the
+    # new-fs uevent and return an empty string. An empty UUID would make an unanchored `grep -q ""`
+    # match every fstab line and silently skip the entry, dropping the volume state onto the OS disk. So
+    # settle, then FAIL LOUDLY if the UUID is still empty, and anchor the grep at line start + trailing
+    # space so it matches only a real fstab line for THIS UUID (never a comment or an embedded substring).
+    udevadm settle --timeout=30 2>/dev/null || true
+    # Poll for the UUID rather than read once: on a busy first boot the new-filesystem uevent can land
+    # AFTER settle's timeout, so a single blkid returns empty and the fatal below would abort a disk that
+    # was in fact formatted correctly (runcmd is first-boot-only -- that fatal needs a manual redeploy to
+    # recover). Retry a few times, settling between attempts, before giving up.
+    UUID=""
+    for i in $(seq 1 10); do UUID=$(blkid -s UUID -o value "$DISK"); [ -n "$UUID" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
+    if [ -z "$UUID" ]; then echo "FATAL: blkid returned no UUID for the data disk $DISK after retries" >&2; exit 1; fi
+    # fstab pass field 0 (not 2): never boot-fsck this optional data disk -- ext4 journals, and a `2`
+    # would schedule systemd-fsck@<UUID> which can escalate to emergency.target if the disk is absent.
+    grep -q "^UUID=$UUID " /etc/fstab || echo "UUID=$UUID /var/lib/docker/volumes ext4 defaults,nofail 0 0" >> /etc/fstab
+    mountpoint -q /var/lib/docker/volumes || mount /var/lib/docker/volumes || { echo "FATAL: mounting the data disk at /var/lib/docker/volumes failed" >&2; exit 1; }
 
   # Docker Engine
   - install -m 0755 -d /etc/apt/keyrings
@@ -452,15 +452,16 @@ runcmd:
 
   # systemd owns the stack (single start path for first boot AND reboots).
   - systemctl daemon-reload
-  # Belt-and-suspenders for Local mode on FIRST boot: refuse to start broch unless the data disk is
-  # actually mounted. The ConditionPathIsMountPoint drop-in gates REBOOTS, but it is itself written by a
+  # Belt-and-suspenders on FIRST boot: refuse to start broch unless the data disk is actually
+  # mounted. The ConditionPathIsMountPoint drop-in gates REBOOTS, but it is itself written by a
   # runcmd above whose write could (pathologically: full OS disk) have failed with a non-fatal `exit 1`
   # that does NOT stop this independent runcmd item -- leaving broch to start unguarded and initialise
-  # Postgres on the OS disk (destroyed on a later VM recreate). This check closes that first-boot window
-  # without depending on the drop-in. Non-Local modes short-circuit (the path is a plain dir, not a mount).
+  # the named volumes (cert store; Local-mode Postgres) on the OS disk, destroyed on a later VM
+  # recreate. This check closes that first-boot window without depending on the drop-in. The disk is
+  # attached in every database mode, so the check applies in every mode.
   - |
-    if [ "__LOCAL_DB__" = "true" ] && ! mountpoint -q /var/lib/docker/volumes; then
-      echo "FATAL: databaseMode=Local but /var/lib/docker/volumes is not mounted -- refusing to start broch (would initialise Postgres on the OS disk)" >&2
+    if ! mountpoint -q /var/lib/docker/volumes; then
+      echo "FATAL: /var/lib/docker/volumes is not mounted -- refusing to start broch (would initialise the cert store and any local database on the OS disk)" >&2
       exit 1
     fi
     # The kv-fetch runcmd FATALs in its OWN subprocess on a failed/partial fetch, which does NOT stop this

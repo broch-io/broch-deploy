@@ -76,11 +76,8 @@ param tlsCertificateKey string = ''
 @secure()
 param registryPassword string = ''
 
-@description('Set true ONLY when deploying into a RECREATED resource group — same name as a deleted one that hosted Broch, in the SAME region. Deleting a resource group soft-deletes its Key Vaults for 7 days, and the recreated group (same name, same region) derives the SAME vault names; without this flag the deployment fails with "A vault with the same name already exists in deleted state". True recovers the soft-deleted vaults first (their old secrets come back; the values you supply overwrite them — you enter exactly the same fields either way). Leave false everywhere else: recovering fails loudly when no vault of the name exists in ANY state (e.g. the group never hosted Broch). Over a LIVE vault it is a harmless no-op, so a Redeploy retry that carries the flag over from a recovery deployment is safe. Keep the same auth mode (password vs SSH key) as the deleted deployment — an SSH-key deployment created no break-glass vault, so recreating it in password mode with this flag tries to recover a vault that never existed and fails (or set recoverBgVault=false, below). Cross-region note: vault names are salted with the region, so recreating the group in a DIFFERENT region derives fresh names — no collision, leave this false; recovery is a same-region concept only.')
-param recoverSoftDeletedVaults bool = false
-
-@description('Only consulted when recoverSoftDeletedVaults=true AND no SSH key is set (password mode). True (default) also recovers the break-glass vault; set false when the DELETED deployment used an SSH key — it never created a break-glass vault, so there is no ghost to recover and the recover PUT would fail loudly. The marketplace wizard sets this automatically from a live probe of the soft-deleted vaults in the subscription; raw-form deployers switching auth modes across a recreate set it by hand.')
-param recoverBgVault bool = true
+@description('Exact names of soft-deleted Key Vaults present in the subscription — supplied so this deployment can RECOVER any whose name collides with a vault it is about to create. Only relevant when redeploying into a RECREATED resource group (same name + region as a deleted Broch deployment): deleting a group soft-deletes its Key Vaults for 7 days, and the recreated group re-derives the SAME vault names, so a plain create fails with "A vault with the same name already exists in deleted state". This template recovers a vault ONLY when its exact computed name appears in this list — a supplied name that does not match any vault this deployment creates is ignored (no-op), and a name created by an OLDER template version (different salt/scheme) simply is not matched, so the fresh differently-named vault is created clean instead of the deploy hard-failing. The marketplace wizard fills this automatically from a live probe of the subscription\'s soft-deleted vaults matching this group + region; raw-form deployers read the exact name(s) from the "already exists in deleted state" error and list them here. Leave empty (the default) for every first-time deploy and for a group that never hosted Broch. Recovery is same-region only — cross-region recreation derives fresh names and needs no entry here.')
+param softDeletedVaultNames array = []
 
 @description('VM size. Default is x86 burstable (widely available). For ARM64 (cheaper, where capacity exists) pick an Ampere size (e.g. Standard_D2ps_v6) AND set imageSku to the arm64 SKU — the broch image is multi-arch.')
 param vmSize string = 'Standard_B2s'
@@ -188,7 +185,7 @@ param vmPasswordSeed string = newGuid()
 @description('Existing: connect to the PostgreSQL you supply in databaseConnectionString. Managed: provision an Azure PostgreSQL Flexible Server in this deployment. Local: run PostgreSQL on this VM (the bundled with-postgres compose) on a small dedicated data disk — zero DB prerequisites, but YOU manage backups (no automated backups/PITR; see README).')
 param databaseMode string = 'Existing'
 
-@description('Size (GiB) of the dedicated data disk that holds the Local PostgreSQL data (databaseMode=Local). Broch\'s database is tiny; the default suits typical use — size up only if you retain large audit/request-log history. The disk is a separate resource, so the database survives VM reboots and recreation. Pick the size at first deploy: INCREASING it on a later redeploy resizes the Azure disk but does NOT auto-grow the ext4 filesystem — run `sudo resize2fs /dev/disk/azure/scsi1/lun0` on the VM afterward (and note some disk tiers require a VM deallocate to resize). Shrinking is not supported.')
+@description('Size (GiB) of the dedicated data disk attached in every database mode. It persists Docker volume state across VM reboots and recreation: the TLS certificate store always (so a recreate re-uses the issued certificate instead of burning Let\'s Encrypt\'s issuance rate limit), and the Local PostgreSQL data when databaseMode=Local. Broch\'s database is tiny; the default suits typical use — size up only if you retain large audit/request-log history. Pick the size at first deploy: INCREASING it on a later redeploy resizes the Azure disk but does NOT auto-grow the ext4 filesystem — run `sudo resize2fs /dev/disk/azure/scsi1/lun0` on the VM afterward (and note some disk tiers require a VM deallocate to resize). Shrinking is not supported.')
 @minValue(4)
 @maxValue(1024)
 param dataDiskSizeGb int = 4
@@ -378,8 +375,9 @@ var cloudInitTokens = [
   // write_files step (no .env written → unconfigured VM). A valid-but-empty JSON keeps the
   // file parseable; Caddy only reads it in GoogleCloudDns mode, so it's inert otherwise.
   ['__GCP_SA_JSON_B64__', empty(gcpCredentialsJson) ? 'e30=' : gcpCredentialsJson]
-  // Drives the cloud-init data-disk mount: Local waits for + requires the disk (a missing disk is a
-  // loud failure, never a silent fall-through onto the OS disk); other modes skip the block entirely.
+  // Drives the cloud-init DB-connection-string gate: Local skips the connstring requirement (the
+  // bundled Postgres needs none). The data-disk mount is UNCONDITIONAL in cloud-init (the disk is
+  // attached in every mode) and no longer reads this token.
   ['__LOCAL_DB__', databaseMode == 'Local' ? 'true' : 'false']
   ['__AUTH_PROVIDER__', authProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
@@ -581,19 +579,29 @@ module postgresServer 'pg.bicep' = if (databaseMode == 'Managed') {
 // same-name RG recreated in a DIFFERENT region derived the ghost's exact names and failed with
 // VaultAlreadyExists — unfixable except by purge/wait. With it, cross-region recreation derives fresh
 // names (clean create, ghosts expire harmlessly) while the one recoverable case — same RG name, same
-// region — still re-derives identical names, so the recoverSoftDeletedVaults pre-pass targets the right
-// vaults. These names are also distinct from the old single-vault template's <vmName>-kv-<hash>, so on an
+// region — still re-derives identical names, so the recover pre-pass matches the ghost and targets the
+// right vaults. These names are also distinct from the old single-vault template's <vmName>-kv-<hash>, so on an
 // UPGRADE the app vault is created DIRECTLY in access-policy mode -- never an RBAC->access-policy flip,
 // which would need Owner/UAA and break Contributor-deployability. Length <= 24: take(vmName,12) + '-app-'
 // (5) + id (7) = 24.
-// The naming scheme is a STABLE CONTRACT, load-bearing beyond this file: the Azure Marketplace offer's
-// create wizard probes soft-deleted vaults by these literal prefixes (with the default vmName) to drive
-// recoverSoftDeletedVaults automatically. Changing the vmName default, the '-app-'/'-bg-' infixes, or
-// this derivation silently disables that auto-recovery.
+// The Azure Marketplace offer's create wizard probes soft-deleted vaults by these literal prefixes
+// (with the default vmName) and passes the EXACT matching names as softDeletedVaultNames, which this
+// template intersects with the names below to decide what to recover. Changing the vmName default, the
+// '-app-'/'-bg-' infixes, or this derivation only means a ghost from the old scheme no longer matches
+// the new name — so it is left to expire and the fresh vault is created clean, never a hard failure.
 var kvId = take(uniqueString(resourceGroup().id, vmName, location), 7)
 var kvBaseName = take(vmName, 12)
 var kvName = '${kvBaseName}-app-${kvId}'
 var bgKvName = '${kvBaseName}-bg-${kvId}'
+
+// Recover a vault ONLY when its EXACT name is among the soft-deleted names supplied (the wizard's live
+// probe, or a raw-form list). Intersecting on the exact computed name — NOT a prefix — is what makes a
+// template-version name change safe: a ghost left by an older salt/naming scheme is simply not matched,
+// so the createMode:'recover' pre-pass is skipped for it and the fresh (differently-named) vault is
+// created clean, instead of the deploy hard-failing on a recover PUT against a name that exists in no
+// state. bgKvName is only ever created in password mode, so gate its recovery on usePassword too.
+var recoverAppVault = contains(softDeletedVaultNames, kvName)
+var recoverBgVault = usePassword && contains(softDeletedVaultNames, bgKvName)
 
 // User-assigned managed identity the VM uses to (a) read the deploy-time secrets from Key Vault at boot
 // and (b) complete Caddy's AzureDns ACME challenge (dnsProvider=AzureDns). User-assigned, NOT
@@ -609,16 +617,17 @@ resource vmIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31
 // kv-recover.bicep for the mechanism). Runs BEFORE the vault resources below, which then apply the
 // full desired state — the fresh VM identity's access policy, enabledForTemplateDeployment, flags —
 // as a normal update over the recovered vaults.
-module kvRecover 'kv-recover.bicep' = if (recoverSoftDeletedVaults) {
+module kvRecover 'kv-recover.bicep' = if (recoverAppVault || recoverBgVault) {
   name: 'broch-kv-recover'
   params: {
     location: location
     kvName: kvName
     bgKvName: bgKvName
-    // Recover the break-glass vault only when this deployment will have one (password mode) AND the
-    // deleted deployment left a ghost of it (recoverBgVault=false covers the SSH-key-then-password
-    // auth-mode flip, where no bg ghost exists and a recover PUT would fail loudly).
-    recoverBgVault: usePassword && recoverBgVault
+    // Each vault is recovered only if its exact name was supplied as soft-deleted (see the derivation
+    // above). This also covers the SSH-key-then-password auth-mode flip: no bg ghost exists, its name
+    // is not in the list, recoverBg stays false, and its recover PUT never runs.
+    recoverApp: recoverAppVault
+    recoverBg: recoverBgVault
   }
 }
 
@@ -792,20 +801,25 @@ var kvSecretMap = join(filter([
   certMode == 'Auto' && dnsProvider == 'DigitalOcean' ? 'DO_AUTH_TOKEN=do-auth-token' : ''
 ], item => !empty(item)), ';')
 
-// Dedicated data disk for the Local PostgreSQL (databaseMode=Local). A SEPARATE resource so the DB
-// survives VM recreation: createOption Empty is create-once (a redeploy never wipes it), and the VM
-// attaches it. Standard SSD is plenty for broch's tiny database.
-resource localDataDisk 'Microsoft.Compute/disks@2023-10-02' = if (databaseMode == 'Local') {
+// Dedicated data disk, attached in EVERY database mode. A SEPARATE resource so state survives VM
+// recreation: createOption Empty is create-once (a redeploy never wipes it), and the VM attaches
+// it. It backs /var/lib/docker/volumes, which holds ALL Docker named volumes: Caddy's cert/ACME
+// store (caddy_data) in every mode — so a VM recreate re-uses the issued certificate instead of
+// re-requesting from Let's Encrypt production (~5 duplicate certs/week/hostname; repeated
+// recreates without this disk hit that limit and lock TLS issuance out for up to a week) — plus
+// the bundled Postgres data dir in Local mode. Standard SSD is plenty for both.
+resource dataDisk 'Microsoft.Compute/disks@2023-10-02' = {
   name: '${vmName}-data'
   location: location
   sku: { name: 'StandardSSD_LRS' }
   properties: {
     creationData: { createOption: 'Empty' }
     diskSizeGB: dataDiskSizeGb
-    // The disk holds the bundled Postgres data dir (pg_wal + all user state). Block the SAS-export
-    // path so a Contributor on the RG can't `az disk grant-access` to download the raw ext4 image
-    // out-of-band — the data is reachable only through the VM. publicNetworkAccess=Disabled is
-    // belt-and-suspenders (DenyAll already covers it) and makes the hardened intent explicit.
+    // The disk holds the TLS private keys (Caddy cert store) and, in Local mode, the bundled
+    // Postgres data dir (pg_wal + all user state). Block the SAS-export path so a Contributor on
+    // the RG can't `az disk grant-access` to download the raw ext4 image out-of-band — the data is
+    // reachable only through the VM. publicNetworkAccess=Disabled is belt-and-suspenders (DenyAll
+    // already covers it) and makes the hardened intent explicit.
     networkAccessPolicy: 'DenyAll'
     publicNetworkAccess: 'Disabled'
   }
@@ -847,12 +861,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
         }
       }
     }
-    // dataDisks is added via union() ONLY in Local mode, so the key is ABSENT (not []) otherwise.
-    // This matters: in ARM incremental mode a VM PUT with dataDisks:[] declares a desired state of
-    // ZERO disks and would DETACH an attached Local data disk if the VM were ever redeployed as
-    // Existing/Managed (the default mode) -- breaking Postgres mid-flight. An absent key leaves any
-    // existing attachment untouched.
-    storageProfile: union({
+    storageProfile: {
       imageReference: {
         publisher: 'Canonical'
         offer: 'ubuntu-24_04-lts'
@@ -863,22 +872,24 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
         createOption: 'FromImage'
         managedDisk: { storageAccountType: 'Premium_LRS' }
       }
-    }, databaseMode == 'Local' ? {
-      // Local mode: attach the dedicated data disk that holds the PostgreSQL data. It is a separate
-      // resource (created empty / never wiped by redeploy), so the DB survives VM recreation.
+      // Attach the dedicated data disk in EVERY mode (it backs /var/lib/docker/volumes: the Caddy
+      // cert store always, plus the Local-mode Postgres data). It is a separate resource (created
+      // empty / never wiped by redeploy), so that state survives VM recreation. Declaring the
+      // attachment unconditionally also means a redeploy in a DIFFERENT database mode can never
+      // present a dataDisks:[] desired state that would detach the disk mid-flight.
       dataDisks: [
         {
           lun: 0
           createOption: 'Attach'
           // Detach (not Delete) on VM deletion: the whole point of the separate disk resource is that
-          // the database survives `az vm delete` / a recreate. Already Azure's default for an attached
+          // the data survives `az vm delete` / a recreate. Already Azure's default for an attached
           // pre-existing disk, but stating it makes the durability guarantee ARM-enforced and unchecks
           // the disk in the Portal's "Delete VM" dialog, preventing an accidental data wipe.
           deleteOption: 'Detach'
-          managedDisk: { id: localDataDisk!.id }
+          managedDisk: { id: dataDisk.id }
         }
       ]
-    } : {})
+    }
     networkProfile: { networkInterfaces: [ { id: nic.id } ] }
     // Managed boot diagnostics — REQUIRED for Azure Serial Console, the break-glass path when no
     // SSH key is set (the generated password is only reachable via Serial Console).

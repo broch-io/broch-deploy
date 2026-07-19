@@ -14,20 +14,28 @@
 // exists in deleted state" on every retry. createMode:'recover' bypasses the state-match (all
 // other properties are ignored on a recover PUT), which is the one ARM-expressible way past it.
 //
-// Runs ONLY when recoverSoftDeletedVaults=true: a recover PUT FAILS when no vault of that name
-// exists in ANY state (live or soft-deleted), so this cannot run unconditionally on first deploys.
-// Over a LIVE vault it is a harmless no-op update, so a Redeploy retry that re-carries the flag
-// (the portal prefills it from the picked history entry) cannot break anything. The recovered vaults come back with the
-// previous deployment's secrets — under the required-secrets model the supplied values simply
-// overwrite them, so recovery changes nothing about what the customer enters.
+// Each vault is recovered ONLY when its exact name was found in the subscription's soft-deleted set
+// (recoverApp / recoverBg, decided by the caller intersecting softDeletedVaultNames with the exact
+// computed names): a recover PUT FAILS when no vault of that name exists in ANY state, so this must
+// never run unconditionally — not on first deploys, and not against a ghost whose name belongs to an
+// older template version. Over a LIVE vault of the same name it is a harmless no-op update, so a
+// Redeploy retry that re-carries the names (the portal prefills them from the picked history entry)
+// cannot break anything. Recovered vaults come back with the previous deployment's secrets — under the
+// required-secrets model the supplied values simply overwrite them, so recovery changes nothing about
+// what the customer enters.
 // Copyright (c) 2026 Broch, LLC. All rights reserved.
 
 param location string
 param kvName string
 param bgKvName string
-param recoverBgVault bool
+param recoverApp bool
+param recoverBg bool
 
-resource appVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = {
+// Conditional: recover the app vault only when its exact name was found soft-deleted (recoverApp). A
+// recover PUT FAILS when no vault of that name exists in ANY state, so recovering unconditionally would
+// hard-fail whenever the supplied ghost belongs to an older template version whose name no longer
+// matches kvName — the caller intersects on the exact name and passes recoverApp=false in that case.
+resource appVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverApp) {
   name: kvName
   location: location
   properties: {
@@ -44,7 +52,7 @@ resource appVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = {
 // deleted SSH-key deployment left no break-glass ghost, so recreating it in password mode with
 // this flag makes this PUT fail loudly (nothing to recover). Mode switches need a fresh group
 // name or a purge instead.
-resource bgVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverBgVault) {
+resource bgVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverBg) {
   name: bgKvName
   location: location
   properties: {
