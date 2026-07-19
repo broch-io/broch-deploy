@@ -8,6 +8,20 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.31.0
+
+### Changed
+
+- **Safer Azure Marketplace recovery redeploys.** The version field on the Redeploy form now tells you exactly what to enter (your current version, found in the RG Deployments history or Admin System) and only accepts a real `X.Y.Z` version or `latest` — preventing a recovery redeploy from a newer listing's wizard from silently jumping your deployment across an irreversible database-migration boundary.
+
+### Security
+
+- **c-ares vulnerability fixed in the `broch-caddy` deploy image.**
+
+### Fixed
+
+- **More reliable Azure Marketplace Key Vault recovery.** If a soft-deleted vault's name no longer matches what the current template computes (for example after a region change, a renamed vault, or an auth-mode switch), the wizard no longer hard-fails — it simply creates a fresh vault instead. The recovery notice also now correctly appears for backup-vault matches, not just primary.
+
 ## 1.30.0
 
 ### Added
