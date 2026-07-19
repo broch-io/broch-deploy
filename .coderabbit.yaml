@@ -1,9 +1,27 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# Automated review is intentionally disabled in this repository. Changes arrive
-# here already reviewed through the internal promotion pipeline; keeping PR
-# threads clean is deliberate. A review can still be requested on demand by
-# commenting `@coderabbitai review` on a PR.
+# Public release repository: CodeRabbit reviews every PR into main in a quiet
+# profile and provides the independent approval on release PRs. Changes land
+# here through the release pipeline described in RELEASING.md, so reviews focus
+# on real defects rather than style.
 reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  collapse_walkthrough: true
+  review_status: true
   auto_review:
-    enabled: false
-  review_status: false
+    enabled: true
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
