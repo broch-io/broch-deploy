@@ -9,6 +9,9 @@ reviews:
   poem: false
   collapse_walkthrough: true
   review_status: true
+  # Enables CodeRabbit's request-changes/approve workflow — its APPROVED review is
+  # what satisfies the required-review rule on release PRs.
+  request_changes_workflow: true
   auto_review:
     enabled: true
   finishing_touches:
