@@ -1,0 +1,26 @@
+# Deploy-surface lint — structural redeploy-safety invariants (see scripts/deploy-lint.py
+# for the rules: secret-name salting, unconditional data disk, named cert volumes,
+# required master key, exact version pins). Credential-free and runnable from any fork.
+name: Deploy Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Run deploy lint
+        run: python3 scripts/deploy-lint.py
