@@ -75,7 +75,7 @@ variable "auth_audience" {
 variable "broch_image" {
   description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a task redeploy never silently rolls the service across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or :latest to float (not recommended in production)."
   type        = string
-  default     = "ghcr.io/broch-io/broch:1.30.0"
+  default     = "ghcr.io/broch-io/broch:1.31.0"
 }
 
 variable "aws_region" {

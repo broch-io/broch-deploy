@@ -327,7 +327,7 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.30.0"
+    Default: "1.31.0"
     Description: >-
       Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
       replacement never silently rolls the box across an EF-migration boundary; new releases of this

@@ -22,7 +22,7 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.30.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.31.0}
     restart: unless-stopped
     depends_on:
       postgres:
