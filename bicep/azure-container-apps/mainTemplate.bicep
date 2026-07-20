@@ -31,7 +31,7 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 param masterKey string
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.30.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.31.0'
 
 // ============================================================================
 // Database Parameters
