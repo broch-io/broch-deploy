@@ -329,11 +329,17 @@ runcmd:
   # the vault is created, so this loop is belt-and-suspenders, NOT a race with RBAC grant propagation; runcmd
   # is first-boot-only. FAILS LOUD (and leaves the start-gate sentinel unwritten) if any secret can't be read.
   - |
-    KV="__KV_NAME__" CID="__UAI_CLIENT_ID__" MAP="__KV_SECRETS__" ENVFILE=/opt/broch/.env SENTINEL=/run/kv-fetch-complete python3 - <<'PY'
-    import os, sys, json, time, urllib.request, urllib.error
+    KV="__KV_NAME__" KVSFX="__KV_DNS_SUFFIX__" CID="__UAI_CLIENT_ID__" MAP="__KV_SECRETS__" ENVFILE=/opt/broch/.env SENTINEL=/run/kv-fetch-complete python3 - <<'PY'
+    import os, sys, json, time, urllib.parse, urllib.request, urllib.error
 
     KV, CID, MAP = os.environ["KV"], os.environ["CID"], os.environ["MAP"]
     ENVFILE, SENTINEL = os.environ["ENVFILE"], os.environ["SENTINEL"]
+    # Key Vault DNS suffix (leading dot included), substituted from the ARM environment() function
+    # rather than written out literally: the compiled marketplace template must not carry a literal
+    # vault host (arm-ttk "DeploymentTemplate Must Not Contain Hardcoded Uri"), and deriving it keeps
+    # this script correct in sovereign clouds where the suffix differs. Shape-checked below, once
+    # fatal() exists -- a missed substitution would otherwise surface as a cryptic DNS error mid-fetch.
+    KVSFX = os.environ["KVSFX"]
     # ~10 min window per stage (generous: covers IMDS managed-identity token warm-up + transient vault/network
     # blips on a fresh boot -- the access policy itself is immediate, no RBAC lag); 15s per HTTP call so a
     # stalled socket -- a vault that completes the TCP handshake then never sends -- can't hang first boot
@@ -348,6 +354,9 @@ runcmd:
         fatal("empty Key Vault secret map -- nothing to fetch (a deploy always has at least the master "
               "key); refusing to start broch unconfigured")
 
+    if not KVSFX.startswith("."):
+        fatal("Key Vault DNS suffix %r was not substituted correctly (expected a leading dot)" % KVSFX)
+
     # Clear any stale completion marker up front so a failed re-run (e.g. `cloud-init single` recovery on the
     # same boot, /run being tmpfs that survives within a boot) can never leave a previous run's sentinel to
     # bless a fetch that has since started failing.
@@ -358,12 +367,16 @@ runcmd:
 
     # IMDS is link-local (169.254.169.254): bypass any http_proxy the VM baseline set -- a proxy can't reach
     # link-local, so every token fetch would fail through it. The Key Vault call below uses the DEFAULT
-    # opener, which DOES honour proxy env -- correct for a real internet endpoint (vault.azure.net).
+    # opener, which DOES honour proxy env -- correct for a real internet endpoint (the vault's public
+    # DNS name under KVSFX).
     imds_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    # Token audience = the vault service root, i.e. the DNS suffix without its leading dot.
+    KV_RESOURCE = "https://" + KVSFX.lstrip(".")
 
     def imds_token():
         url = ("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01"
-               "&resource=https%3A%2F%2Fvault.azure.net&client_id=" + CID)
+               "&resource=" + urllib.parse.quote(KV_RESOURCE, safe="") + "&client_id=" + CID)
         req = urllib.request.Request(url, headers={"Metadata": "true"})
         try:
             with imds_opener.open(req, timeout=TIMEOUT) as r:
@@ -381,7 +394,7 @@ runcmd:
         fatal("no managed-identity token for Key Vault %s after retries" % KV)
 
     def fetch(secn, tok):
-        url = "https://%s.vault.azure.net/secrets/%s?api-version=7.4" % (KV, secn)
+        url = "https://%s%s/secrets/%s?api-version=7.4" % (KV, KVSFX, secn)
         req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:  # default opener -> honours proxy env
             return json.load(r).get("value", "")
