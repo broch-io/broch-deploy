@@ -392,6 +392,10 @@ var cloudInitTokens = [
   // identity and appends it to .env. __KV_SECRETS__ lists ENVKEY=secret-name pairs for exactly the
   // secrets that exist (assembled in kvSecretMap above), ';'-joined.
   ['__KV_NAME__', kvName]
+  // Vault DNS suffix from environment() (leading dot included, e.g. sovereign clouds differ) —
+  // substituted so the compiled template carries no literal vault host (arm-ttk: DeploymentTemplate
+  // Must Not Contain Hardcoded Uri; Partner Center certification enforces it).
+  ['__KV_DNS_SUFFIX__', environment().suffixes.keyvaultDns]
   ['__UAI_CLIENT_ID__', vmIdentity.properties.clientId]
   ['__KV_SECRETS__', kvSecretMap]
 ]
