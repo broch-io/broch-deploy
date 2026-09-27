@@ -87,6 +87,14 @@ resource "aws_secretsmanager_secret" "connection_string" {
   recovery_window_in_days = 0
 }
 
+# KNOWN GAP (database TLS): this string sets no SSL Mode, so Npgsql uses its default (Prefer):
+# the RDS link is encrypted when the server offers TLS, but the server is NEVER authenticated
+# (no certificate-chain or hostname check), and an on-path attacker could impersonate it. The
+# other templates use SSL Mode=VerifyFull; here that needs the Amazon RDS CA bundle
+# (https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem) inside the Fargate task,
+# e.g. via a derived image or an init container writing it to a shared volume, then
+# ";SSL Mode=VerifyFull;Root Certificate=<path>" below. Not done yet; do not treat this module
+# as authenticating its database.
 resource "aws_secretsmanager_secret_version" "connection_string" {
   secret_id     = aws_secretsmanager_secret.connection_string.id
   secret_string = "Host=${aws_db_instance.broch.address};Port=${aws_db_instance.broch.port};Database=${var.postgres_db_name};Username=${var.postgres_user};Password=${random_password.postgres.result}"

@@ -81,6 +81,12 @@ ALTER SCHEMA public OWNER TO broch;
 
 After the VM deploys, add its public IP (a deployment output) to the database server's firewall.
 
+**Connection string TLS.** Use `SSL Mode=VerifyFull`, e.g. `Host=<server>.postgres.database.azure.com;Database=brochdb;Username=broch;Password=<pw>;SSL Mode=VerifyFull`. It encrypts the connection **and** checks that the server's certificate chains to a trusted CA and names the `Host=` you connect to. `SSL Mode=Require` only encrypts, so an attacker on the network path could impersonate the server.
+
+- **Azure Database for PostgreSQL** works as-is: its certificates chain to public roots already in the broch image. Use the server's real FQDN; an IP address or your own alias is not on the certificate and fails verification.
+- **Private CA** (a server whose certificate is not publicly trusted): add `Root Certificate=/etc/broch/db-ca/<file>` to the string, and after the VM deploys copy that CA file to `/opt/broch/db-ca/<file>` on the VM. The compose file mounts it read-only into broch. Then run `cd /opt/broch && docker compose up -d broch` (over `az vm run-command`).
+- **IP address or alias only**: switch to a host name the certificate covers, or have the certificate cover your host name. `SSL Mode=Require` is the explicit, unauthenticated fallback. Use it only for a confirmed limitation you accept.
+
 ## Local database
 
 `databaseMode=Local` runs PostgreSQL **on the VM** (the bundled [`with-postgres`](../../docker-compose/with-postgres/) compose) — **nothing to set up first**. The template generates the Postgres password, and the database lives on the **dedicated data disk** the template attaches in every mode (`dataDiskSizeGb`, default **4 GiB** Standard SSD — Broch's database is tiny; size up only if you retain large audit/request-log history). cloud-init mounts that disk at `/var/lib/docker/volumes`, so the database **survives reboots and VM recreation** — the disk is a *separate* resource, so a from-scratch reprovision (or `az vm delete` + redeploy) reattaches it with data intact. The generated Postgres password is **derived** (from the resource group + VM name), so it stays the same across a recreate and still matches the surviving database. You can override it with **`localDbAdminPassword`** (re-supply the same value on every redeploy). The password value is stored in **Key Vault** (see [Secrets & break-glass](#secrets--break-glass)) and fetched at boot — it is **not** in `customData`, so a plain subscription **Reader** can't read it (that needs *Key Vault Secrets User*). The one residual note: the *derived default* is computable from the (public) resource names, so set an explicit `localDbAdminPassword` if you don't want it formula-derivable. Either way Postgres has **no host port** — the blast radius is in-container code execution, not the network.
@@ -130,7 +136,7 @@ az deployment group create \
   --parameters main.bicepparam \
   --parameters \
       brochMasterKey='<openssl-rand-base64-48>' \
-      databaseConnectionString='Host=broch.postgres.database.azure.com;Database=brochdb;Username=broch;Password=<pw>;SSL Mode=Require' \
+      databaseConnectionString='Host=broch.postgres.database.azure.com;Database=brochdb;Username=broch;Password=<pw>;SSL Mode=VerifyFull' \
       cloudflareApiToken='<token>' \
       authClientSecret='<secret>'
 
@@ -282,6 +288,24 @@ az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript --s
 Caddy keeps serving across the broch restart. Broch runs EF migrations on boot, so when sharing a database across instances, keep their versions matched and roll one at a time.
 
 **Private / pre-release images.** The image defaults to the public `ghcr.io/broch-io/broch` — a normal deploy needs nothing. To run a private pre-release/beta image you've been granted, set `brochImage` and `registryPassword` (the `registryServer`/`registryUsername` default to GHCR, so the token is usually all you supply); the template logs in on the VM before pulling.
+
+## Upgrading an existing stack: database server verification
+
+Deployments now connect to their database with `SSL Mode=VerifyFull`: the server's certificate must chain to a trusted CA **and** name the host, not merely encrypt the link as `SSL Mode=Require` does. A VM deployed earlier keeps its old settings. Its `/opt/broch/.env` (and compose file) were written by cloud-init on first boot and are not rewritten afterwards. A redeploy over a **live** VM does not replace them either: this template's `customData` changed, and Azure rejects a `customData` change on an existing VM (`PropertyChangeNotAllowed`, see [Retrying a failed deployment](#retrying-a-failed-deployment)).
+
+- **`Managed`** — a redeploy over the live VM **fails**: the VM update is rejected with `PropertyChangeNotAllowed` (`customData` changed). Resources earlier in the deployment still update, so the `db-connection-string` Key Vault secret may already hold `SSL Mode=VerifyFull`, but the running VM's `.env` keeps `Require`. Either recreate the VM (delete the VM, then redeploy; the data disk and Key Vault persist, see [Recovering an existing installation](#recovering-an-existing-installation)), or adopt verification in place:
+
+  ```sh
+  az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript --scripts '
+    cd /opt/broch
+    sed -i "s|SSL Mode=Require|SSL Mode=VerifyFull|" .env
+    grep -q "SSL Mode=VerifyFull" .env || { echo "VerifyFull not set in .env; stopping"; exit 1; }
+    docker compose up -d broch'
+  ```
+
+  The script **stops before recreating broch** if the `sed` matched nothing (the string was spelled differently). No CA file is needed: Flexible Server certificates chain to public roots in the broch image's trust store. If broch then fails its health check, **read its connection error before changing any TLS setting**: `docker compose -f /opt/broch/docker-compose.yml logs broch`. Fix the actual cause (credentials, network rules, the server not being up, or a `Host=` that is not the server's `*.postgres.database.azure.com` name). Fall back to `SSL Mode=Require` only for a confirmed certificate or hostname limitation you accept and document.
+- **`Existing`** — your own connection string is used verbatim. Change it to `SSL Mode=VerifyFull` the same way: update the `db-connection-string` secret in Key Vault (for future VMs) and `/opt/broch/.env` (then `docker compose up -d broch`). Use the server's real host name, not an IP or your own alias. If your server's CA is not publicly trusted, it also needs the CA file: put it in `/opt/broch/db-ca/`, mount it (`./db-ca:/etc/broch/db-ca:ro` on the broch service, as in the current compose file) and add `Root Certificate=/etc/broch/db-ca/<file>`.
+- **`Local`** — unaffected (Postgres runs on the VM over the private Docker network).
 
 ## Taking over an existing database
 

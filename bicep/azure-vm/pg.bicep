@@ -27,7 +27,7 @@ param privateDnsZoneArmResourceId string
 // Private access: injected into the delegated subnet + resolvable via the private DNS zone. No
 // public endpoint (publicNetworkAccess can't be Enabled with a delegated subnet). Same resource
 // shape as when this lived inline in main.bicep — only the password's SOURCE changed.
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   name: pgServerName
   location: location
   sku: {
@@ -48,12 +48,12 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
   }
 }
 
-resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
+resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: postgres
   name: pgDatabaseName
 }
 
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+resource keyVault 'Microsoft.KeyVault/vaults@2025-05-01' existing = {
   name: kvName
 }
 
@@ -66,9 +66,14 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 // accepts ';' and '\'' in a flexible-server password, and interpolating those raw would silently
 // corrupt the pair syntax: every resource deploys, ARM reports success, and broch crash-loops at
 // boot on a malformed connection string with nothing pointing at the password.
+// SSL Mode=VerifyFull: encrypted AND the server authenticated — its certificate must chain to a CA in
+// the broch image's system trust store (Flexible Server certificates chain to DigiCert / Microsoft
+// public roots) AND name this Host (the real FQDN above, which the certificate covers). Require would
+// only encrypt, letting an on-path attacker pose as the server and take the admin credentials. No
+// Root Certificate: the system store is the trust anchor.
 var pgPasswordQuoted = '\'${replace(administratorLoginPassword, '\'', '\'\'')}\''
-resource secDbConnManaged 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+resource secDbConnManaged 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = {
   parent: keyVault
   name: 'db-connection-string'
-  properties: { value: 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${pgPasswordQuoted};SSL Mode=Require' }
+  properties: { value: 'Host=${pgServerName}.postgres.database.azure.com;Port=5432;Database=${pgDatabaseName};Username=${pgAdminUser};Password=${pgPasswordQuoted};SSL Mode=VerifyFull' }
 }

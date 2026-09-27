@@ -19,7 +19,7 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.31.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.33.0}
     restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
@@ -47,10 +47,18 @@ services:
       AUTHENTICATION__AUTHORITY: ${AUTHENTICATION__AUTHORITY:-}
       AUTHENTICATION__AUDIENCE: ${AUTHENTICATION__AUDIENCE:-}
       DATABASE__PROVIDER: PostgreSQL
-      # Connection string points at your external DB. SSL Mode=Require is
-      # standard for managed services; relax to Prefer or Disable if your
-      # provider doesn't support TLS to the server.
+      # Connection string points at your external DB. Use SSL Mode=VerifyFull: it
+      # encrypts AND authenticates the server (certificate chain + hostname).
+      # SSL Mode=Require only encrypts — anyone on the network path can pose as
+      # the server and collect the credentials. If your provider's CA is not in the
+      # system trust store (RDS, DigitalOcean, ...), drop its CA file into ./db-ca
+      # and add Root Certificate=/etc/broch/db-ca/<file>. See .env.example.
       ConnectionStrings__BrochConnection: ${BROCH_DB_CONNECTION_STRING}
+    volumes:
+      # CA certificates for verifying the database server (read-only; public certs,
+      # not secrets). Created empty if absent; the AWS VM appliance places the
+      # Amazon RDS CA bundle here.
+      - ./db-ca:/etc/broch/db-ca:ro
     expose:
       - "8080"
     healthcheck:

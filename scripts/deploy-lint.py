@@ -31,6 +31,11 @@ would produce) a real "second deploy fails / silently loses state" incident clas
        silently mis-places a data volume for a customer account/region that
        cannot satisfy it. Zones must come from a parameter/variable or a dynamic
        lookup, never a literal.
+  AMI  The aws-vm UbuntuAmi default pins a Canonical release serial, never the
+       stable/current alias: CloudFormation re-resolves SSM parameters on every
+       stack update, so the alias turned any update after a new Ubuntu image into
+       an instance replacement (a rollback in Local mode, whose data volume the new
+       instance cannot attach).
 
 Usage: deploy-lint.py [--root DIR]     (default: the repo containing this script)
 Output: one line per violation, "RULE path:line message"; exit 1 on any violation.
@@ -322,6 +327,26 @@ def rule_zone(root: str) -> None:
                                 "resource regional or parameterize the zone")
 
 
+def rule_ami(root: str) -> None:
+    """aws-vm UbuntuAmi defaults to a pinned Canonical serial, never the stable/current alias."""
+    rel = "cloudformation/aws-vm/template.yaml"
+    lines = read_lines(root, rel)
+    if lines is None:
+        return
+    in_block = False
+    for i, line in enumerate(lines):
+        if line.startswith("  UbuntuAmi:"):
+            in_block = True
+            continue
+        if in_block and re.match(r"  \S", line):
+            break
+        if in_block and line.strip().startswith("Default:") and "/current/" in line:
+            violate("AMI", rel, i + 1,
+                    "UbuntuAmi defaults to Canonical's stable/current alias — CloudFormation "
+                    "re-resolves it on every update, so any update after a new Ubuntu image "
+                    "replaces the instance (and rolls back in Local mode); pin a release serial")
+
+
 def main() -> int:
     """Run every rule against --root and report violations (exit 1 on any)."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -337,6 +362,7 @@ def main() -> int:
     rule_r4(root)
     rule_pin(root)
     rule_zone(root)
+    rule_ami(root)
 
     if violations:
         for v in violations:

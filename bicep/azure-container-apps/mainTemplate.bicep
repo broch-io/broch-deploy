@@ -31,7 +31,7 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 param masterKey string
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.31.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.33.0'
 
 // ============================================================================
 // Database Parameters
@@ -282,13 +282,14 @@ var embeddedPgPasswordQuoted = '\'${replace(effectiveDatabasePassword, '\'', '\'
 var resolvedConnectionString = databaseMode == 'Shared'
   ? databaseConnectionString
   : databaseMode == 'Managed'
-      // SSL Mode=Require with server-certificate VALIDATION (Npgsql's default under Require).
-      // No 'Trust Server Certificate=true' override: Azure Database for PostgreSQL Flexible
-      // Server presents a DigiCert-chained certificate Npgsql validates against the OS trust
-      // store, so disabling validation would only open the door to an on-path MITM of the DB
-      // session (which carries every DataProtection-wrapped secret and all tunnel/user data).
-      // Matches the azure-vm sibling (pg.bicep) and the Terraform ACA module — both validating.
-      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${managedPgPasswordQuoted};SSL Mode=Require'
+      // SSL Mode=VerifyFull: Npgsql validates the server certificate's chain against the OS trust
+      // store AND checks it names managedPgFqdn. (SSL Mode=Require does NOT validate the
+      // certificate at all in current Npgsql — it only encrypts — so an on-path attacker could pose
+      // as the server and read the DB session, which carries every DataProtection-wrapped secret
+      // and all tunnel/user data.) Azure Database for PostgreSQL Flexible Server certificates chain
+      // to DigiCert / Microsoft public roots, so no Root Certificate is needed. Matches the
+      // azure-vm sibling (pg.bicep) and the Terraform ACA module.
+      ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${managedPgPasswordQuoted};SSL Mode=VerifyFull'
       : 'Host=localhost;Database=brochdb;Username=broch;Password=${embeddedPgPasswordQuoted}'
 
 // Resolve resource names

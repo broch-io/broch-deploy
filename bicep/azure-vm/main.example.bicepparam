@@ -20,8 +20,9 @@ param brochMasterKey = '<run: openssl rand -base64 48>' // placeholder is <32 ch
 
 // --- Database: Existing (bring your own) | Managed (provision a private Flex Server) | Local (on the VM) ---
 param databaseMode = 'Existing'
-// Existing:
-param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;SSL Mode=Require' // prefer --parameters
+// Existing: SSL Mode=VerifyFull authenticates the server (certificate chain + hostname) as well as
+// encrypting; Require only encrypts. Azure Flexible Server chains to public roots, so no CA file is needed.
+param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database=brochdb;Username=<user>;Password=<pw>;SSL Mode=VerifyFull' // prefer --parameters
 // Managed (set databaseMode = 'Managed' above, then):
 // param postgresAdminPassword = '<strong-password>'  // prefer --parameters
 // param postgresSkuName       = 'Standard_B1ms'      // B1ms | B2s | D2ds_v5 | D4ds_v5
