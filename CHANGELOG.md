@@ -8,6 +8,37 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.33.0
+
+### Added
+
+- **Long-lived Share requests stay open.** Long-polls, Server-Sent Events with gaps, and slow uploads proxied through Share are no longer cut off after ~100 seconds of inactivity. The idle limit is now configurable via `SHARE__PROXYACTIVITYTIMEOUT` (default 15 minutes).
+
+### Changed
+
+- **User accounts are created at sign-in, not first tunnel use.** Anyone who signs in now shows up as an account to admins right away, even before opening a Share or Access tunnel; on broch-hosted trials, the per-user trial clock now starts at sign-up. Display names up to 256 characters (matching Microsoft Entra ID's limit) are supported.
+- **Azure Marketplace database guidance strengthened.** The connection-string tooltip in the deployment wizard now recommends full certificate-and-hostname verification (`VerifyFull`) instead of encryption-only, with guidance for private CAs and IP-based connections.
+- **AWS Marketplace listing paused.** New AWS deployments should use the CloudFormation template directly rather than the Marketplace listing.
+
+### Security
+
+- **CLI security fixes.** The next stable release of the separately installed `broch` CLI binds cached login credentials to the deployment they were issued for, closes a Windows command-injection risk in how it opens login URLs in your browser, keeps replayed requests in the request inspector on HTTPS, and narrows the scope of authenticated tunnel peer forwarding. As with past CLI security updates, upgrading the server image does not update an existing CLI install — update it separately.
+- **Share access to loopback targets now requires an explicit Share Rule.** Previously a loopback (localhost) target was reachable without a dedicated rule; it now needs one with no service assigned, and the rejection message says so.
+- **More reliable session and access revocation.** Refresh tokens and step-up ("recent authentication") evidence are now bound to the session that issued them. Revoking a seat, changing a Share/Access policy, expiring a trial, or an Access credential expiring now reliably and promptly disconnects affected sessions even under many concurrent connections, closing gaps where one slow or hung client could delay revocation for everyone else.
+- **Go dependency vulnerabilities fixed in the `broch-caddy` deploy image.** Several HIGH-severity vulnerabilities in bundled Go networking libraries are patched.
+
+### Fixed
+
+- **Login right after an identity-provider signing-key rotation.** The very first login immediately following an IdP key rotation could fail once; it now recovers automatically instead of returning an error.
+- **License reactivation and activation races.** Reactivating a deactivated deployment now correctly restores service; a queued activation can no longer reclaim a seat that a concurrent deactivation just freed, and changing your license key mid-deactivation now returns a clear conflict instead of a misleading error.
+- **Access TLS certificates on Windows.** Certificates for Access TLS termination could fail to persist across restarts when the backend uses Windows Schannel; they are now stored and reloaded correctly.
+- **`broch share --no-rewrite` Host header.** Fixed a case where the original Host header wasn't preserved when forwarding to the local service.
+
+### Deploy impact
+
+- **Loopback Share targets need a Share Rule.** If a Share target points at a loopback address (e.g. `localhost`) and relied on being reachable without a dedicated rule, add a Share Rule for it (with no service assigned) — otherwise it will be rejected with a 403 after upgrading.
+- **A session established before this upgrade may need a one-time re-login.** Stricter binding of refresh tokens to session identity means a pre-existing session that doesn't carry the expected binding will be asked to sign in again on its next refresh; this resolves itself automatically and requires no admin action.
+
 ## 1.32.0
 
 ### Security
