@@ -8,6 +8,12 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.32.0
+
+### Security
+
+- **CLI HTTP transport security updates.** The separately installed `broch` CLI `1.32.0` bundles updated HTTP transport dependencies that address vulnerabilities known when this release shipped. Upgrading the server image does not update an existing CLI installation: if you use CLI `1.31.0` or earlier, run `npm install -g @broch/cli@1.32.0` (or install a newer stable CLI release) separately.
+
 ## 1.31.0
 
 ### Changed
