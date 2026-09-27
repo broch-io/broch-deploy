@@ -1,0 +1,3 @@
+# The RDS CA bundle is SHA-256-pinned in build.sh: store and check it out byte-for-byte, never
+# with line-ending conversion (a CRLF checkout would change its hash and fail the build).
+db-ca/*.pem -text

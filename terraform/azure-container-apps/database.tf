@@ -59,9 +59,13 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure" {
   end_ip_address   = "0.0.0.0"
 }
 
+# SSL Mode=VerifyFull: encrypted AND the server authenticated (certificate chain to the container's
+# system trust store + hostname match on the server FQDN). SSL Mode=Require would only encrypt, so
+# an on-path attacker could impersonate the server. Flexible Server certificates chain to public
+# DigiCert / Microsoft roots, so no Root Certificate is needed.
 resource "azurerm_key_vault_secret" "postgres_connection_string" {
   name         = "postgres-connection-string"
-  value        = "Host=${azurerm_postgresql_flexible_server.broch.fqdn};Database=${var.postgres_db_name};Username=${var.postgres_user};Password=${random_password.postgres.result};Ssl Mode=Require"
+  value        = "Host=${azurerm_postgresql_flexible_server.broch.fqdn};Database=${var.postgres_db_name};Username=${var.postgres_user};Password=${random_password.postgres.result};SSL Mode=VerifyFull"
   key_vault_id = azurerm_key_vault.broch.id
 
   depends_on = [azurerm_role_assignment.kv_caller_admin]

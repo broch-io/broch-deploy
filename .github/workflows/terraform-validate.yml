@@ -156,8 +156,18 @@ jobs:
 
           path = 'cloudformation/aws-vm/dist/template.yaml'
           with open(path) as f:
-              yaml.load(f, Loader=StrictCfnLoader)
+              tpl = yaml.load(f, Loader=StrictCfnLoader)
           print(f'{path}: strict YAML parse OK')
+
+          # The UserData cloud-config is YAML too, and cloud-init rejects the WHOLE runcmd module
+          # when one item isn't a command: a plain item with a ": " in it (e.g. `echo "WARN: x"`)
+          # parses as a mapping, so first boot silently runs nothing and the stack times out.
+          ud = tpl['Resources']['Instance']['Properties']['UserData']['Fn::Base64']['Fn::Sub'][0]
+          cfg = yaml.safe_load(ud)
+          bad = [i for i, item in enumerate(cfg['runcmd']) if not isinstance(item, (str, list))]
+          if bad:
+              raise SystemExit(f'UserData runcmd item(s) {bad} are not commands (a stray ": "?)')
+          print(f"UserData cloud-config: {len(cfg['runcmd'])} runcmd items, all commands")
           PY
 
   # The pinned broch image version is deliberately concrete (never :latest) and appears in many

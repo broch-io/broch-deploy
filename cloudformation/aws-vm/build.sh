@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Build the deployable CloudFormation template by embedding the canonical assets
-# VERBATIM into template.yaml's UserData — the AWS analog of main.bicep's
+# VERBATIM into template.yaml (its cfn-init metadata, which cfn-init writes at boot;
+# UserData is capped at 25,600 bytes) — the AWS analog of main.bicep's
 # loadTextContent(). The VM then runs byte-for-byte the same stack a docker-direct
 # customer runs. Embeds the shared docker-compose plus BOTH Caddyfiles:
 #   - with-postgres-external/Caddyfile  -> Auto mode (ACME DNS-01)
 #   - with-postgres-byo-cert/Caddyfile  -> Byo  mode (static cert)
-# CertMode selects which one is written at deploy time.
+# CertMode selects which one is written at deploy time. Also embeds the pinned
+# Amazon RDS CA bundle (db-ca/rds-global-bundle.pem) the database connection verifies against.
 #
 #   ./build.sh            -> dist/template.yaml
 #
@@ -41,8 +43,24 @@ tls_route53_b64="$(base64 "$tls/route53-iam.caddy" | tr -d '\n')"
 tls_digitalocean_b64="$(base64 "$tls/digitalocean.caddy" | tr -d '\n')"
 tls_googleclouddns_b64="$(base64 "$tls/googleclouddns.caddy" | tr -d '\n')"
 
+# Amazon RDS global CA bundle (every commercial-region RDS/Aurora root CA). cfn-init writes it to
+# /opt/broch/db-ca/rds-global-bundle.pem; the compose mounts that directory read-only into broch at
+# /etc/broch/db-ca, so the NewServer / ExistingServer connection strings can use SSL Mode=VerifyFull
+# (chain AND hostname checked) instead of Require (encrypted, but the server is never authenticated).
+# The bundle is committed and PINNED by SHA-256: the build fails if the file changes without this
+# hash being deliberately updated alongside it. To refresh (new RDS region/CA):
+#   curl -fsSL -o db-ca/rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+# then review the diff and update RDS_CA_BUNDLE_SHA256.
+# Python reads, hash-checks and base64-encodes it from the FILE: its ~220 KB of base64 exceeds
+# Linux's 128 KiB limit on a single environment string, so it cannot ride in an env var like the
+# blobs above.
+rds_ca_bundle="$here/db-ca/rds-global-bundle.pem"
+RDS_CA_BUNDLE_SHA256="e5bb2084ccf45087bda1c9bffdea0eb15ee67f0b91646106e466714f9de3c7e3"
+
 # Substitute the placeholders. Python avoids sed-delimiter clashes with the
 # +/= in base64 and keeps each blob on a single line.
+RDS_CA_BUNDLE_PATH="$rds_ca_bundle" \
+RDS_CA_BUNDLE_SHA256="$RDS_CA_BUNDLE_SHA256" \
 COMPOSE_B64="$compose_b64" \
 COMPOSE_LOCAL_B64="$compose_local_b64" \
 CADDYFILE_AUTO_B64="$caddyfile_auto_b64" \
@@ -52,10 +70,19 @@ TLS_ROUTE53_B64="$tls_route53_b64" \
 TLS_DIGITALOCEAN_B64="$tls_digitalocean_b64" \
 TLS_GOOGLECLOUDDNS_B64="$tls_googleclouddns_b64" \
 python3 - "$here/template.yaml" "$out/template.yaml" <<'PY'
-import os, sys
+import base64, hashlib, os, sys
 src, dst = sys.argv[1], sys.argv[2]
+# Hash check in Python (not sha256sum/shasum) so it behaves the same on GNU and BSD/macOS.
+with open(os.environ["RDS_CA_BUNDLE_PATH"], "rb") as fh:
+    bundle = fh.read()
+actual = hashlib.sha256(bundle).hexdigest()
+if actual != os.environ["RDS_CA_BUNDLE_SHA256"]:
+    sys.exit(f"RDS CA bundle SHA-256 mismatch: expected {os.environ['RDS_CA_BUNDLE_SHA256']}, got {actual} "
+             f"({os.environ['RDS_CA_BUNDLE_PATH']}). Refusing to embed an unreviewed trust anchor.")
+os.environ["RDS_CA_BUNDLE_B64"] = base64.b64encode(bundle).decode("ascii")
 text = open(src).read()
 for placeholder, env in (
+    ("__RDS_CA_BUNDLE_B64__", "RDS_CA_BUNDLE_B64"),
     ("__COMPOSE_B64__", "COMPOSE_B64"),
     ("__COMPOSE_LOCAL_B64__", "COMPOSE_LOCAL_B64"),
     ("__CADDYFILE_AUTO_B64__", "CADDYFILE_AUTO_B64"),

@@ -6,8 +6,9 @@ Description: >-
   the instance's IAM role against Route 53 — no token typed, no cert upload.
   Copyright (c) 2026 Broch, LLC. All rights reserved.
 #
-# NOTE: the canonical assets (docker-compose.yml, BOTH Caddyfiles, and the four
-# per-provider caddy-tls fragments) are base64-embedded by build.sh — this
+# NOTE: the canonical assets (docker-compose.yml, BOTH Caddyfiles, the four
+# per-provider caddy-tls fragments, and the pinned Amazon RDS CA bundle the
+# database connection verifies against) are base64-embedded by build.sh — this
 # committed template carries __*_B64__ placeholders for all of them
 # (Auto = ACME DNS-01 Caddyfile, Byo = static-cert Caddyfile; CertMode picks one
 # at deploy, DnsProvider picks the tls fragment at boot). Deploy the built
@@ -21,11 +22,11 @@ Metadata:
       - Label: { default: Domain & TLS }
         Parameters: [DnsZone, ShareSubdomain, DnsZoneName, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, DnsAutoRecords, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
       - Label: { default: Database }
-        Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId, LocalDbAdminPassword, DataVolumeSize, DataVolumeAz]
+        Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId, DbSslMode, LocalDbAdminPassword, DataVolumeSize, DataVolumeAz, DataVolumeSnapshotId]
       - Label: { default: Identity provider (boot floor) }
         Parameters: [AuthProvider, AuthClientId, AuthClientSecret, AuthAdminRoles, AuthDomain, AuthTenantId, AuthInstance, AuthAuthority, AuthAudience]
       - Label: { default: Compute & network }
-        Parameters: [VpcId, InstanceSubnetId, InstanceType, UbuntuAmi, SshAllowedCidr]
+        Parameters: [VpcId, InstanceSubnetId, InstanceType, UbuntuAmi, SshAllowedCidr, ElasticIpAllocationId, ElasticIpAddress]
       - Label: { default: Image (advanced) }
         Parameters: [BrochVersion, BrochImage, RegistryServer, RegistryUsername, RegistryPassword]
     ParameterLabels:
@@ -35,9 +36,11 @@ Metadata:
       DnsZoneName: { default: "Delegated DNS zone that owns the records (advanced; empty = DnsZone is the zone)" }
       HostedZoneId: { default: Route 53 hosted zone for that domain }
       DnsAutoRecords: { default: "Auto-create DNS A records? (Auto = deploy then sign in)" }
+      DbSslMode: { default: "Existing server TLS check (ExistingServer; VerifyFull = RDS CA, VerifyFullSystemCa = public CA)" }
       LocalDbAdminPassword: { default: "Password for the on-box Postgres (Local mode; empty = generated + stashed)" }
       DataVolumeSize: { default: "On-box Postgres data volume size in GiB (Local mode)" }
       DataVolumeAz: { default: "Availability Zone of InstanceSubnetId (Local mode data volume)" }
+      DataVolumeSnapshotId: { default: "Restore the data volume from this EBS snapshot (Local mode; empty = new volume)" }
 
 Parameters:
   # ── Encryption (required) ────────────────────────────────────────────────────
@@ -94,7 +97,7 @@ Parameters:
     # them. Required only for DnsProvider=Route53 (enforced by the Route53RequiresHostedZone Rule).
     Type: String
     Default: ""
-    Description: Route 53 hosted zone id that owns DnsZone -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there, so point its apex + wildcard A records at the PublicIp output yourself.
+    Description: Route 53 hosted zone id that owns DnsZone -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there; with DnsAutoRecords=Auto (and CertMode=Auto) the appliance creates its apex + wildcard A records through that provider, otherwise you point them at the PublicIp output.
   CertMode:
     Type: String
     AllowedValues: [Auto, Byo]
@@ -219,11 +222,30 @@ Parameters:
       other modes.
     AllowedPattern: "^$|^[a-z]{2}(-[a-z]+)+-[0-9][a-z]$"
     ConstraintDescription: must be empty or an AZ id like us-east-1a (or us-gov-west-1a).
+  DataVolumeSnapshotId:
+    Type: String
+    Default: ""
+    Description: >-
+      Local mode only, and ONLY when creating the stack: restore the data volume from this EBS snapshot
+      (for example the final snapshot a deleted stack left, tagged <stack>-data) instead of starting
+      empty. Never change it on an update: CloudFormation would detach the live, mounted data volume
+      and attach a new one that nothing mounts. DataVolumeSize must be at least the snapshot's size
+      (a larger volume's filesystem is grown at boot). Requires the LocalDbAdminPassword the data was
+      initialised with; also supply the same BrochMasterKey and BrochVersion. Ignored for the other
+      modes.
+    AllowedPattern: "^$|^snap-[0-9a-f]{8,17}$"
+    ConstraintDescription: must be empty or an EBS snapshot id like snap-0123456789abcdef0.
   DatabaseConnectionString:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Npgsql connection string — only when DatabaseMode=ExistingDatabase. e.g. Host=...;Port=5432;Database=brochdb;Username=broch;Password=...;SSL Mode=Require
+    Description: >-
+      Npgsql connection string — only when DatabaseMode=ExistingDatabase. Use SSL Mode=VerifyFull so broch
+      checks the server's certificate chain AND hostname (Require only encrypts; it never authenticates the
+      server). For RDS/Aurora, point Root Certificate at the Amazon RDS CA bundle this stack ships, e.g.
+      Host=mydb.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=...;SSL Mode=VerifyFull;Root Certificate=/etc/broch/db-ca/rds-global-bundle.pem
+      For a server whose certificate chains to a public CA (including RDS Proxy, which uses Amazon Root CA),
+      SSL Mode=VerifyFull alone uses the system trust store. The bundle covers commercial AWS regions only.
   DbInstanceClass:
     Type: String
     Default: db.t4g.micro
@@ -272,6 +294,27 @@ Parameters:
     Type: String
     Default: ""
     Description: Security group ID of the existing server (ExistingServer) — the stack adds an ingress rule allowing Postgres from this instance. e.g. sg-0123456789abcdef0
+  DbSslMode:
+    # Governs BOTH the one-time admin carve (psql) and broch's own connection string. There is no
+    # plaintext/no-TLS option on purpose: the carve sends the server's admin password over this link.
+    # VerifyFull stays the default (the RDS bundle); VerifyFullSystemCa uses the OS store; Require is
+    # the encrypt-only last resort. A verify-ca (chain but no hostname) mode is deliberately absent:
+    # it would accept any certificate from the same CA, i.e. any other RDS instance.
+    Type: String
+    AllowedValues: [VerifyFull, VerifyFullSystemCa, Require]
+    Default: VerifyFull
+    Description: >-
+      TLS check for the existing server (ExistingServer). VerifyFull (default, recommended for RDS/Aurora)
+      authenticates the server: its certificate must chain to the Amazon RDS CA bundle this stack ships AND
+      match DbServerHost (use the RDS/Aurora endpoint name exactly as AWS shows it). VerifyFullSystemCa is
+      the same check against the OS trust store instead: for a server whose certificate comes from a public
+      CA, including RDS Proxy (Amazon Root CA); it needs libpq 16+, which the default Ubuntu 24.04
+      UbuntuAmi has (an older AMI override fails closed at boot). Both verify modes check the hostname, so
+      an IP or your own CNAME/alias in DbServerHost fails either way: use a host name the certificate
+      covers instead. Require still encrypts but does NOT authenticate the server, so an on-path attacker
+      could impersonate it and capture the admin and broch credentials; choose it only knowingly, for a
+      confirmed limitation (no certificate covers the host name you must use, or a private CA).
+      Commercial AWS regions only for VerifyFull. Ignored for the other modes.
 
   # ── Identity provider (boot floor) ──────────────────────────────────────────
   # All the non-secret auth fields below carry the same "no $" guard as AcmeEmail
@@ -311,14 +354,47 @@ Parameters:
   InstanceSubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Public subnet for the instance + Elastic IP.
+  # Bring your own Elastic IP: its address is known BEFORE the deploy, so a database outside this VPC
+  # can allow-list it in advance. First boot claims it before any database traffic (claim-eip.sh).
+  ElasticIpAllocationId:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional, set when creating the stack. An Elastic IP you already allocated in this region
+      (eipalloc-...), for a database outside this VPC that must allow-list the instance before it is
+      deployed. Set it together with ElasticIpAddress. It must be unassociated. Empty (default)
+      allocates a new one with the stack. A supplied address is yours: stack deletion detaches it but
+      does not release it. Don't change it on an update: the instance keeps the old address in .env.
+    AllowedPattern: "^$|^eipalloc-[0-9a-f]{8,17}$"
+    ConstraintDescription: must be empty or an allocation id like eipalloc-0123456789abcdef0.
+  ElasticIpAddress:
+    Type: String
+    Default: ""
+    Description: >-
+      The public IPv4 address of ElasticIpAllocationId. Required with it; empty otherwise. First boot
+      fails fast if it doesn't match the allocation (it feeds DNS, broch's public IP and the outputs).
+    AllowedPattern: "^$|^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
+    ConstraintDescription: must be empty or an IPv4 address like 203.0.113.10.
   InstanceType:
     Type: String
     Default: t4g.small
     Description: EC2 instance type. Default is ARM64 (Graviton, cheap); the broch image is multi-arch.
   UbuntuAmi:
+    # Pinned to one Canonical release serial, NOT the stable/current alias (deploy-lint rejects
+    # /current/). CloudFormation re-resolves an SSM-typed parameter on EVERY stack update, so "current"
+    # hands the Instance a new ImageId whenever Canonical publishes (every few weeks) and any update --
+    # even a one-parameter change -- REPLACES the instance (and in Local mode rolls back: the new
+    # instance cannot attach the data volume the old one holds). A serial path keeps resolving to the
+    # same AMI, so updates keep the instance. Canonical still publishes every serial back to 2024
+    # (checked 2026-09-26); if one were withdrawn, updates would fail until UbuntuAmi moves to a newer
+    # serial (a replacement). Bump the serial in a template release; the running box patches itself
+    # via unattended-upgrades in between. x86: the same path with amd64 in place of arm64.
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
-    Description: Resolved from SSM — latest Ubuntu 24.04. Must match InstanceType arch (arm64 path for t4g/*g; amd64 path for x86).
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/20260923/arm64/hvm/ebs-gp3/ami-id
+    Description: >-
+      SSM path of the Ubuntu 24.04 AMI, pinned to a Canonical release so a stack update never replaces
+      the instance on its own. Must match InstanceType arch (arm64 path for t4g/*g; amd64 for x86).
+      Changing it replaces the instance (not supported in DatabaseMode=Local -- see README).
   SshAllowedCidr:
     Type: String
     Default: ""
@@ -327,14 +403,18 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.31.0"
+    Default: "1.33.0"
+    # A Docker tag: spliced into a sed replacement in set-version.sh, so no | or spaces.
+    AllowedPattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
+    ConstraintDescription: must be a Docker image tag (letters, digits, _ . -), e.g. 1.31.0 or latest.
     Description: >-
       Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
       replacement never silently rolls the box across an EF-migration boundary; new releases of this
       template bump this default. Redeploying an existing installation from a fresh stack? Enter the
       version it currently runs (the old stack's Parameters tab shows it; a stack UPDATE keeps it
-      automatically) — a newer version migrates the database irreversibly. Set a newer tag to
-      upgrade deliberately, or "latest" to float.
+      automatically) — a newer version migrates the database irreversibly. To upgrade, update the
+      stack with a newer tag: it applies in place, and a downgrade between release versions is
+      refused. ("latest" is resolved when the image is first pulled; it does not float afterwards.)
       1.29.0+ is required for DnsAutoRecords=Auto on the token-based providers
       (Cloudflare/GoogleCloudDns/DigitalOcean), which serve /internal/public-ip to
       caddy-dynamicdns; Route53 uses native RecordSets and needs no specific version.
@@ -360,12 +440,15 @@ Conditions:
   IsLocal: !Equals [!Ref DatabaseMode, Local]
   # Empty LocalDbAdminPassword => generate the on-box Postgres password; set => use the supplied value.
   HasLocalDbPassword: !Not [!Equals [!Ref LocalDbAdminPassword, ""]]
+  HasDataVolumeSnapshot: !Not [!Equals [!Ref DataVolumeSnapshotId, ""]]
+  CreateElasticIp: !Equals [!Ref ElasticIpAllocationId, ""]
   IsByoCert: !Equals [!Ref CertMode, Byo]
   # The public host is <ShareSubdomain>.<DnsZone>, or the zone apex when ShareSubdomain is empty.
   HasShareSubdomain: !Not [!Equals [!Ref ShareSubdomain, ""]]
-  # Route 53 is the only provider the stack manages DNS for (the apex/wildcard A records and
-  # the instance-role DNS-01 policy). The token-based providers run on a domain hosted OFF
-  # Route 53, so those resources are skipped and the customer owns their own A records.
+  # Route 53 is the only provider the STACK manages DNS resources for (native apex/wildcard
+  # RecordSets and the instance-role DNS-01 policy). The token-based providers run on a domain
+  # hosted OFF Route 53, so those resources are skipped; their A records come from caddy-dynamicdns
+  # on the instance (DnsAutoRecords=Auto with CertMode=Auto) or from the customer (Manual / Byo).
   IsRoute53: !Equals [!Ref DnsProvider, Route53]
   # The native apex/wildcard A records are created only when Route 53 owns the domain, the operator
   # wants the appliance to manage records (DnsAutoRecords=Auto), AND this is not a Byo-cert deploy.
@@ -464,6 +547,24 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref DataVolumeAz, ""]]
         AssertDescription: DataVolumeAz (the AZ of InstanceSubnetId) is required when DatabaseMode=Local.
+  ElasticIpAllocationRequiresAddress:
+    # The allocation id drives the association; the address feeds DNS, broch's public-IP seed and the
+    # outputs. Pure CloudFormation can't look one up from the other, so both are required together
+    # (and claim-eip.sh checks at boot that they match).
+    Assertions:
+      - Assert: !Or
+          - !And [!Equals [!Ref ElasticIpAllocationId, ""], !Equals [!Ref ElasticIpAddress, ""]]
+          - !And [!Not [!Equals [!Ref ElasticIpAllocationId, ""]], !Not [!Equals [!Ref ElasticIpAddress, ""]]]
+        AssertDescription: Set ElasticIpAllocationId and ElasticIpAddress together (or leave both empty).
+  SnapshotRestoreRequiresLocalDbPassword:
+    # Postgres keeps the password its data directory was initialised with, so a restored volume with
+    # a freshly generated password can never go healthy (a guaranteed 25-minute rollback).
+    RuleCondition: !And
+      - !Equals [!Ref DatabaseMode, Local]
+      - !Not [!Equals [!Ref DataVolumeSnapshotId, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LocalDbAdminPassword, ""]]
+        AssertDescription: DataVolumeSnapshotId needs LocalDbAdminPassword set to the password the restored data was initialised with.
 
 Resources:
   # ── Secrets (born in the customer account; never transit Broch) ──────────────
@@ -742,6 +843,13 @@ Resources:
       VPCSecurityGroups: [!Ref RdsSecurityGroup]
       PubliclyAccessible: false
       BackupRetentionPeriod: 7
+      # CACertificateIdentifier deliberately omitted (RDS picks its current default CA, like
+      # EngineVersion above): broch verifies the server against the FULL Amazon RDS CA bundle
+      # (SSL Mode=VerifyFull, see render-secrets.sh), which carries every current RDS root CA
+      # (RSA2048/RSA4096/ECC384, all commercial regions), so whichever of them RDS selects validates.
+      # Pinning one would force a CA-rotation restart onto existing stacks whose instance runs a
+      # different CA, for no verification gain. When AWS adds a region or CA generation, refresh the
+      # bundle (see build.sh).
 
   # ── On-box Postgres data volume (DatabaseMode=Local) ─────────────────────────
   # A dedicated, encrypted EBS gp3 volume that holds the bundled Postgres data (mounted at
@@ -762,6 +870,8 @@ Resources:
     Properties:
       AvailabilityZone: !Ref DataVolumeAz
       Size: !Ref DataVolumeSize
+      # Restore path: boot's blkid check finds the snapshot's filesystem and mounts it without mkfs.
+      SnapshotId: !If [HasDataVolumeSnapshot, !Ref DataVolumeSnapshotId, !Ref "AWS::NoValue"]
       VolumeType: gp3
       Encrypted: true
       Tags:
@@ -830,9 +940,42 @@ Resources:
               # stack's resource metadata at boot (DescribeStackResource); cfn-signal reports
               # boot success/failure back to the Instance's CreationPolicy (SignalResource), so
               # the stack only reaches CREATE_COMPLETE once the box is actually healthy.
+              # DescribeStacks: on-version-change.sh applies a BrochVersion update only once the
+              # whole stack update is UPDATE_COMPLETE (never mid-update or during a rollback).
               - Effect: Allow
-                Action: [cloudformation:DescribeStackResource, cloudformation:SignalResource]
+                Action: [cloudformation:DescribeStackResource, cloudformation:SignalResource, cloudformation:DescribeStacks]
                 Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+        # First boot claims THIS stack's Elastic IP before it talks to any database (see
+        # /opt/broch/claim-eip.sh), so an allow-list on the EIP covers first boot. AssociateAddress
+        # authorizes every resource it touches, each by its own statement: this one allocation only,
+        # only an instance CloudFormation tagged as this stack's, and only an ENI in this stack's
+        # subnet (the instance's primary interface carries no stack tag).
+        - PolicyName: claim-elastic-ip
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:AssociateAddress
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${Alloc}"
+                  - Alloc: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
+              - Effect: Allow
+                Action: ec2:AssociateAddress
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+                Condition:
+                  StringEquals:
+                    "aws:ResourceTag/aws:cloudformation:stack-id": !Ref AWS::StackId
+              - Effect: Allow
+                Action: ec2:AssociateAddress
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+                Condition:
+                  StringEquals:
+                    "ec2:Subnet": !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${InstanceSubnetId}"
+              # DescribeTags: tells an instance replacement (the address is on this stack's old
+              # instance) from an address in use elsewhere, which is never taken.
+              - Effect: Allow
+                Action: [ec2:DescribeAddresses, ec2:DescribeTags]
+                Resource: "*"
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -840,8 +983,10 @@ Resources:
       Roles: [!Ref InstanceRole]
 
   # ── Static address + DNS ────────────────────────────────────────────────────
+  # Allocated with the stack unless ElasticIpAllocationId brings an existing (customer-owned) one.
   ElasticIp:
     Type: AWS::EC2::EIP
+    Condition: CreateElasticIp
     Properties:
       Domain: vpc
 
@@ -850,12 +995,12 @@ Resources:
   ElasticIpAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
-      AllocationId: !GetAtt ElasticIp.AllocationId
+      AllocationId: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
       InstanceId: !Ref Instance
 
   # apex + wildcard A records: only when Route 53 owns the domain AND DnsAutoRecords=Auto.
-  # Off-Route53 providers (Cloudflare/GCP/DO) host their own zone -- the customer points A
-  # records at PublicIp. DnsAutoRecords=Manual skips these even on Route 53, so an operator
+  # Off-Route53 providers (Cloudflare/GCP/DO) host their own zone -- their A records come from
+  # caddy-dynamicdns (Auto, not Byo) or the customer (Manual / Byo). DnsAutoRecords=Manual skips these even on Route 53, so an operator
   # fronting the instance with an ALB/NAT can point DNS at that front-end instead.
   ApexRecord:
     Type: AWS::Route53::RecordSet
@@ -865,7 +1010,7 @@ Resources:
       Name: !If [HasShareSubdomain, !Sub "${ShareSubdomain}.${DnsZone}.", !Sub "${DnsZone}."]
       Type: A
       TTL: "60"
-      ResourceRecords: [!Ref ElasticIp]
+      ResourceRecords: [!If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]]
 
   WildcardRecord:
     Type: AWS::Route53::RecordSet
@@ -875,7 +1020,7 @@ Resources:
       Name: !If [HasShareSubdomain, !Sub "*.${ShareSubdomain}.${DnsZone}.", !Sub "*.${DnsZone}."]
       Type: A
       TTL: "60"
-      ResourceRecords: [!Ref ElasticIp]
+      ResourceRecords: [!If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]]
 
   # ── The instance ────────────────────────────────────────────────────────────
   Instance:
@@ -900,6 +1045,9 @@ Resources:
         # roll back an instance that was about to go healthy.
         Timeout: PT25M
     Metadata:
+      # The one key cfn-hup watches (/etc/cfn/hooks.conf). A BrochVersion stack update changes only
+      # this metadata, so it applies in place via on-version-change.sh.
+      BrochVersion: !Ref BrochVersion
       AWS::CloudFormation::Init:
         config:
           files:
@@ -921,6 +1069,197 @@ Resources:
               mode: "000644"
               owner: root
               group: root
+            # Amazon RDS CA bundle (public CA certificates, SHA-256-pinned in build.sh). The compose
+            # mounts /opt/broch/db-ca read-only into broch at /etc/broch/db-ca, so a connection string
+            # can say SSL Mode=VerifyFull;Root Certificate=/etc/broch/db-ca/rds-global-bundle.pem. The
+            # ExistingServer carve's psql reads it from this host path. Written in every mode (inert
+            # for Local) so an ExistingDatabase string can reference it too.
+            /opt/broch/db-ca/rds-global-bundle.pem:
+              content: "__RDS_CA_BUNDLE_B64__"
+              encoding: base64
+              mode: "000644"
+              owner: root
+              group: root
+            # First boot: make sure the Elastic IP is on THIS instance BEFORE render-secrets.sh (the
+            # ExistingServer carve) and broch's first database connection, so they leave from the
+            # published address and an allow-list on it covers first boot. ElasticIpAssociation below
+            # usually gets there first: CloudFormation ran it ~30 s after launch, well before the
+            # CreationPolicy signal (seen in stack events, 2026-09). Nothing documents that ordering,
+            # so this claims the address itself when it is still unassociated. On an instance
+            # replacement the old instance (tagged with this stack's id) still holds it and
+            # ElasticIpAssociation moves it; it is never taken here. A stack-allocated EIP makes any
+            # failure a WARN (CloudFormation still attaches it). A bring-your-own EIP makes it FATAL
+            # (boot-fatal fails the deploy fast): the customer's database expects that address, the
+            # supplied address must match the allocation (it feeds DNS and the outputs), and an
+            # address held outside this stack is never taken. Shell vars are unbraced (Fn::Sub).
+            /opt/broch/claim-eip.sh:
+              mode: "000700"
+              owner: root
+              group: root
+              content: !Sub
+                - |
+                  #!/bin/sh
+                  alloc='${Alloc}'
+                  addr='${Addr}'
+                  byo='${Byo}'
+                  region='${AWS::Region}'
+                  stackid='${AWS::StackId}'
+                  fatal() { echo "FATAL: $1" >&2; echo "claim-eip: $1" >> /opt/broch/boot-fatal; exit 0; }
+                  miss() { if [ "$byo" = true ]; then fatal "$1 -- ElasticIpAllocationId $alloc ($addr) could not be claimed, and your database allow-list expects it"; fi; echo "WARN: $1; CloudFormation's ElasticIpAssociation attaches the Elastic IP"; exit 0; }
+                  tok=$(curl -fsS --max-time 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || miss "IMDS token failed"
+                  iid=$(curl -fsS --max-time 5 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/instance-id) || miss "IMDS instance-id failed"
+                  info=$(/usr/local/bin/aws ec2 describe-addresses --region "$region" --allocation-ids "$alloc" --query 'Addresses[0].[PublicIp,AssociationId,InstanceId]' --output text) || miss "describe-addresses failed"
+                  pub=$(printf '%s' "$info" | cut -f1); assoc=$(printf '%s' "$info" | cut -f2); owner=$(printf '%s' "$info" | cut -f3)
+                  if [ "$pub" != "$addr" ]; then fatal "ElasticIpAddress $addr does not match allocation $alloc (its address is $pub)"; fi
+                  # CloudFormation starts ElasticIpAssociation once the instance is running (it doesn't
+                  # wait for the CreationPolicy signal), so on a fresh stack the address is usually on
+                  # this instance already by now.
+                  if [ "$owner" = "$iid" ]; then echo "Elastic IP $addr ($alloc) is on this instance for first boot (attached by CloudFormation)"; exit 0; fi
+                  if [ "$assoc" != None ]; then
+                    if [ "$owner" = None ]; then miss "Elastic IP $alloc ($addr) is attached to a network interface outside this stack; disassociate it first"; fi
+                    owner_stack=$(/usr/local/bin/aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$owner" "Name=key,Values=aws:cloudformation:stack-id" --query 'Tags[0].Value' --output text 2>/dev/null) || miss "describe-tags failed"
+                    if [ "$owner_stack" = "$stackid" ]; then echo "Elastic IP $alloc is held by $owner of this stack: instance replacement, CloudFormation moves it to this instance"; exit 0; fi
+                    miss "Elastic IP $alloc ($addr) is associated with $owner, outside this stack; disassociate it first"
+                  fi
+                  /usr/local/bin/aws ec2 associate-address --region "$region" --allocation-id "$alloc" --instance-id "$iid" --no-allow-reassociation >/dev/null || miss "associate-address failed"
+                  # Outbound traffic now leaves from the EIP; give the switch a moment before the next download.
+                  sleep 5
+                  echo "Elastic IP $addr ($alloc) is on this instance for first boot (claimed)"
+                - Alloc: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
+                  Addr: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
+                  Byo: !If [CreateElasticIp, "false", "true"]
+            # The version this instance is meant to run. First boot records the stack's BrochVersion
+            # here; afterwards only on-version-change.sh (cfn-hup, below) rewrites it, once a
+            # BrochVersion stack update has settled and the new image is pulled.
+            /opt/broch/stack-version:
+              mode: "000644"
+              owner: root
+              group: root
+              content: !Sub "${BrochVersion}\n"
+            # Converges BROCH_VERSION in .env to /opt/broch/stack-version. First boot runs it, and
+            # broch.service runs it before EVERY start (ExecStartPre), so a hand edit of .env is undone
+            # on the next start. It refuses (fails the start, closed) when .env already names a NEWER
+            # release than stack-version: broch has migrated the database for that release, and
+            # starting the older one against it is the one outcome worse than not starting.
+            /opt/broch/set-version.sh:
+              mode: "000700"
+              owner: root
+              group: root
+              content: |
+                #!/bin/sh
+                set -eu
+                v=$(cat /opt/broch/stack-version)
+                case "$v" in ''|*[!A-Za-z0-9_.-]*) echo "set-version: invalid /opt/broch/stack-version '$v'" >&2; exit 1 ;; esac
+                f=/opt/broch/.env
+                old=$(sed -n 's/^BROCH_VERSION=//p' "$f")
+                semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+                if [ -n "$old" ] && [ "$old" != "$v" ] && echo "$old" | grep -Eq "$semver" && echo "$v" | grep -Eq "$semver" && [ "$(printf '%s\n%s\n' "$old" "$v" | sort -V | head -n1)" = "$v" ]; then
+                  echo "set-version: .env has BROCH_VERSION=$old, newer than the stack's $v. Starting $v would run an older broch on a database already migrated for $old. Update the stack's BrochVersion to $old." >&2
+                  exit 1
+                fi
+                if grep -q '^BROCH_VERSION=' "$f"; then sed -i "s|^BROCH_VERSION=.*|BROCH_VERSION=$v|" "$f"; else printf 'BROCH_VERSION=%s\n' "$v" >> "$f"; fi
+            # cfn-hup action for the Instance's BrochVersion metadata key (a small leaf, delivered in
+            # $CFN_NEW_METADATA; the Init block is far too large for an environment variable). A
+            # BrochVersion stack update is metadata-only (no stop/start, no replacement); this applies
+            # it in place. Guarded because broch migrates its database forward on start, irreversibly:
+            #  - "done" means the RUNNING broch container is on the target tag, so a failed switch is
+            #    retried (exit 1 = cfn-hup retries on its next poll, without recording the change);
+            #  - wait for the stack to settle, then apply the stack's CURRENT BrochVersion only: after a
+            #    rollback or a newer update the metadata changes again and arrives here as its own run;
+            #  - refuse a downgrade between release numbers, leaving /opt/broch/version-mismatch;
+            #  - pull the new image BEFORE touching the running container, so a bad tag leaves the old
+            #    version running;
+            #  - recreate only the broch container (Caddy keeps serving).
+            # Idempotent: the first poll after create (post.add) finds nothing to do.
+            /opt/broch/on-version-change.sh:
+              mode: "000700"
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/sh
+                set -u
+                log() { echo "broch-version: $*"; logger -t broch-version "$*" 2>/dev/null || true; }
+                # cfn-hup delivers the metadata leaf JSON-encoded (e.g. "1.34.0"); strip the quotes.
+                want=$(printf '%s' "$CFN_NEW_METADATA" | sed 's/^"\(.*\)"$/\1/')
+                case "$want" in ''|*[!A-Za-z0-9_.-]*) log "ignoring invalid BrochVersion '$want'"; exit 0 ;; esac
+                cd /opt/broch || exit 1
+                cid=$(docker compose ps -q broch 2>/dev/null | head -n1)
+                run=""
+                if [ -n "$cid" ]; then run=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null | sed 's/.*://'); fi
+                recorded=$(cat /opt/broch/stack-version 2>/dev/null || true)
+                if [ "$run" = "$want" ] && [ "$recorded" = "$want" ]; then exit 0; fi
+                if [ -s /opt/broch/boot-fatal ]; then log "first boot failed; not applying BrochVersion=$want"; exit 0; fi
+                out=ERR
+                st=ERR
+                for _ in $(seq 1 120); do
+                  # shellcheck disable=SC2016 # the backticks are a JMESPath literal, not a substitution
+                  out=$(/usr/local/bin/aws cloudformation describe-stacks --region '${AWS::Region}' --stack-name '${AWS::StackId}' --query 'Stacks[0].[StackStatus,Parameters[?ParameterKey==`BrochVersion`].ParameterValue|[0]]' --output text 2>/dev/null) || out=ERR
+                  st=$(printf '%s' "$out" | cut -f1)
+                  case "$st" in *_IN_PROGRESS|ERR|'') sleep 30 ;; *) break ;; esac
+                done
+                case "$st" in *_IN_PROGRESS|ERR|'') log "stack status unavailable ($st); will retry"; exit 1 ;; esac
+                param=$(printf '%s' "$out" | cut -f2)
+                if [ "$param" != "$want" ]; then log "the stack's BrochVersion is now $param ($st), not $want; that change arrives as its own run"; exit 0; fi
+                cur=$run
+                if [ -z "$cur" ]; then cur=$recorded; fi
+                semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+                if [ "$cur" != "$want" ] && echo "$cur" | grep -Eq "$semver" && echo "$want" | grep -Eq "$semver" && [ "$(printf '%s\n%s\n' "$cur" "$want" | sort -V | head -n1)" = "$want" ]; then
+                  msg="REFUSED downgrade $cur -> $want: the database is already migrated for $cur. Still running $cur; set the stack's BrochVersion back to $cur."
+                  printf '%s\n' "$msg" > /opt/broch/version-mismatch
+                  log "$msg"
+                  exit 0
+                fi
+                if ! res=$(BROCH_VERSION="$want" docker compose pull broch 2>&1); then
+                  log "could not pull broch:$want; still running $cur, will retry: $res"
+                  exit 1
+                fi
+                printf '%s\n' "$want" > /opt/broch/stack-version
+                if ! /bin/sh /opt/broch/set-version.sh; then log "set-version failed for $want; will retry"; exit 1; fi
+                if ! res=$(docker compose up -d broch 2>&1); then log "docker compose up failed for $want; will retry: $res"; exit 1; fi
+                rm -f /opt/broch/version-mismatch
+                log "BrochVersion $cur -> $want applied"
+            /etc/cfn/cfn-hup.conf:
+              mode: "000400"
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+            # hooks.conf, not hooks.d/: cfn-hup parses every file in hooks.d, including the .bak copies
+            # a later cfn-init run leaves behind.
+            /etc/cfn/hooks.conf:
+              mode: "000400"
+              owner: root
+              group: root
+              content: |
+                [broch-version]
+                triggers=post.add,post.update
+                path=Resources.Instance.Metadata.BrochVersion
+                action=/bin/sh /opt/broch/on-version-change.sh
+            /etc/systemd/system/cfn-hup.service:
+              mode: "000644"
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=cfn-hup (applies BrochVersion stack updates to this instance)
+                # After broch.service: a version change pending across a stop/start must not race the
+                # boot-time `up --force-recreate` for the broch container.
+                After=network-online.target broch.service
+                Wants=network-online.target
+                StartLimitIntervalSec=0
+                [Service]
+                Type=simple
+                # cfn-hup's pidfile lock never breaks a stale file (after an OOM kill, say), which would
+                # loop every restart; systemd already guarantees a single instance.
+                ExecStartPre=-/bin/rm -f /var/run/cfn-hup.pid
+                ExecStart=/usr/local/bin/cfn-hup
+                Restart=always
+                RestartSec=30
+                [Install]
+                WantedBy=multi-user.target
             # Boot-time secret hydration script. Relocated here from UserData's write_files:
             # its ~170 lines pushed base64-encoded UserData past EC2's 25,600-byte hard cap
             # (metadata has no such cap). Runcmd invokes it AFTER cfn-init writes it -- same
@@ -1031,10 +1370,31 @@ Resources:
                     # of being read as an inline comment / interpolation.
                     printf "BROCH_MASTER_KEY='%s'\n" "$(get "broch-master-key")" >> "$env_file"
 
+                    # fatal: log the reason AND record it in /opt/broch/boot-fatal, which the runcmd health
+                    # wait checks so the stack signals FAILURE at once instead of timing out ~10 minutes later.
+                    fatal() { echo "FATAL: $*" >&2; printf '%s\n' "$*" >> /opt/broch/boot-fatal; exit 1; }
+
+                    # Database TLS: VerifyFull = encrypted AND the server authenticated (certificate chains
+                    # to the Amazon RDS CA bundle cfn-init wrote, and its name matches Host). Require would
+                    # only encrypt -- an on-path attacker could impersonate the server and take the
+                    # credentials. host_ca is the bundle on this host (psql); ctr_ca is the same file
+                    # inside the broch container (compose mounts /opt/broch/db-ca at /etc/broch/db-ca).
+                    host_ca=/opt/broch/db-ca/rds-global-bundle.pem
+                    ctr_ca=/etc/broch/db-ca/rds-global-bundle.pem
+                    # The shipped bundle holds the COMMERCIAL-partition RDS CAs only; GovCloud and China RDS
+                    # sign with other roots, so verification against it can never succeed there -- fail now
+                    # with the fix rather than after a connect timeout.
+                    require_rds_ca() {
+                      [ "${AWS::Partition}" = "aws" ] || fatal "the bundled Amazon RDS CA bundle covers the commercial aws partition only (this stack is in ${AWS::Partition}), so RDS server verification cannot succeed here. NewServer is not supported in this partition; for ExistingServer set DbSslMode=VerifyFullSystemCa (public-CA server) or DbSslMode=Require (encrypt only)."
+                      [ -s "$host_ca" ] || fatal "RDS CA bundle $host_ca missing or empty -- cannot verify the database server"
+                    }
+
                     case "${DatabaseMode}" in
                       NewServer)
+                        require_rds_ca
                         db_pass="$(get "broch-db-password" | python3 -c 'import sys,json; print(json.load(sys.stdin)["password"])')"
-                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbEndpoint};Port=5432;Database=brochdb;Username=broch;Password=%s;SSL Mode=Require'\n" "$db_pass" >> "$env_file"
+                        # Host is the RDS endpoint address itself, so it matches the certificate's name.
+                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbEndpoint};Port=5432;Database=brochdb;Username=broch;Password=%s;SSL Mode=VerifyFull;Root Certificate=%s'\n" "$db_pass" "$ctr_ca" >> "$env_file"
                         ;;
                       ExistingDatabase)
                         printf "BROCH_DB_CONNECTION_STRING='%s'\n" "$(get "broch-conn-string")" >> "$env_file"
@@ -1045,8 +1405,34 @@ Resources:
                         apt-get install -y postgresql-client
                         admin_pass="$(get "broch-db-admin-password")"
                         broch_pass="$(get "broch-role-password")"
+                        # The carve sends the ADMIN password, so psql never runs in libpq's default
+                        # 'prefer' mode (which silently falls back to plaintext). broch's own connection
+                        # string below follows the same choice:
+                        #   VerifyFull         -- verify-full against the shipped Amazon RDS CA bundle
+                        #   VerifyFullSystemCa -- verify-full against the OS trust store (public-CA servers,
+                        #                         RDS Proxy); sslrootcert=system needs libpq 16+ (Ubuntu 24.04)
+                        #   Require            -- encrypted only, server NOT authenticated (last resort)
+                        case "${DbSslMode}" in
+                          Require)
+                            export PGSSLMODE=require
+                            db_ssl='SSL Mode=Require'
+                            ;;
+                          VerifyFullSystemCa)
+                            export PGSSLMODE=verify-full PGSSLROOTCERT=system
+                            db_ssl='SSL Mode=VerifyFull'
+                            ;;
+                          *)
+                            require_rds_ca
+                            export PGSSLMODE=verify-full PGSSLROOTCERT="$host_ca"
+                            db_ssl="SSL Mode=VerifyFull;Root Certificate=$ctr_ca"
+                            ;;
+                        esac
+                        # A carve failure names the knob and the likely cause, then fails the boot fast.
+                        carve_failed() {
+                          fatal "ExistingServer carve could not connect to ${DbServerHost}:${DbServerPort} or run its SQL (DbSslMode=${DbSslMode}, psql sslmode=$PGSSLMODE; the psql error is above). If it is a hostname mismatch (DbServerHost is an IP or your own CNAME/alias the certificate does not name): set DbServerHost to the name the certificate covers (the endpoint exactly as AWS shows it) -- VerifyFullSystemCa checks the hostname too and will not help. If it is an untrusted CA (the server is not RDS/Aurora): DbSslMode=VerifyFullSystemCa for a publicly trusted certificate (for example RDS Proxy; needs libpq 16+, i.e. the default Ubuntu 24.04 UbuntuAmi -- an older AMI override fails closed with 'root certificate file system does not exist'). DbSslMode=Require is only for a confirmed limitation you accept: it encrypts without authenticating the server. Otherwise check reachability (DbServerSecurityGroupId, routing) and the admin credentials."
+                        }
                         export PGPASSWORD="$admin_pass"
-                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d postgres -v brochpw="$broch_pass" <<'SQL'
+                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d postgres -v brochpw="$broch_pass" <<'SQL' || carve_failed
                     SELECT 'CREATE ROLE broch LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'broch')\gexec
                     ALTER ROLE broch LOGIN PASSWORD :'brochpw';
                     -- Managed Postgres (RDS, Cloud SQL, Azure Flexible Server, ...) runs the
@@ -1058,12 +1444,12 @@ Resources:
                     GRANT broch TO CURRENT_USER;
                     SELECT 'CREATE DATABASE brochdb OWNER broch' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'brochdb')\gexec
                     SQL
-                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d brochdb <<'SQL'
+                        psql -v ON_ERROR_STOP=1 -h "${DbServerHost}" -p "${DbServerPort}" -U "${DbAdminUsername}" -d brochdb <<'SQL' || carve_failed
                     GRANT ALL ON SCHEMA public TO broch;
                     ALTER SCHEMA public OWNER TO broch;
                     SQL
-                        unset PGPASSWORD
-                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbServerHost};Port=${DbServerPort};Database=brochdb;Username=broch;Password=%s;SSL Mode=Require'\n" "$broch_pass" >> "$env_file"
+                        unset PGPASSWORD PGSSLMODE PGSSLROOTCERT
+                        printf "BROCH_DB_CONNECTION_STRING='Host=${DbServerHost};Port=${DbServerPort};Database=brochdb;Username=broch;Password=%s;%s'\n" "$broch_pass" "$db_ssl" >> "$env_file"
                         ;;
                       Local)
                         # On-box Postgres: the with-postgres compose builds its own connection string
@@ -1121,8 +1507,9 @@ Resources:
         - DeviceName: /dev/sda1
           Ebs: { VolumeSize: 30, VolumeType: gp3, Encrypted: true }
       # DatabaseMode=Local: attach the dedicated on-box Postgres data volume AT LAUNCH (so it is
-      # present in UserData before Docker installs — a separate AWS::EC2::VolumeAttachment would not
-      # complete until AFTER the instance's CreationPolicy signal, deadlocking the boot-time mount).
+      # present in UserData before Docker installs — a separate AWS::EC2::VolumeAttachment has no
+      # guaranteed ordering against first boot, and under the documented CreationPolicy semantics it
+      # would wait for the signal, deadlocking the boot-time mount).
       # Requested as /dev/sdf; on nitro instances it surfaces as an NVMe device, resolved by volume-id
       # in UserData. Absent (no attachment) for every other mode. The AWS analog of azure-vm's
       # storageProfile dataDisks union().
@@ -1173,14 +1560,15 @@ Resources:
                 - path: /opt/broch/.env
                   permissions: "0600"
                   content: |
-                    BROCH_VERSION=${BrochVersion}
+                    # BROCH_VERSION is added by /opt/broch/set-version.sh (cfn-init metadata), so a
+                    # BrochVersion change is a metadata-only stack update applied in place by cfn-hup.
                     BROCH_IMAGE=${BrochImage}
                     BROCH_WILDCARD_HOSTNAME=${WildcardHostname}
                     # Seed for broch's public-IP setting (compose maps it to API__PUBLICIP): this stack's
                     # Elastic IP, known here, so broch serves it to caddy-dynamicdns for the apex+wildcard
                     # A records (auto-DNS points at the IP we KNOW, not one caddy discovers), and an admin
                     # can override it at runtime in broch. Non-secret (it's published in DNS anyway).
-                    BROCH_PUBLIC_IP=${ElasticIp}
+                    BROCH_PUBLIC_IP=${PublicIpAddr}
                     CADDY_ACME_EMAIL=${AcmeEmail}
                     GCP_PROJECT=${GcpProject}
                     GOOGLE_APPLICATION_CREDENTIALS=${GcpCredsPath}
@@ -1214,6 +1602,9 @@ Resources:
                     # writable layer never committed); a plain `up -d` tries to start those stale containers,
                     # won't recreate them, and the stack never comes up (a reboot alone can't clear it).
                     # Force-recreate replaces them; named volumes are preserved -- idempotent, no data loss.
+                    # ExecStartPre: BROCH_VERSION follows the stack's BrochVersion on every start, so a
+                    # hand edit of .env can't leave the box on a version the stack doesn't record.
+                    ExecStartPre=/bin/sh /opt/broch/set-version.sh
                     ExecStart=/usr/bin/docker compose up -d --force-recreate --remove-orphans
                     ExecStop=/usr/bin/docker compose down
                     [Install]
@@ -1233,8 +1624,15 @@ Resources:
                 # silently putting the database on the ephemeral root disk. Format ONLY when blank (blkid).
                 # Mirrors the azure-vm cloud-init data-disk block. Shell vars are written UNBRACED (bare
                 # dollar-name) so Fn::Sub leaves them; only DatabaseMode / DataVolumeId are CFN-substituted.
+                #
+                # cloud-init concatenates ALL runcmd items into ONE /bin/sh script, so a bare `exit` here
+                # would end it before cfn-signal and leave the stack waiting out its whole timeout. The
+                # body therefore runs in a SUBSHELL: its `exit 1`s leave only the subshell, and the failure
+                # is recorded in /opt/broch/boot-fatal, so broch is not started and the health wait below
+                # signals FAILURE at once. (No runcmd item may `exit` or `set -e` for the same reason.)
                 - |
                   if [ "${DatabaseMode}" = "Local" ]; then
+                   (
                     # Fail-closed guards FIRST -- before anything below can `exit`. The
                     # ConditionPathIsMountPoint drop-in is the load-bearing barrier that keeps broch from
                     # starting against an unmounted (empty) /var/lib/docker/volumes on any REBOOT (runcmd
@@ -1284,6 +1682,10 @@ Resources:
                     # the fail-closed broch.service guard is what actually stops broch from starting blank.
                     grep -q "^UUID=$UUID " /etc/fstab || echo "UUID=$UUID /var/lib/docker/volumes ext4 defaults,nofail 0 0" >> /etc/fstab
                     mountpoint -q /var/lib/docker/volumes || mount /var/lib/docker/volumes || { echo "FATAL: DatabaseMode=Local but mounting the data volume at /var/lib/docker/volumes failed" >&2; exit 1; }
+                    # A volume restored from a smaller snapshot (DataVolumeSnapshotId) keeps the snapshot's
+                    # filesystem size; grow it online to fill the volume (a no-op otherwise).
+                    resize2fs "$DISK" >/dev/null 2>&1 || echo "WARN: resize2fs on $DISK failed; the filesystem keeps its current size" >&2
+                   ) || echo "DatabaseMode=Local data volume setup failed -- see FATAL above" >> /opt/broch/boot-fatal
                   fi
                 - install -m 0755 -d /etc/apt/keyrings
                 - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -1301,10 +1703,17 @@ Resources:
                 - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip -o /tmp/awscliv2.zip
                 - unzip -q /tmp/awscliv2.zip -d /tmp
                 - /tmp/aws/install
+                # Claim the Elastic IP before anything below talks to a database (fatal only for a bring-your-own EIP).
+                - sh /opt/broch/claim-eip.sh
+                - sh /opt/broch/set-version.sh || echo "set-version.sh failed -- BROCH_VERSION not written to .env" >> /opt/broch/boot-fatal
                 # Hydrate secrets into .env (and do any private-registry login) AFTER docker
-                # is installed and BEFORE the service starts.
-                - bash /opt/broch/render-secrets.sh
+                # is installed and BEFORE the service starts. ANY non-zero exit (a set -e abort on a
+                # secret fetch, apt, a login, ...) leaves .env partial, so it is recorded as a boot FATAL
+                # too: broch is then never started and the stack fails at once (see the health wait).
+                - bash /opt/broch/render-secrets.sh || echo "render-secrets.sh exited non-zero -- see log above" >> /opt/broch/boot-fatal
                 - systemctl daemon-reload
+                # Apply later BrochVersion stack updates in place (on-version-change.sh).
+                - systemctl enable --now cfn-hup.service || echo "WARN - cfn-hup did not start, so BrochVersion stack updates will not reach this instance until it runs"
                 # DatabaseMode=Local first-boot guard (belt-and-suspenders for the ConditionPathIsMountPoint
                 # drop-in, which gates reboots): refuse to START broch unless the data volume is mounted. If
                 # unmounted, do NOT enable broch -- the health wait below then finds no healthy container and
@@ -1313,6 +1722,9 @@ Resources:
                 - |
                   if [ "${DatabaseMode}" = "Local" ] && ! mountpoint -q /var/lib/docker/volumes; then
                     echo "FATAL: DatabaseMode=Local but /var/lib/docker/volumes is not mounted -- NOT starting broch (would initialise Postgres on the root disk)" >&2
+                    echo "DatabaseMode=Local data volume not mounted at /var/lib/docker/volumes" >> /opt/broch/boot-fatal
+                  elif [ -s /opt/broch/boot-fatal ]; then
+                    echo "NOT starting broch: a boot step recorded a FATAL error (/opt/broch/boot-fatal)" >&2
                   else
                     systemctl enable --now broch.service
                   fi
@@ -1321,9 +1733,14 @@ Resources:
                 # A failed/never-healthy boot signals non-zero -> the stack rolls back instead of
                 # falsely reporting success. rc/i/cid/h are shell vars referenced unbraced ($rc ...)
                 # so Fn::Sub leaves them; only the AWS::StackName / AWS::Region pseudo-params (the
-                # only brace-wrapped tokens below) are substituted.
+                # only brace-wrapped tokens below) are substituted. A FATAL recorded by render-secrets.sh
+                # in /opt/broch/boot-fatal (e.g. database TLS verification) signals failure at once,
+                # skipping the wait; the reason is in the instance console / cloud-init output log.
                 - |
                   rc=1
+                  if [ -s /opt/broch/boot-fatal ]; then
+                    echo "boot FATAL (see above): $(cat /opt/broch/boot-fatal)" >&2
+                  else
                   for i in $(seq 1 60); do
                     cid=$(docker ps --filter "label=com.docker.compose.service=broch" -q | head -n1)
                     if [ -n "$cid" ]; then
@@ -1332,6 +1749,7 @@ Resources:
                     fi
                     sleep 10
                   done
+                  fi
                   /usr/local/bin/cfn-signal --exit-code $rc --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
             # Condition-derived values the remaining UserData needs. render-secrets.sh (which
             # consumed the DbEndpoint / Has* / Is* values) now lives in cfn-init metadata with
@@ -1340,6 +1758,8 @@ Resources:
             # DatabaseMode=Local: the attached data volume's id, used in runcmd to resolve its nitro
             # NVMe device by serial (the volume id minus its dash). Empty for the other modes.
             - DataVolumeId: !If [IsLocal, !Ref DataVolume, ""]
+              # The Elastic IP in use: the stack's, or the one ElasticIpAllocationId brought.
+              PublicIpAddr: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
               # The ONE public hostname, composed from the zone + share subdomain (apex when the
               # subdomain is empty). Fanned out to Caddy + broch via BROCH_WILDCARD_HOSTNAME in .env.
               WildcardHostname: !If [HasShareSubdomain, !Sub "${ShareSubdomain}.${DnsZone}", !Ref DnsZone]
@@ -1351,14 +1771,18 @@ Outputs:
     Description: Broch URL (sign in here once Caddy has issued the cert).
     Value: !If [HasShareSubdomain, !Sub "https://${ShareSubdomain}.${DnsZone}", !Sub "https://${DnsZone}"]
   PublicIp:
-    Description: Elastic IP. With DnsAutoRecords=Auto (the default) on Route53, the stack creates the apex/wildcard A records here for you; with DnsAutoRecords=Manual, or with any other DNS provider, point both records here yourself.
-    Value: !Ref ElasticIp
+    Description: Elastic IP. With DnsAutoRecords=Auto (the default) the apex/wildcard A records point here automatically (native records on Route53, caddy-dynamicdns on Cloudflare / DigitalOcean / GoogleCloudDns); with DnsAutoRecords=Manual or CertMode=Byo, point both records here yourself.
+    Value: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
   DnsHint:
-    Description: The apex + wildcard A records to create when you own the records (DnsAutoRecords=Manual, or a DNS provider off Route 53). No-op when Route53+Auto creates them for you.
+    Description: The apex + wildcard A records to create when you own the records (DnsAutoRecords=Manual, or CertMode=Byo). No-op when DnsAutoRecords=Auto creates them for you.
     Value: !If
       - HasShareSubdomain
-      - !Sub "Create A records: ${ShareSubdomain}.${DnsZone} and *.${ShareSubdomain}.${DnsZone} -> ${ElasticIp} (DNS-only / grey-cloud on Cloudflare)"
-      - !Sub "Create A records: ${DnsZone} and *.${DnsZone} -> ${ElasticIp} (DNS-only / grey-cloud on Cloudflare)"
+      - !Sub
+        - "Create A records: ${ShareSubdomain}.${DnsZone} and *.${ShareSubdomain}.${DnsZone} -> ${Addr} (DNS-only / grey-cloud on Cloudflare)"
+        - Addr: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
+      - !Sub
+        - "Create A records: ${DnsZone} and *.${DnsZone} -> ${Addr} (DNS-only / grey-cloud on Cloudflare)"
+        - Addr: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
   Readiness:
     Description: Expected first-boot behavior -- the appliance is warming up, not broken, until this completes.
     Value: !If

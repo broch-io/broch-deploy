@@ -52,7 +52,7 @@ param doAuthToken string = ''
 @secure()
 param postgresAdminPassword string = ''
 
-@description('REQUIRED when databaseMode=Existing — on a FIRST deployment. Npgsql connection string for your existing PostgreSQL. On a Redeploy retry it may be left blank: the stored value is reused. Ignored when databaseMode=Managed/Local.')
+@description('REQUIRED when databaseMode=Existing — on a FIRST deployment. Npgsql connection string for your existing PostgreSQL. Use SSL Mode=VerifyFull, which authenticates the server (certificate chain + hostname) as well as encrypting; SSL Mode=Require only encrypts. On a Redeploy retry it may be left blank: the stored value is reused. Ignored when databaseMode=Managed/Local.')
 @secure()
 param databaseConnectionString string = ''
 
@@ -157,7 +157,7 @@ param azureClientId string = ''
 param gcpProject string = ''
 
 @description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Redeploying an existing installation? Enter the version it currently runs — the Deployments history of the resource group shows it, and the Redeploy button on the prior deployment pre-fills it — because a newer version migrates the database irreversibly. Set a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
-param brochVersion string = '1.31.0'
+param brochVersion string = '1.33.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
 param brochImage string = 'ghcr.io/broch-io/broch'
@@ -422,7 +422,7 @@ var sshRules = empty(sshAllowedCidr) ? [] : [
   }
 ]
 
-resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
+resource nsg 'Microsoft.Network/networkSecurityGroups@2025-05-01' = {
   name: '${vmName}-nsg'
   location: location
   properties: {
@@ -457,7 +457,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
   }
 }
 
-resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
+resource vnet 'Microsoft.Network/virtualNetworks@2025-05-01' = {
   name: '${vmName}-vnet'
   location: location
   properties: {
@@ -488,14 +488,14 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
   }
 }
 
-resource publicIp 'Microsoft.Network/publicIPAddresses@2023-09-01' = {
+resource publicIp 'Microsoft.Network/publicIPAddresses@2025-05-01' = {
   name: '${vmName}-pip'
   location: location
   sku: { name: 'Standard' }
   properties: { publicIPAllocationMethod: 'Static' }
 }
 
-resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
+resource nic 'Microsoft.Network/networkInterfaces@2025-05-01' = {
   name: '${vmName}-nic'
   location: location
   properties: {
@@ -514,14 +514,15 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = {
 
 // --- Managed database (databaseMode=Managed only): a PRIVATE Azure PostgreSQL Flexible
 // Server, VNet-injected into the delegated subnet with a private DNS zone — NO public
-// endpoint; only the VM (same VNet) can reach it. broch connects over SSL as the server
-// admin to a provisioned 'brochdb' — the "external Postgres" the compose expects. ---
-resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (databaseMode == 'Managed') {
+// endpoint; only the VM (same VNet) can reach it. broch connects over TLS with the server
+// authenticated (SSL Mode=VerifyFull, see pg.bicep) as the server admin to a provisioned
+// 'brochdb' — the "external Postgres" the compose expects. ---
+resource postgresDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = if (databaseMode == 'Managed') {
   name: pgDnsZone
   location: 'global'
 }
 
-resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (databaseMode == 'Managed') {
+resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (databaseMode == 'Managed') {
   parent: postgresDnsZone
   name: '${vmName}-pg-link'
   location: 'global'
@@ -540,7 +541,7 @@ resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
 // password with NO stored secret (misused first deploy) fails LOUDLY at deployment time — getSecret
 // on a missing secret is an ARM error, not a boot-time brick. Requires enabledForTemplateDeployment
 // on the vault (see the keyVault resource).
-resource kvForPgSecret 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+resource kvForPgSecret 'Microsoft.KeyVault/vaults@2025-05-01' existing = {
   name: kvName
 }
 
@@ -612,7 +613,7 @@ var recoverBgVault = usePassword && contains(softDeletedVaultNames, bgKvName)
 // system-assigned, on purpose: its principalId exists BEFORE the VM, so the app vault's access policy
 // (below) names it and is in place the instant the vault is created -- cloud-init's boot-time secret
 // fetch then does not race grant propagation. Declared ahead of the vault so the vault can reference it.
-resource vmIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+resource vmIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
   name: '${vmName}-id'
   location: location
 }
@@ -635,7 +636,7 @@ module kvRecover 'kv-recover.bicep' = if (recoverAppVault || recoverBgVault) {
   }
 }
 
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+resource keyVault 'Microsoft.KeyVault/vaults@2025-05-01' = {
   name: kvName
   location: location
   dependsOn: [ kvRecover ]
@@ -681,7 +682,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 // Separate vault holding ONLY the generated break-glass VM password (no-SSH-key mode). The VM's
 // user-assigned identity has NO grant here -- so a broch RCE that mints an IMDS vault token cannot read
 // the host break-glass password. Only the operator (adminObjectId) can, via the secret-scoped grant below.
-resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
+resource bgKeyVault 'Microsoft.KeyVault/vaults@2025-05-01' = if (usePassword) {
   name: bgKvName
   location: location
   dependsOn: [ kvRecover ]
@@ -698,7 +699,7 @@ resource bgKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (usePassword) {
 // Azure ignores the adminPassword change, so the vault copy rotates away from the VM's real password —
 // the documented "rotates on every redeploy" wart (README); re-read it from the vault, or reset with
 // `az vm user update` if Serial Console break-glass is ever needed on such a box.
-resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePassword) {
+resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (usePassword) {
   parent: bgKeyVault
   name: 'vm-admin-password'
   properties: { value: generatedVmPassword }
@@ -707,14 +708,14 @@ resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (usePa
 // Deploy-time secrets the VM fetches at boot (kept OUT of customData). Every deploy AND every retry
 // re-supplies them (brochMasterKey is ARM-required; the rest are enforced by the wizard on first
 // deploys and fail closed at the boot-fetch if omitted on a raw Redeploy-form retry — see kvSecretMap).
-resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = {
   parent: keyVault
   name: 'broch-master-key'
   properties: { value: brochMasterKey }
 }
 // Existing mode only — Managed mode's db-connection-string is written by pg.bicep from the
 // getSecret-resolved password (one source with the server's own password; see the module header).
-resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Existing' && !empty(databaseConnectionString)) {
+resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (databaseMode == 'Existing' && !empty(databaseConnectionString)) {
   parent: keyVault
   name: 'db-connection-string'
   properties: { value: databaseConnectionString }
@@ -723,42 +724,42 @@ resource secDbConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (database
 // getSecret() on a blank-password retry. The module then composes db-connection-string from that
 // SAME resolved value (see pg.bicep) — the standalone password and the one inside the connection
 // string share one source and cannot be written from different values.
-resource secPgAdminPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Managed' && !empty(postgresAdminPassword)) {
+resource secPgAdminPassword 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (databaseMode == 'Managed' && !empty(postgresAdminPassword)) {
   parent: keyVault
   name: 'pg-admin-password'
   properties: { value: postgresAdminPassword }
 }
-resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseMode == 'Local') {
+resource secPgPassword 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (databaseMode == 'Local') {
   parent: keyVault
   name: 'postgres-password'
   properties: { value: localDbPassword }
 }
-resource secAuthSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(authClientSecret)) {
+resource secAuthSecret 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(authClientSecret)) {
   parent: keyVault
   name: 'auth-client-secret'
   properties: { value: authClientSecret }
 }
-resource secCloudflare 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(cloudflareApiToken)) {
+resource secCloudflare 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(cloudflareApiToken)) {
   parent: keyVault
   name: 'cloudflare-api-token'
   properties: { value: cloudflareApiToken }
 }
-resource secAzureDnsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(azureClientSecret)) {
+resource secAzureDnsSecret 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(azureClientSecret)) {
   parent: keyVault
   name: 'azure-dns-client-secret'
   properties: { value: azureClientSecret }
 }
-resource secAwsKeyId 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(awsAccessKeyId)) {
+resource secAwsKeyId 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(awsAccessKeyId)) {
   parent: keyVault
   name: 'aws-access-key-id'
   properties: { value: awsAccessKeyId }
 }
-resource secAwsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(awsSecretAccessKey)) {
+resource secAwsSecret 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(awsSecretAccessKey)) {
   parent: keyVault
   name: 'aws-secret-access-key'
   properties: { value: awsSecretAccessKey }
 }
-resource secDoToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(doAuthToken)) {
+resource secDoToken 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (!empty(doAuthToken)) {
   parent: keyVault
   name: 'do-auth-token'
   properties: { value: doAuthToken }
@@ -812,7 +813,7 @@ var kvSecretMap = join(filter([
 // re-requesting from Let's Encrypt production (~5 duplicate certs/week/hostname; repeated
 // recreates without this disk hit that limit and lock TLS issuance out for up to a week) — plus
 // the bundled Postgres data dir in Local mode. Standard SSD is plenty for both.
-resource dataDisk 'Microsoft.Compute/disks@2023-10-02' = {
+resource dataDisk 'Microsoft.Compute/disks@2025-01-02' = {
   name: '${vmName}-data'
   location: location
   sku: { name: 'StandardSSD_LRS' }
@@ -829,7 +830,7 @@ resource dataDisk 'Microsoft.Compute/disks@2023-10-02' = {
   }
 }
 
-resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
+resource vm 'Microsoft.Compute/virtualMachines@2025-04-01' = {
   name: vmName
   location: location
   // User-assigned identity ALWAYS (cloud-init reads the deploy-time secrets from Key Vault with it).

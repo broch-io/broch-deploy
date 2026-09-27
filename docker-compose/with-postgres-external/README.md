@@ -37,7 +37,7 @@ Same as [`../with-postgres/`](../with-postgres/), plus:
 - An external Postgres 14+ instance reachable from this host
 - A user with `CREATEDB` permission (or a pre-created database with full DDL access; Broch runs EF migrations on startup)
 - A connection string in Npgsql format (see [`.env.example`](.env.example))
-- The external DB's TLS settings — most managed providers require `SSL Mode=Require`; self-managed Postgres might be on `Disable` for an internal VPC
+- The external DB's TLS settings — use `SSL Mode=VerifyFull`, which encrypts **and** authenticates the server (certificate chain + hostname). `SSL Mode=Require` only encrypts: anyone on the network path can impersonate the server and collect the credentials. If your provider signs with its own CA (RDS, DigitalOcean, Supabase, …), put its CA file in `./db-ca/` (mounted read-only into broch at `/etc/broch/db-ca`) and add `Root Certificate=/etc/broch/db-ca/<file>`. Self-managed Postgres on a network you fully trust might be on `Disable`
 
 ## Setup
 
@@ -59,7 +59,8 @@ curl -fsS https://broch.example.com/healthz
 
 If broch fails to connect to the DB at startup, the most common causes:
 - Connection string typo (especially the `Host=` or password)
-- TLS mismatch (`SSL Mode=Require` against a server that doesn't have TLS configured, or vice versa)
+- TLS mismatch (`SSL Mode=VerifyFull` against a server that doesn't have TLS configured, or vice versa)
+- Certificate verification failure under `VerifyFull`: the provider's CA is missing (add it to `./db-ca/` + `Root Certificate=`), or `Host=` is an IP / your own CNAME rather than the name on the server certificate
 - Firewall: the DB doesn't accept connections from this host's IP
 - DB doesn't exist (`Database=brochdb` but no such DB on the server)
 
@@ -79,18 +80,28 @@ If you go down this path, also consider moving Caddy to a separate node (or a ma
 ## Connection string examples
 
 ```text
-DigitalOcean Managed:
-  Host=broch-db-do-user-1234.b.db.ondigitalocean.com;Port=25060;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
+DigitalOcean Managed (CA file from "Download CA certificate", saved as ./db-ca/ca-certificate.crt):
+  Host=broch-db-do-user-1234.b.db.ondigitalocean.com;Port=25060;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=VerifyFull;Root Certificate=/etc/broch/db-ca/ca-certificate.crt
 
-AWS RDS:
-  Host=broch.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
+AWS RDS / Aurora (CA bundle saved as ./db-ca/rds-global-bundle.pem, see below):
+  Host=broch.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=VerifyFull;Root Certificate=/etc/broch/db-ca/rds-global-bundle.pem
 
-Azure Database for PostgreSQL Flexible Server:
-  Host=broch.postgres.database.azure.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=Require
+Azure Database for PostgreSQL Flexible Server (public CA, system trust store):
+  Host=broch.postgres.database.azure.com;Port=5432;Database=brochdb;Username=broch;Password=YOUR-DB-PASSWORD;SSL Mode=VerifyFull
 
 Neon / Supabase / CloudSQL / RDS Proxy:
-  Standard Npgsql format — copy from your provider's "Connection details" panel.
+  Standard Npgsql format — copy from your provider's "Connection details" panel, then set
+  SSL Mode=VerifyFull (plus Root Certificate= if the provider uses its own CA).
 ```
+
+Fetch the Amazon RDS CA bundle (every RDS/Aurora region) into `./db-ca/`:
+
+```sh
+mkdir -p db-ca
+curl -fsSL -o db-ca/rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+```
+
+The [AWS VM appliance](../../cloudformation/aws-vm/) ships this bundle for you (at `/opt/broch/db-ca/rds-global-bundle.pem` on the instance).
 
 ## Lifecycle
 

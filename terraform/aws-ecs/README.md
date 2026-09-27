@@ -1,6 +1,6 @@
 # AWS ECS Fargate Terraform module
 
-> **Status: experimental.** AWS isn't part of Broch's current supported deploy set. This module is a working starting point, not a supported production path — expect rough edges and validate thoroughly before relying on it. The docker-compose and Azure/DigitalOcean examples are the supported options today.
+> **Status: experimental.** This module is a working starting point, not a supported production path — expect rough edges and validate thoroughly before relying on it. For a supported AWS deployment use [`cloudformation/aws-vm`](../../cloudformation/aws-vm/), the single-instance appliance.
 
 Production-shape Broch on AWS: ECS Fargate behind an Application Load Balancer, RDS Postgres in private subnets, secrets in Secrets Manager, TLS via an ACM cert covering both the apex and wildcard hostname.
 
@@ -82,6 +82,8 @@ Rotating any secret = edit the secret value (via console or `aws secretsmanager 
 | `deletion_protection = false`  | Same as above                                                                        | **Before** going to real production — set to `true`             |
 | No WAF                         | Adds complexity + cost                                                               | When you're exposed to abuse and need rate limiting / geo-block |
 | No CloudFront                  | Direct ALB is faster for tunnel WebSockets                                           | When you want global edge caching for the API (rarely useful)   |
+
+> **Known gap — database TLS is not authenticated.** The connection string sets no `SSL Mode`, so broch negotiates TLS with RDS (encrypted, since RDS offers it) but never verifies the server's certificate or hostname. Unlike the VM templates (`SSL Mode=VerifyFull` against the Amazon RDS CA bundle), a Fargate task has no host path for the CA bundle yet. See the comment in `database.tf`.
 
 ## Pulling a new broch image
 

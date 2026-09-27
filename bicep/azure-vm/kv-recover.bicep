@@ -35,7 +35,7 @@ param recoverBg bool
 // recover PUT FAILS when no vault of that name exists in ANY state, so recovering unconditionally would
 // hard-fail whenever the supplied ghost belongs to an older template version whose name no longer
 // matches kvName — the caller intersects on the exact name and passes recoverApp=false in that case.
-resource appVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverApp) {
+resource appVaultRecover 'Microsoft.KeyVault/vaults@2025-05-01' = if (recoverApp) {
   name: kvName
   location: location
   properties: {
@@ -52,7 +52,7 @@ resource appVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverApp
 // deleted SSH-key deployment left no break-glass ghost, so recreating it in password mode with
 // this flag makes this PUT fail loudly (nothing to recover). Mode switches need a fresh group
 // name or a purge instead.
-resource bgVaultRecover 'Microsoft.KeyVault/vaults@2023-07-01' = if (recoverBg) {
+resource bgVaultRecover 'Microsoft.KeyVault/vaults@2025-05-01' = if (recoverBg) {
   name: bgKvName
   location: location
   properties: {
