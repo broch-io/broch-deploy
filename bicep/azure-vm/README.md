@@ -293,9 +293,15 @@ Caddy keeps serving across the broch restart. Broch runs EF migrations on boot, 
 
 Deployments now connect to their database with `SSL Mode=VerifyFull`: the server's certificate must chain to a trusted CA **and** name the host, not merely encrypt the link as `SSL Mode=Require` does. A VM deployed earlier keeps its old settings. Its `/opt/broch/.env` (and compose file) were written by cloud-init on first boot and are not rewritten afterwards. A redeploy over a **live** VM does not replace them either: this template's `customData` changed, and Azure rejects a `customData` change on an existing VM (`PropertyChangeNotAllowed`, see [Retrying a failed deployment](#retrying-a-failed-deployment)).
 
-- **`Managed`** — a redeploy over the live VM **fails**: the VM update is rejected with `PropertyChangeNotAllowed` (`customData` changed). Resources earlier in the deployment still update, so the `db-connection-string` Key Vault secret may already hold `SSL Mode=VerifyFull`, but the running VM's `.env` keeps `Require`. Either recreate the VM (delete the VM, then redeploy; the data disk and Key Vault persist, see [Recovering an existing installation](#recovering-an-existing-installation)), or adopt verification in place:
+- **`Managed`** — a redeploy over the live VM **fails**: the VM update is rejected with `PropertyChangeNotAllowed` (`customData` changed). Resources earlier in the deployment still update, so the `db-connection-string` Key Vault secret may already hold `SSL Mode=VerifyFull`, but the running VM's `.env` keeps `Require`. Either recreate the VM (delete the VM, then redeploy; the data disk and Key Vault persist, see [Recovering an existing installation](#recovering-an-existing-installation)), or adopt verification in place — update **both** the Key Vault secret (so a future VM recreation doesn't fetch back `Require`) and the running VM's `.env`:
 
   ```sh
+  vaultName=<keyVaultName output>
+  current=$(az keyvault secret show --vault-name "$vaultName" --name db-connection-string --query value -o tsv)
+  updated=$(printf '%s' "$current" | sed "s|SSL Mode=Require|SSL Mode=VerifyFull|")
+  echo "$updated" | grep -q "SSL Mode=VerifyFull" || { echo "VerifyFull not set in secret; stopping"; exit 1; }
+  az keyvault secret set --vault-name "$vaultName" --name db-connection-string --value "$updated"
+
   az vm run-command invoke -g broch-rg -n <vmName> --command-id RunShellScript --scripts '
     cd /opt/broch
     sed -i "s|SSL Mode=Require|SSL Mode=VerifyFull|" .env

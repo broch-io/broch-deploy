@@ -1179,7 +1179,8 @@ Resources:
                 #!/bin/sh
                 set -u
                 log() { echo "broch-version: $*"; logger -t broch-version "$*" 2>/dev/null || true; }
-                want="$CFN_NEW_METADATA"
+                # cfn-hup delivers the metadata leaf JSON-encoded (e.g. "1.34.0"); strip the quotes.
+                want=$(printf '%s' "$CFN_NEW_METADATA" | sed 's/^"\(.*\)"$/\1/')
                 case "$want" in ''|*[!A-Za-z0-9_.-]*) log "ignoring invalid BrochVersion '$want'"; exit 0 ;; esac
                 cd /opt/broch || exit 1
                 cid=$(docker compose ps -q broch 2>/dev/null | head -n1)

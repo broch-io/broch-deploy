@@ -130,7 +130,7 @@ By default, database connections the stack builds are **encrypted and authentica
 
 ### Upgrading Broch
 
-Upgrade by **updating the stack's `BrochVersion` parameter** to the new release (for example `1.32.0`), keeping every other parameter's previous value and the template you deployed.
+Upgrade by **updating the stack's `BrochVersion` parameter** to the new release (for example `1.34.0` — a version newer than the one you're running), keeping every other parameter's previous value and the template you deployed.
 
 1. **Back up first.** Broch migrates the database forward on start, and there is no going back. `Local`: snapshot the data volume (`aws ec2 create-snapshot --volume-id <the <stack>-data volume>`). `NewServer`: take an RDS snapshot.
 2. **Update the parameter.** In the console: **Update** → *Use existing template* → change only `BrochVersion`. From the CLI, deploy the **same** built template you deployed before (a newer build is also a template update):
@@ -138,7 +138,7 @@ Upgrade by **updating the stack's `BrochVersion` parameter** to the new release 
    ```sh
    aws cloudformation deploy --template-file dist/template.yaml --stack-name broch \
      --s3-bucket "$STAGING_BUCKET" --capabilities CAPABILITY_IAM \
-     --parameter-overrides BrochVersion=1.32.0
+     --parameter-overrides BrochVersion=1.34.0
    ```
 
 3. **Wait a few minutes, then check** `https://<host>/healthz` and Admin → System.
