@@ -1,6 +1,6 @@
-# Deploy-surface lint — structural redeploy-safety invariants (see scripts/deploy-lint.py
-# for the rules: secret-name salting, unconditional data disk, named cert volumes,
-# required master key, exact version pins). Credential-free and runnable from any fork.
+# Deploy-surface lint — structural redeploy-safety and customer-template invariants
+# (the rule list lives in scripts/deploy-lint.py's docstring). Credential-free and
+# runnable from any fork.
 name: Deploy Lint
 
 on:
@@ -23,4 +23,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Run deploy lint
+        run: ./cloudformation/aws-vm/build.sh
+      - name: Check deploy invariants
         run: python3 scripts/deploy-lint.py

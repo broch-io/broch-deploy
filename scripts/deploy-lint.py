@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Deploy-surface lint: structural invariants that keep redeploys into a dirty
-environment safe. Every rule here encodes a property whose loss once produced (or
-would produce) a real "second deploy fails / silently loses state" incident class:
+environment safe and customer-facing templates clean. Almost every rule encodes a
+property whose loss once produced (or would produce) a real "deploy fails / silently
+loses state" incident class:
 
   R1a  CloudFormation Secrets Manager names are salted with the stack incarnation
        UUID (AWS::StackId), so a delete+redeploy or rollback-retry never collides
@@ -20,6 +21,13 @@ would produce) a real "second deploy fails / silently loses state" incident clas
   R4   The master key is required everywhere: no template gives the master-key
        parameter a default, so a redeploy can never silently proceed with a key
        that does not match the database it reuses.
+  EMAIL The Let's Encrypt email is required everywhere: the azure-vm acmeEmail has
+       no default and a @minLength, the aws-vm AcmeEmail has no Default and an
+       AllowedPattern that rejects '', and every compose file whose Caddyfile uses
+       it passes it as ${CADDY_ACME_EMAIL:?...}. Caddy refuses an empty email, so a
+       blank value would leave the appliance with no TLS and no auto-DNS records.
+  META The aws-vm templates carry no tooling telemetry markers (AWSToolsMetrics):
+       authoring tools can insert them, and they would ship in every customer template.
   PIN  Broch image references pin the exact version in scripts/BROCH_VERSION and
        are never :latest (a floating tag would roll a recreated box across an
        irreversible EF-migration boundary). Delegates the per-site sync check to
@@ -43,12 +51,29 @@ Stdlib only.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
 
 violations = []
+
+
+def aws_templates(root: str):
+    """Canonical source plus every published generated variant."""
+    base = "cloudformation/aws-vm"
+    manifest = os.path.join(root, base, "published_variants.yaml")
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except (OSError, ValueError) as exc:
+        violate("LINT", manifest, 1, f"invalid variant manifest: {exc}")
+        return [f"{base}/template.yaml"]
+    return [f"{base}/template.yaml"] + [
+        f"{base}/dist/template-{e['auth'].lower()}-{e['db'].lower()}-{e['dns'].lower()}.yaml"
+        for e in entries
+    ]
 
 
 def violate(rule: str, path: str, line: int, message: str) -> None:
@@ -207,9 +232,10 @@ def rule_r4(root: str) -> None:
         if not found:
             violate("R4", rel, 1, "no master-key param found (brochMasterKey/masterKey)")
     # cloudformation: the BrochMasterKey parameter block must not carry Default.
-    rel = "cloudformation/aws-vm/template.yaml"
-    lines = read_lines(root, rel)
-    if lines is not None:
+    for rel in aws_templates(root):
+        lines = read_lines(root, rel)
+        if lines is None:
+            continue
         for i, line in enumerate(lines):
             if re.match(r"  BrochMasterKey:\s*$", line):
                 # Scan the whole parameter block — bounded by the next entry at the
@@ -224,6 +250,84 @@ def rule_r4(root: str) -> None:
                 break
         else:
             violate("R4", rel, 1, "no BrochMasterKey parameter found")
+
+
+def rule_email(root: str) -> None:
+    """The Let's Encrypt email is required on every target that can hand it to Caddy."""
+    why = ("a blank email crash-loops Caddy (Auto) or stops the shared compose (every mode) "
+           "-- no TLS, no auto-DNS records, an unreachable appliance")
+    # bicep: acmeEmail has no default and a @minLength(>=1) decorator above it.
+    rel = "bicep/azure-vm/main.bicep"
+    lines = read_lines(root, rel)
+    if lines is not None:
+        for i, line in enumerate(lines):
+            m = re.match(r"\s*param\s+acmeEmail\s+string(.*)", line)
+            if not m:
+                continue
+            if "=" in m.group(1):
+                violate("EMAIL", rel, i + 1, f"acmeEmail has a default -- it must be required; {why}")
+            decorators = []
+            for j in range(i - 1, -1, -1):
+                if not lines[j].lstrip().startswith("@"):
+                    break
+                decorators.append(lines[j])
+            if not any(re.match(r"\s*@minLength\(\s*[1-9]\d*\s*\)", d) for d in decorators):
+                violate("EMAIL", rel, i + 1, f"acmeEmail lost its @minLength -- '' would pass ARM validation; {why}")
+            break
+        else:
+            violate("EMAIL", rel, 1, "no acmeEmail param found")
+    # cloudformation: the AcmeEmail block has no Default, and its AllowedPattern rejects ''.
+    for rel in aws_templates(root):
+        lines = read_lines(root, rel)
+        if lines is None:
+            continue
+        for i, line in enumerate(lines):
+            if not re.match(r"  AcmeEmail:\s*$", line):
+                continue
+            pattern = None
+            for j in range(i + 1, len(lines)):
+                if re.match(r"  \S", lines[j]):  # next parameter block
+                    break
+                if re.match(r"\s+Default:", lines[j]):
+                    violate("EMAIL", rel, j + 1, f"AcmeEmail has a Default -- it must be required; {why}")
+                p = re.match(r"\s+AllowedPattern:\s*(['\"])(.*)\1\s*$", lines[j])
+                if p:
+                    pattern = p.group(2)
+            if pattern is None:
+                violate("EMAIL", rel, i + 1, "AcmeEmail has no quoted AllowedPattern -- '' would be accepted")
+            else:
+                try:
+                    if re.fullmatch(pattern, ""):
+                        violate("EMAIL", rel, i + 1, f"AcmeEmail's AllowedPattern accepts '' -- {why}")
+                except re.error as exc:  # CFN patterns are Java regex; keep this one portable
+                    violate("EMAIL", rel, i + 1, f"AcmeEmail's AllowedPattern is not checkable ({exc})")
+            break
+        else:
+            violate("EMAIL", rel, 1, "no AcmeEmail parameter found")
+    # compose: every stack whose Caddyfile reads the email must refuse to start while it is blank
+    # -- keyed on the Caddyfile, so deleting the compose line (or a list-form entry) is caught too.
+    base = os.path.join(root, "docker-compose")
+    for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        caddyfile = os.path.join(root, "docker-compose", entry, "Caddyfile")
+        rel = os.path.join("docker-compose", entry, "docker-compose.yml")
+        if not os.path.isfile(caddyfile) or not os.path.isfile(os.path.join(root, rel)):
+            continue
+        with open(caddyfile, encoding="utf-8") as fh:
+            if not any(re.match(r"\s*email\s+\{env\.CADDY_ACME_EMAIL\}", l) for l in fh):
+                continue
+        lines = read_lines(root, rel) or []
+        if not any("${CADDY_ACME_EMAIL:?" in l for l in lines):
+            violate("EMAIL", rel, 1, f"its Caddyfile uses CADDY_ACME_EMAIL but compose does not "
+                                     f"${{...:?}}-require it -- {why}")
+
+
+def rule_meta(root: str) -> None:
+    """No authoring-tool telemetry marker in any aws-vm template (canonical + variants)."""
+    for rel in aws_templates(root):
+        lines = read_lines(root, rel)
+        for i, line in enumerate(lines or []):
+            if "AWSToolsMetrics" in line:
+                violate("META", rel, i + 1, "tooling telemetry marker in a customer template -- remove it")
 
 
 BROCH_IMAGE = re.compile(r"ghcr\.io/broch-io/broch:([A-Za-z0-9._-]+)")
@@ -329,22 +433,22 @@ def rule_zone(root: str) -> None:
 
 def rule_ami(root: str) -> None:
     """aws-vm UbuntuAmi defaults to a pinned Canonical serial, never the stable/current alias."""
-    rel = "cloudformation/aws-vm/template.yaml"
-    lines = read_lines(root, rel)
-    if lines is None:
-        return
-    in_block = False
-    for i, line in enumerate(lines):
-        if line.startswith("  UbuntuAmi:"):
-            in_block = True
+    for rel in aws_templates(root):
+        lines = read_lines(root, rel)
+        if lines is None:
             continue
-        if in_block and re.match(r"  \S", line):
-            break
-        if in_block and line.strip().startswith("Default:") and "/current/" in line:
-            violate("AMI", rel, i + 1,
-                    "UbuntuAmi defaults to Canonical's stable/current alias — CloudFormation "
-                    "re-resolves it on every update, so any update after a new Ubuntu image "
-                    "replaces the instance (and rolls back in Local mode); pin a release serial")
+        in_block = False
+        for i, line in enumerate(lines):
+            if line.startswith("  UbuntuAmi:"):
+                in_block = True
+                continue
+            if in_block and re.match(r"  \S", line):
+                break
+            if in_block and line.strip().startswith("Default:") and "/current/" in line:
+                violate("AMI", rel, i + 1,
+                        "UbuntuAmi defaults to Canonical's stable/current alias — CloudFormation "
+                        "re-resolves it on every update, so any update after a new Ubuntu image "
+                        "replaces the instance (and rolls back in Local mode); pin a release serial")
 
 
 def main() -> int:
@@ -360,6 +464,8 @@ def main() -> int:
     rule_r3a(root)
     rule_r3b(root)
     rule_r4(root)
+    rule_email(root)
+    rule_meta(root)
     rule_pin(root)
     rule_zone(root)
     rule_ami(root)

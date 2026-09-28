@@ -69,7 +69,7 @@ curl -fsS https://broch.example.com/healthz
 | ------------------------- | ----------------------------------------------------------------- |
 | `BROCH_MASTER_KEY`        | At-rest encryption root. Server won't start without it — `openssl rand -base64 48`. |
 | `BROCH_WILDCARD_HOSTNAME` | Your real DNS name. Must resolve to this host's public IP.        |
-| `CADDY_ACME_EMAIL`        | Where Let's Encrypt sends cert-expiry warnings. Use a real inbox. |
+| `CADDY_ACME_EMAIL`        | Let's Encrypt account contact. Compose won't start while blank.   |
 | `CLOUDFLARE_API_TOKEN`    | Zone:Read + DNS:Edit token for the zone hosting your hostname.    |
 | `POSTGRES_PASSWORD`       | Strong password for the bundled Postgres.                         |
 | `AUTHENTICATION__*`       | Your identity provider — part of the boot floor. No one can sign in until it's set. |

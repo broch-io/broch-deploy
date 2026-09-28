@@ -115,7 +115,9 @@ services:
     environment:
       # Caddyfile reads these via env.* — see Caddyfile / tls.caddy.
       BROCH_WILDCARD_HOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
-      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL}
+      # Required. `:?` makes compose refuse to start with a clear error when it is blank, instead of
+      # Caddy crash-looping on an empty `email` (no TLS, no automatic DNS records).
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?set CADDY_ACME_EMAIL in .env - Caddy needs a Let's Encrypt contact email}
       # DNS-01 credentials Caddy uses to issue the wildcard cert — set whichever your tls.caddy
       # provider needs (the rest stay empty). Cert issuance only, NOT app sign-in (login is the
       # AUTHENTICATION__* vars on the broch service). Full provider set, matching with-postgres-external

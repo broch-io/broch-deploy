@@ -1,10 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Broch — AWS VM appliance. Boots the canonical with-postgres-external + Caddy
-  compose stack on a single Ubuntu 24.04 EC2 instance behind an Elastic IP. The
-  AWS analog of bicep/azure-vm. Wildcard TLS via Caddy ACME DNS-01, issued with
-  the instance's IAM role against Route 53 — no token typed, no cert upload.
-  Copyright (c) 2026 Broch, LLC. All rights reserved.
+  Deploy Broch on an EC2 instance with identity provider sign-in. Start with your
+  domain and master key. The default options create Route 53 DNS records and an
+  Amazon RDS PostgreSQL database. To use other DNS or database options, change
+  the choices below and complete their matching sections. CloudFormation shows
+  every section even when it does not apply; leave unused sections at their
+  defaults. The stack completes when Broch is healthy.
 #
 # NOTE: the canonical assets (docker-compose.yml, BOTH Caddyfiles, the four
 # per-provider caddy-tls fragments, and the pinned Amazon RDS CA bundle the
@@ -17,30 +18,92 @@ Description: >-
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: { default: Encryption (required) }
-        Parameters: [BrochMasterKey]
-      - Label: { default: Domain & TLS }
-        Parameters: [DnsZone, ShareSubdomain, DnsZoneName, HostedZoneId, CertMode, TlsCertificate, TlsCertificateKey, AcmeEmail, DnsProvider, DnsAutoRecords, CloudflareApiToken, DoAuthToken, GcpProject, GcpCredentialsJson]
-      - Label: { default: Database }
-        Parameters: [DatabaseMode, DatabaseConnectionString, DbInstanceClass, DbAllocatedStorage, DbSubnetIds, DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId, DbSslMode, LocalDbAdminPassword, DataVolumeSize, DataVolumeAz, DataVolumeSnapshotId]
-      - Label: { default: Identity provider (boot floor) }
+      - Label: { default: "Start here - domain and encryption" }
+        Parameters: [DnsZone, ShareSubdomain, BrochMasterKey]
+      - Label: { default: "DNS and HTTPS - choose how they work" }
+        Parameters: [DnsProvider, DnsAutoRecords, CertMode, AcmeEmail]
+      - Label: { default: "Route 53 - fill in if you selected Route 53" }
+        Parameters: [HostedZoneId]
+      - Label: { default: "Cloudflare - only if you selected Cloudflare" }
+        Parameters: [CloudflareApiToken]
+      - Label: { default: "Google Cloud DNS - only if you selected Google Cloud DNS" }
+        Parameters: [GcpProject, GcpCredentialsJson]
+      - Label: { default: "DigitalOcean - only if you selected DigitalOcean" }
+        Parameters: [DoAuthToken]
+      - Label: { default: "Delegated DNS zone - advanced" }
+        Parameters: [DnsZoneName]
+      - Label: { default: "Your own HTTPS certificate - only for Byo mode" }
+        Parameters: [TlsCertificate, TlsCertificateKey]
+      - Label: { default: "Database - choose one mode" }
+        Parameters: [DatabaseMode]
+      - Label: { default: "New RDS database - only for NewServer mode" }
+        Parameters: [DbSubnetIds, DbInstanceClass, DbAllocatedStorage]
+      - Label: { default: "Existing database - only for ExistingDatabase mode" }
+        Parameters: [DatabaseConnectionString]
+      - Label: { default: "Existing PostgreSQL server - only for ExistingServer mode" }
+        Parameters: [DbServerHost, DbServerPort, DbAdminUsername, DbAdminPassword, DbServerSecurityGroupId, DbSslMode]
+      - Label: { default: "PostgreSQL on this instance - only for Local mode" }
+        Parameters: [LocalDbAdminPassword, DataVolumeSize, DataVolumeAz, DataVolumeSnapshotId]
+      - Label: { default: "Identity provider - use the selected template" }
         Parameters: [AuthProvider, AuthClientId, AuthClientSecret, AuthAdminRoles, AuthDomain, AuthTenantId, AuthInstance, AuthAuthority, AuthAudience]
-      - Label: { default: Compute & network }
-        Parameters: [VpcId, InstanceSubnetId, InstanceType, UbuntuAmi, SshAllowedCidr, ElasticIpAllocationId, ElasticIpAddress]
-      - Label: { default: Image (advanced) }
-        Parameters: [BrochVersion, BrochImage, RegistryServer, RegistryUsername, RegistryPassword]
+      - Label: { default: "AWS network and instance" }
+        Parameters: [VpcId, InstanceSubnetId, InstanceType, SshAllowedCidr]
+      - Label: { default: "Existing Elastic IP - optional" }
+        Parameters: [ElasticIpAllocationId, ElasticIpAddress]
+      - Label: { default: "Image and version - advanced" }
+        Parameters: [BrochVersion, BrochImage, UbuntuAmi, RegistryServer, RegistryUsername, RegistryPassword]
     ParameterLabels:
-      BrochMasterKey: { default: "Master key (BROCH_MASTER_KEY) - customer-owned, required" }
-      DnsZone: { default: DNS zone you own (e.g. example.com) }
-      ShareSubdomain: { default: Subdomain for tunnel URLs (default "broch"; empty = zone apex) }
-      DnsZoneName: { default: "Delegated DNS zone that owns the records (advanced; empty = DnsZone is the zone)" }
-      HostedZoneId: { default: Route 53 hosted zone for that domain }
-      DnsAutoRecords: { default: "Auto-create DNS A records? (Auto = deploy then sign in)" }
-      DbSslMode: { default: "Existing server TLS check (ExistingServer; VerifyFull = RDS CA, VerifyFullSystemCa = public CA)" }
-      LocalDbAdminPassword: { default: "Password for the on-box Postgres (Local mode; empty = generated + stashed)" }
-      DataVolumeSize: { default: "On-box Postgres data volume size in GiB (Local mode)" }
-      DataVolumeAz: { default: "Availability Zone of InstanceSubnetId (Local mode data volume)" }
-      DataVolumeSnapshotId: { default: "Restore the data volume from this EBS snapshot (Local mode; empty = new volume)" }
+      DnsZone: { default: "Domain for Broch (example.com)" }
+      ShareSubdomain: { default: "Broch subdomain (default: broch)" }
+      BrochMasterKey: { default: "Broch master key (required)" }
+      DnsProvider: { default: "Who manages DNS for your domain?" }
+      DnsAutoRecords: { default: "Create DNS records automatically?" }
+      CertMode: { default: "How should Broch get its HTTPS certificate?" }
+      AcmeEmail: { default: "Let's Encrypt email (required)" }
+      HostedZoneId: { default: "Route 53 hosted zone ID" }
+      DnsZoneName: { default: "Delegated DNS zone (advanced; usually blank)" }
+      CloudflareApiToken: { default: "Cloudflare API token" }
+      DoAuthToken: { default: "DigitalOcean API token" }
+      GcpProject: { default: "Google Cloud project ID" }
+      GcpCredentialsJson: { default: "Google Cloud DNS service account key (base64)" }
+      TlsCertificate: { default: "HTTPS certificate chain (base64)" }
+      TlsCertificateKey: { default: "HTTPS private key (base64)" }
+      DatabaseMode: { default: "Where should PostgreSQL run?" }
+      DbSubnetIds: { default: "Two RDS subnets in different Availability Zones" }
+      DbInstanceClass: { default: "RDS instance size" }
+      DbAllocatedStorage: { default: "RDS storage (GB)" }
+      DatabaseConnectionString: { default: "Existing database connection string" }
+      DbServerHost: { default: "Existing PostgreSQL server hostname" }
+      DbServerPort: { default: "Existing PostgreSQL server port" }
+      DbAdminUsername: { default: "Existing server administrator username" }
+      DbAdminPassword: { default: "Existing server administrator password" }
+      DbServerSecurityGroupId: { default: "Existing server security group ID" }
+      DbSslMode: { default: "How to verify the existing server certificate" }
+      LocalDbAdminPassword: { default: "Local database password (blank to generate)" }
+      DataVolumeSize: { default: "Local database volume size (GiB)" }
+      DataVolumeAz: { default: "Local database Availability Zone" }
+      DataVolumeSnapshotId: { default: "Restore local database from snapshot (optional)" }
+      AuthProvider: { default: "Identity provider" }
+      AuthClientId: { default: "Application (client) ID" }
+      AuthClientSecret: { default: "Application client secret (required)" }
+      AuthAdminRoles: { default: "Roles allowed to administer Broch" }
+      AuthDomain: { default: "Identity provider tenant domain" }
+      AuthTenantId: { default: "Microsoft Entra tenant ID" }
+      AuthInstance: { default: "Microsoft Entra sign-in URL" }
+      AuthAuthority: { default: "OpenID Connect issuer URL" }
+      AuthAudience: { default: "Token audience (if required)" }
+      VpcId: { default: "VPC for Broch" }
+      InstanceSubnetId: { default: "Public subnet for the EC2 instance" }
+      InstanceType: { default: "EC2 instance size" }
+      SshAllowedCidr: { default: "Allow SSH from this CIDR (optional)" }
+      ElasticIpAllocationId: { default: "Existing Elastic IP allocation ID" }
+      ElasticIpAddress: { default: "Existing Elastic IP address" }
+      BrochVersion: { default: "Broch version" }
+      BrochImage: { default: "Broch container image" }
+      UbuntuAmi: { default: "Ubuntu AMI parameter (advanced)" }
+      RegistryServer: { default: "Container registry host" }
+      RegistryUsername: { default: "Container registry username" }
+      RegistryPassword: { default: "Container registry token" }
 
 Parameters:
   # ── Encryption (required) ────────────────────────────────────────────────────
@@ -49,14 +112,9 @@ Parameters:
     NoEcho: true
     MinLength: 32
     Description: >-
-      REQUIRED. The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned; Broch never
-      sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own
-      secret store; the SAME value must be supplied on every (re)deploy. For ExistingDatabase
-      this MUST be the key that database was encrypted with — a different key cannot decrypt its
-      Data Protection keyring. The server also rejects values under 32 bytes at boot. It is
-      stashed in this stack's Secrets Manager so the instance can read it at boot without it ever
-      entering UserData; it is NOT generated here (a generated key would change on redeploy and
-      orphan an existing database).
+      Required. Generate once with openssl rand -base64 48 and save the value securely.
+      Reuse the same key whenever you redeploy with an existing Broch database; a new key
+      cannot decrypt its data. This stack stores the key in Secrets Manager in your AWS account.
 
   # ── Domain & TLS ────────────────────────────────────────────────────────────
   # The public hostname is COMPOSED from DnsZone + ShareSubdomain (Broch serves
@@ -65,18 +123,18 @@ Parameters:
   # disagree with the zone.
   DnsZone:
     Type: String
-    Description: DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host — put the tunnel label in ShareSubdomain (DnsZone example.com + ShareSubdomain broch), NOT DnsZone broch.example.com. Combined with ShareSubdomain it fixes the public hostname. For DnsProvider=Route53 this is the domain of HostedZoneId.
+    Description: Enter the domain you own, such as example.com. Put broch in the subdomain field, not here. The default public hostname is broch.example.com.
     AllowedPattern: "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
     ConstraintDescription: must be a valid domain name, e.g. example.com.
   ShareSubdomain:
     Type: String
     Default: broch
-    Description: Subdomain of DnsZone that hosts the public tunnel URLs. Default "broch" → Broch serves broch.<DnsZone> and *.broch.<DnsZone>. Leave EMPTY to serve tunnels at the zone apex (<DnsZone> and *.<DnsZone>). Usually a single label; a dotted value (e.g. a.b) is accepted for a deeper subdomain.
+    Description: Leave broch for broch.example.com and *.broch.example.com. Leave blank to use example.com and *.example.com instead. Replace example.com with your domain.
     # Empty (apex) or a DNS subdomain of one or more labels. render-secrets.sh interpolates this into
     # a single-quoted shell literal inside Fn::Sub, so the hostname charset excludes both the '$'
     # (CFn-var) and "'" (quoting) hazards.
     AllowedPattern: "^$|^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
-    ConstraintDescription: must be empty (apex) or a DNS subdomain — letters, digits, dots, hyphens only.
+    ConstraintDescription: must be empty (apex) or a DNS subdomain using letters, digits, dots, and hyphens only.
   DnsZoneName:
     # Advanced. The zone that auto-DNS WRITES the apex/wildcard A records into, for the DELEGATED case
     # where the DNS zone that owns the records is a subdomain of DnsZone (e.g. DnsZone=example.com for
@@ -88,7 +146,7 @@ Parameters:
     # DnsZone/ShareSubdomain applies (the AllowedPattern enforces it).
     Type: String
     Default: ""
-    Description: "Advanced. The DNS zone that actually OWNS the records when it differs from DnsZone -- i.e. the host is on a delegated subdomain that is its own zone (e.g. DnsZone=example.com for the URLs, but the delegated zone is share.example.com). Leave EMPTY (default) for the common case where DnsZone IS the DNS zone. When set, the token-provider auto-DNS (Cloudflare/GoogleCloudDns/DigitalOcean) writes the A records into THIS zone and derives the record labels as the host relative to it -- the same zone the ACME/cert path resolves, so a valid cert can no longer coexist with an A-record write that 404s. Route53 native records ignore this (they resolve the zone from HostedZoneId)."
+    Description: Advanced. Leave blank unless your selected non-Route 53 provider manages Broch records in a delegated DNS zone that differs from the domain above. Route 53 ignores this field.
     AllowedPattern: "^$|^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
     ConstraintDescription: must be empty or a valid domain name, e.g. share.example.com.
   HostedZoneId:
@@ -97,67 +155,70 @@ Parameters:
     # them. Required only for DnsProvider=Route53 (enforced by the Route53RequiresHostedZone Rule).
     Type: String
     Default: ""
-    Description: Route 53 hosted zone id that owns DnsZone -- REQUIRED for DnsProvider=Route53 (instance-role DNS-01 + the apex/wildcard A records this stack creates). Leave EMPTY for Cloudflare/GoogleCloudDns/DigitalOcean -- your domain is hosted there; with DnsAutoRecords=Auto (and CertMode=Auto) the appliance creates its apex + wildcard A records through that provider, otherwise you point them at the PublicIp output.
+    Description: Required when DNS provider is Route 53. In the Route 53 console, open the hosted zone for your domain and copy its hosted zone ID. Leave blank for other providers.
   CertMode:
     Type: String
     AllowedValues: [Auto, Byo]
     Default: Auto
-    Description: Auto = Caddy auto-issues + renews the wildcard via ACME DNS-01 (pick a DnsProvider). Byo = you supply the wildcard cert + key (no ACME, no DnsProvider needed); renewal is your responsibility.
+    Description: Auto (default) obtains and renews HTTPS certificates using the DNS provider you selected. Byo (bring your own) uses the certificate and private key you enter below; you renew them yourself.
   TlsCertificate:
     Type: String
     NoEcho: true
     Default: ""
     Description: >-
-      Base64-encoded PEM fullchain (cert + intermediates) -- only when CertMode=Byo. e.g. base64 -w0 fullchain.pem.
-      It MUST cover BOTH the apex host and the wildcard: a plain *.<host> wildcard does NOT match the apex <host>
-      itself, and the admin console + API are served on the apex -- a cert without an apex SAN fails TLS there.
-      Include the apex host AND *.<host> as SANs.
+      Only for Byo certificate mode. Enter the base64-encoded PEM full chain, for example
+      base64 -w0 fullchain.pem. The certificate must cover both your Broch hostname and its
+      wildcard; a wildcard alone does not cover the hostname used by the admin console.
   TlsCertificateKey:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Base64-encoded PEM private key for the wildcard cert — only when CertMode=Byo. e.g. base64 -w0 privkey.pem
+    Description: Only for Byo certificate mode. Enter the base64-encoded PEM private key, for example base64 -w0 privkey.pem.
   AcmeEmail:
     Type: String
-    Description: Email Let's Encrypt notifies about renewal failures.
-    Default: ""
+    Description: Required in every certificate mode. Contact email for the Let's Encrypt account that issues and renews your certificates (unused when you bring your own certificate).
+    # Required, no Default, in EVERY CertMode: with Auto, Caddy refuses to start with an empty
+    # email (no TLS, no automatic DNS records); in every mode -- Byo included, where the value is
+    # otherwise unused -- the shared compose file refuses to start while it is blank. So a blank
+    # value must fail stack creation here, not boot an unreachable instance. Do not scope this to
+    # Auto with a Rules entry.
     # These free-text values are templated into cloud-init via Fn::Sub, where a literal
     # "${...}" would be misread as a CFn variable and fail the deploy. Forbid "$" outright
     # (it's never valid in an email / OIDC identifier). Secret fields no longer go through
     # Fn::Sub (they're fetched from Secrets Manager at boot), so they don't carry this guard.
-    AllowedPattern: "^[^$]*$"
-    ConstraintDescription: must not contain a '$' character.
+    AllowedPattern: '^[^$\s@]+@[^$\s@]+\.[^$\s@]+$'
+    ConstraintDescription: must be an email address (name@example.com) with no '$' character.
   DnsProvider:
     Type: String
     AllowedValues: [Route53, Cloudflare, GoogleCloudDns, DigitalOcean]
     Default: Route53
-    Description: ACME DNS-01 provider (CertMode=Auto). Route53 (default) uses the instance IAM role — no secret. Cloudflare / GoogleCloudDns / DigitalOcean authenticate with a credential you supply below (for a domain hosted off Route 53). Ignored when CertMode=Byo.
+    Description: Select the service that manages your domain. Route53 is the default and always needs a hosted zone ID below. For automatic certificates, other providers need credentials in their sections. With Byo certificates, DNS records are manual and provider credentials are not needed.
   DnsAutoRecords:
     Type: String
     AllowedValues: [Auto, Manual]
     Default: Auto
-    Description: Auto (default) = the appliance auto-creates and maintains the apex + wildcard A records pointing at this instance's Elastic IP (deploy, then sign in) — on Route53 via native RecordSets, on Cloudflare/GoogleCloudDns/DigitalOcean via caddy-dynamicdns reusing the DnsProvider credential. Manual = you create the A records yourself (point them at the PublicIp output) — required when a load balancer, reverse proxy, or NAT gateway sits IN FRONT of this instance, or you manage DNS out-of-band; honored for every provider including Route53. No effect only for CertMode=Byo (records are always Manual there — no DNS credential).
+    Description: Auto (default) creates the Broch hostname and wildcard A records. Choose Manual if you will manage those records yourself, including when a load balancer or proxy sits in front of Broch. Byo certificate mode always uses manual DNS records.
   CloudflareApiToken:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Cloudflare API token (Zone:Read + DNS:Edit) — only when DnsProvider=Cloudflare.
+    Description: Only when DNS provider is Cloudflare. Create a token with Zone Read and DNS Edit access to your zone.
   DoAuthToken:
     Type: String
     NoEcho: true
     Default: ""
-    Description: DigitalOcean API token with DNS write scope — only when DnsProvider=DigitalOcean.
+    Description: Only when DNS provider is DigitalOcean. Enter an API token that can edit DNS records for your domain.
   GcpProject:
     Type: String
     Default: ""
-    Description: GCP project ID hosting the Cloud DNS zone — only when DnsProvider=GoogleCloudDns.
+    Description: Only when DNS provider is Google Cloud DNS. Enter the project ID that contains your managed zone.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   GcpCredentialsJson:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Base64-encoded GCP service-account JSON key (roles/dns.admin on the zone) — only when DnsProvider=GoogleCloudDns. e.g. base64 -w0 sa.json
+    Description: Only when DNS provider is Google Cloud DNS. Enter a base64-encoded service account JSON key with DNS Admin access, for example base64 -w0 sa.json.
 
   # ── Database ────────────────────────────────────────────────────────────────
   DatabaseMode:
@@ -165,16 +226,10 @@ Parameters:
     AllowedValues: [NewServer, ExistingDatabase, ExistingServer, Local]
     Default: NewServer
     Description: >-
-      NewServer provisions a private RDS Postgres. ExistingDatabase points at a ready connection
-      string. ExistingServer carves a brochdb + least-priv broch role onto a Postgres server you
-      already run (supply the DbServer* admin fields below). Local runs Postgres ON this instance
-      (the bundled with-postgres compose) on a dedicated EBS data volume — zero DB prerequisites,
-      but there are NO automated backups / PITR: YOU own the backups via EBS snapshots (see README).
-      Use NewServer for managed backups. The Local data volume is a separate resource
-      (DeletionPolicy=Snapshot), so the data is preserved on stack delete (as a snapshot) and across an
-      instance stop/start. To move to a fresh instance, do an explicit delete + redeploy (like
-      azure-vm) -- an in-place update that REPLACES the instance is NOT supported in Local mode,
-      because the new instance cannot attach the volume the old one still holds.
+      NewServer (default) creates a private Amazon RDS database with managed backups.
+      ExistingDatabase connects with a connection string you provide. ExistingServer
+      creates a Broch database on a PostgreSQL server you already run. Local runs
+      PostgreSQL on this EC2 instance; you must manage backups with EBS snapshots.
   # ── Local (on-box Postgres) database mode ─────────────────────────────────────
   # Local runs the bundled Postgres on a dedicated EBS gp3 volume mounted at the Docker named-volumes
   # path (/var/lib/docker/volumes) BEFORE Docker installs, so the postgres_data named volume lives on
@@ -188,15 +243,10 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: >-
-      Optional password for the bundled on-box Postgres (DatabaseMode=Local). Leave EMPTY (default)
-      for a generated 32-char password, stashed in Secrets Manager and read at boot. Postgres keeps
-      the password from when its data dir was FIRST initialised, so if you rebuild the STACK from
-      scratch against a pre-existing (snapshot-restored) data volume you must supply the SAME value
-      here -- a generated one would differ and lock broch out of its own surviving data. A supplied
-      value must be letters/digits/._~- only (see the pattern below): it is spliced UNQUOTED into the
-      Postgres connection string and single-quoted in .env, so ; = ' " or spaces would corrupt it.
-      Within a single stack the generated secret is stable across instance replacement, so leaving
-      this empty is safe for the normal lifecycle. Ignored for the other modes.
+      Only for Local mode. Leave blank to generate a password in Secrets Manager.
+      If you restore a database snapshot in a new stack, enter the same password that
+      initialized that database; a new password cannot open it. Use 8-128 letters,
+      digits, or . _ ~ - characters if you supply one.
     AllowedPattern: "^$|^[A-Za-z0-9._~-]{8,128}$"
     ConstraintDescription: >-
       empty (generate one) or 8-128 chars of letters, digits, and . _ ~ - only -- no ; = ' " or
@@ -207,32 +257,24 @@ Parameters:
     MinValue: 4
     MaxValue: 1024
     Description: >-
-      Size (GiB) of the dedicated EBS gp3 data volume that holds the on-box Postgres data
-      (DatabaseMode=Local). broch's database is tiny; the default suits typical use — size up only if
-      you retain large audit/request-log history. (The Azure sibling defaults to 4 GiB; AWS defaults to
-      20 to match the RDS floor and leave headroom.) Increasing it on a later update grows the EBS
-      volume but does NOT auto-grow the ext4 filesystem — run `sudo resize2fs` on the device afterward.
+      Only for Local mode. Size of the EBS volume holding PostgreSQL data; 20 GiB
+      is the default. If you increase it after deployment, also grow its filesystem.
   DataVolumeAz:
     Type: String
     Default: ""
     Description: >-
-      Availability Zone the Local data volume is created in — it MUST equal the AZ of InstanceSubnetId
-      (an EBS volume can only attach to an instance in its own AZ). Required when DatabaseMode=Local
-      (a Subnet parameter's AZ cannot be derived in CloudFormation). e.g. us-east-1a. Ignored for the
-      other modes.
+      Required only for Local mode. Enter the Availability Zone of the public
+      instance subnet you select below, such as us-east-1a. The data volume must
+      be in the same zone as the EC2 instance.
     AllowedPattern: "^$|^[a-z]{2}(-[a-z]+)+-[0-9][a-z]$"
     ConstraintDescription: must be empty or an AZ id like us-east-1a (or us-gov-west-1a).
   DataVolumeSnapshotId:
     Type: String
     Default: ""
     Description: >-
-      Local mode only, and ONLY when creating the stack: restore the data volume from this EBS snapshot
-      (for example the final snapshot a deleted stack left, tagged <stack>-data) instead of starting
-      empty. Never change it on an update: CloudFormation would detach the live, mounted data volume
-      and attach a new one that nothing mounts. DataVolumeSize must be at least the snapshot's size
-      (a larger volume's filesystem is grown at boot). Requires the LocalDbAdminPassword the data was
-      initialised with; also supply the same BrochMasterKey and BrochVersion. Ignored for the other
-      modes.
+      Only for a new Local mode stack that restores an existing EBS snapshot.
+      Leave blank for a new database. Use the original database password, Broch
+      master key, and Broch version. Do not change this field on a stack update.
     AllowedPattern: "^$|^snap-[0-9a-f]{8,17}$"
     ConstraintDescription: must be empty or an EBS snapshot id like snap-0123456789abcdef0.
   DatabaseConnectionString:
@@ -240,21 +282,19 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: >-
-      Npgsql connection string — only when DatabaseMode=ExistingDatabase. Use SSL Mode=VerifyFull so broch
-      checks the server's certificate chain AND hostname (Require only encrypts; it never authenticates the
-      server). For RDS/Aurora, point Root Certificate at the Amazon RDS CA bundle this stack ships, e.g.
-      Host=mydb.abc123.us-east-1.rds.amazonaws.com;Port=5432;Database=brochdb;Username=broch;Password=...;SSL Mode=VerifyFull;Root Certificate=/etc/broch/db-ca/rds-global-bundle.pem
-      For a server whose certificate chains to a public CA (including RDS Proxy, which uses Amazon Root CA),
-      SSL Mode=VerifyFull alone uses the system trust store. The bundle covers commercial AWS regions only.
+      Only for ExistingDatabase mode. Enter a complete Npgsql connection string
+      for a ready Broch database. Use SSL Mode=VerifyFull to check the server
+      certificate and hostname. For RDS or Aurora, add the bundled RDS CA at
+      /etc/broch/db-ca/rds-global-bundle.pem as Root Certificate. See the README for examples.
   DbInstanceClass:
     Type: String
     Default: db.t4g.micro
-    Description: RDS instance class (NewServer).
+    Description: Only for NewServer mode. Choose the size of the new RDS PostgreSQL instance.
   DbAllocatedStorage:
     Type: Number
     Default: 20
     MinValue: 20
-    Description: RDS storage in GB (NewServer).
+    Description: Only for NewServer mode. Storage allocated to the new RDS database in GB.
   DbSubnetIds:
     # CommaDelimitedList, NOT List<AWS::EC2::Subnet::Id>: CloudFormation validates
     # AWS-specific list types UNCONDITIONALLY at stack creation, before evaluating
@@ -263,37 +303,37 @@ Parameters:
     # CommaDelimitedList accepts an empty default and is only dereferenced under IsNewServer.
     Type: CommaDelimitedList
     Default: ""
-    Description: Two+ subnet IDs (comma-separated) in different AZs for the RDS subnet group (NewServer). In the default VPC, pick two default subnets. Leave empty for ExistingDatabase.
+    Description: Required only for NewServer mode. Enter at least two subnet IDs in different Availability Zones, separated by commas. Choose subnets in the same VPC as the EC2 instance. Leave blank for other database modes.
   # ExistingServer mode: connect to a Postgres server you already run and carve a brochdb +
   # least-priv broch role onto it (at boot, via the admin creds below). Host/username are
   # Fn::Sub'd into cloud-init, hence the "no $" guard; the admin password is a secret.
   DbServerHost:
     Type: String
     Default: ""
-    Description: Hostname/endpoint of the existing Postgres server (ExistingServer). e.g. mydb.abc123.us-east-1.rds.amazonaws.com
+    Description: Only for ExistingServer mode. Enter the PostgreSQL server endpoint, such as mydb.abc123.us-east-1.rds.amazonaws.com. Use the hostname on its TLS certificate.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   DbServerPort:
     Type: Number
     Default: 5432
-    Description: Port of the existing Postgres server (ExistingServer).
+    Description: Only for ExistingServer mode. PostgreSQL port, normally 5432.
   DbAdminUsername:
     Type: String
     Default: ""
-    Description: Admin/superuser login on the existing server (ExistingServer) — used ONCE at boot to create the brochdb database and broch role. Not stored on the instance afterward.
+    Description: Only for ExistingServer mode. Enter a user that can create a database and role. Broch uses it once during setup; it is not kept in the running application configuration.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   DbAdminPassword:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Password for DbAdminUsername (ExistingServer). Stashed in Secrets Manager, used at boot for the carve, never written to the instance's .env.
+    Description: Only for ExistingServer mode. Password for the administrator above; stored in Secrets Manager for first-boot setup.
   DbServerSecurityGroupId:
     # Plain String (not AWS::EC2::SecurityGroup::Id) for the same reason as DbSubnetIds:
     # AWS-specific types validate the "" default unconditionally, breaking non-ExistingServer deploys.
     Type: String
     Default: ""
-    Description: Security group ID of the existing server (ExistingServer) — the stack adds an ingress rule allowing Postgres from this instance. e.g. sg-0123456789abcdef0
+    Description: Only for ExistingServer mode. The database security group ID. This stack adds a rule allowing PostgreSQL traffic from the Broch instance.
   DbSslMode:
     # Governs BOTH the one-time admin carve (psql) and broch's own connection string. There is no
     # plaintext/no-TLS option on purpose: the carve sends the server's admin password over this link.
@@ -304,81 +344,76 @@ Parameters:
     AllowedValues: [VerifyFull, VerifyFullSystemCa, Require]
     Default: VerifyFull
     Description: >-
-      TLS check for the existing server (ExistingServer). VerifyFull (default, recommended for RDS/Aurora)
-      authenticates the server: its certificate must chain to the Amazon RDS CA bundle this stack ships AND
-      match DbServerHost (use the RDS/Aurora endpoint name exactly as AWS shows it). VerifyFullSystemCa is
-      the same check against the OS trust store instead: for a server whose certificate comes from a public
-      CA, including RDS Proxy (Amazon Root CA); it needs libpq 16+, which the default Ubuntu 24.04
-      UbuntuAmi has (an older AMI override fails closed at boot). Both verify modes check the hostname, so
-      an IP or your own CNAME/alias in DbServerHost fails either way: use a host name the certificate
-      covers instead. Require still encrypts but does NOT authenticate the server, so an on-path attacker
-      could impersonate it and capture the admin and broch credentials; choose it only knowingly, for a
-      confirmed limitation (no certificate covers the host name you must use, or a private CA).
-      Commercial AWS regions only for VerifyFull. Ignored for the other modes.
+      Only for ExistingServer mode. VerifyFull (default) checks the hostname
+      and the Amazon RDS certificate chain. Use VerifyFullSystemCa when the
+      server certificate comes from a public CA, including RDS Proxy. Require
+      encrypts traffic but does not verify the server; use it only if neither
+      verified mode works. See the template README for details.
 
   # ── Identity provider (boot floor) ──────────────────────────────────────────
-  # All the non-secret auth fields below carry the same "no $" guard as AcmeEmail
+  # All the non-secret auth fields below carry the same "no $" guard AcmeEmail's pattern includes
   # (templated into cloud-init via Fn::Sub). AuthClientSecret is exempt — it's a
   # secret, fetched from Secrets Manager at boot, never substituted by Fn::Sub.
   AuthProvider:
     Type: String
     Default: ""
-    Description: Auth0 | AzureAd | EntraExternalId | Okta | Oidc. Broch has no local login; the IdP is the boot floor.
+    Description: Published launch links fix this value. If you built your own template, choose the provider configured for your app. Broch has no local login.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   AuthClientId:
     Type: String
     Default: ""
+    Description: Required. Copy the application or client ID from the identity provider app you created for Broch.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   AuthClientSecret:
     Type: String
     NoEcho: true
     Default: ""
+    Description: Required. Create a confidential client in your identity provider and enter its client secret. Broch needs it for server-side sign-in. The stack stores it in your AWS Secrets Manager.
   AuthAdminRoles:
     Type: String
     Default: broch_admin
-    Description: Comma-separated role(s); the first user holding one becomes admin.
+    Description: Comma-separated identity provider role names that can administer Broch. Default is broch_admin; assign that role to your first administrator.
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
-  AuthDomain: { Type: String, Default: "", Description: Auth0/Okta tenant domain., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthTenantId: { Type: String, Default: "", Description: AzureAd/Entra tenant id., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthInstance: { Type: String, Default: "", Description: AzureAd/Entra login instance., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthAuthority: { Type: String, Default: "", Description: Generic OIDC issuer URL., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthAudience: { Type: String, Default: "", Description: OAuth audience (optional)., AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthDomain: { Type: String, Default: "", Description: "Required for Auth0 or Okta. Enter your tenant domain, such as tenant.auth0.com; omit https://.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthTenantId: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Copy the Directory (tenant) ID from your app registration.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthInstance: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Usually https://login.microsoftonline.com/.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthAuthority: { Type: String, Default: "", Description: "Required for OpenID Connect. Enter the full HTTPS issuer URL published by your provider.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthAudience: { Type: String, Default: "", Description: "Optional token audience if your identity provider requires a separate audience for Broch.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
 
   # ── Compute & network ───────────────────────────────────────────────────────
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: VPC to deploy into (the default VPC is fine).
+    Description: Choose the VPC for Broch and its database. The default VPC works for a first deployment.
   InstanceSubnetId:
     Type: AWS::EC2::Subnet::Id
-    Description: Public subnet for the instance + Elastic IP.
+    Description: Choose a public subnet in the VPC above. It needs internet access and automatic public IPv4 assignment so the instance can finish first boot.
   # Bring your own Elastic IP: its address is known BEFORE the deploy, so a database outside this VPC
-  # can allow-list it in advance. First boot claims it before any database traffic (claim-eip.sh).
+  # can allow-list it in advance. First boot waits for CloudFormation to attach it before any database traffic.
   ElasticIpAllocationId:
     Type: String
     Default: ""
     Description: >-
-      Optional, set when creating the stack. An Elastic IP you already allocated in this region
-      (eipalloc-...), for a database outside this VPC that must allow-list the instance before it is
-      deployed. Set it together with ElasticIpAddress. It must be unassociated. Empty (default)
-      allocates a new one with the stack. A supplied address is yours: stack deletion detaches it but
-      does not release it. Don't change it on an update: the instance keeps the old address in .env.
+      Leave blank to allocate a new Elastic IP. To use an address you already own,
+      enter its allocation ID and its public IPv4 address below. The address must
+      be unassociated. Use this when an external database must allow-list your IP
+      before deployment. Do not change it on a stack update.
     AllowedPattern: "^$|^eipalloc-[0-9a-f]{8,17}$"
     ConstraintDescription: must be empty or an allocation id like eipalloc-0123456789abcdef0.
   ElasticIpAddress:
     Type: String
     Default: ""
     Description: >-
-      The public IPv4 address of ElasticIpAllocationId. Required with it; empty otherwise. First boot
-      fails fast if it doesn't match the allocation (it feeds DNS, broch's public IP and the outputs).
+      Public IPv4 address for the allocation ID above. Enter both fields for an
+      existing Elastic IP, or leave both blank to create one with the stack.
     AllowedPattern: "^$|^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
     ConstraintDescription: must be empty or an IPv4 address like 203.0.113.10.
   InstanceType:
     Type: String
     Default: t4g.small
-    Description: EC2 instance type. Default is ARM64 (Graviton, cheap); the broch image is multi-arch.
+    Description: EC2 instance size. The default t4g.small is an ARM64 Graviton instance.
   UbuntuAmi:
     # Pinned to one Canonical release serial, NOT the stable/current alias (deploy-lint rejects
     # /current/). CloudFormation re-resolves an SSM-typed parameter on EVERY stack update, so "current"
@@ -392,13 +427,13 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/20260923/arm64/hvm/ebs-gp3/ami-id
     Description: >-
-      SSM path of the Ubuntu 24.04 AMI, pinned to a Canonical release so a stack update never replaces
-      the instance on its own. Must match InstanceType arch (arm64 path for t4g/*g; amd64 for x86).
-      Changing it replaces the instance (not supported in DatabaseMode=Local -- see README).
+      Advanced. Leave the default Ubuntu 24.04 image unless you need another
+      architecture. The AMI must match the EC2 instance type. Changing this
+      field replaces the instance; replacement is unsupported in Local database mode.
   SshAllowedCidr:
     Type: String
     Default: ""
-    Description: CIDR allowed to reach SSH (22). Empty (default) opens no SSH — manage via SSM Session Manager.
+    Description: Leave blank to keep SSH closed and use AWS Systems Manager Session Manager. To allow SSH, enter a trusted CIDR such as 203.0.113.10/32.
 
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
@@ -408,27 +443,20 @@ Parameters:
     AllowedPattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
     ConstraintDescription: must be a Docker image tag (letters, digits, _ . -), e.g. 1.31.0 or latest.
     Description: >-
-      Broch image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy / instance
-      replacement never silently rolls the box across an EF-migration boundary; new releases of this
-      template bump this default. Redeploying an existing installation from a fresh stack? Enter the
-      version it currently runs (the old stack's Parameters tab shows it; a stack UPDATE keeps it
-      automatically) — a newer version migrates the database irreversibly. To upgrade, update the
-      stack with a newer tag: it applies in place, and a downgrade between release versions is
-      refused. ("latest" is resolved when the image is first pulled; it does not float afterwards.)
-      1.29.0+ is required for DnsAutoRecords=Auto on the token-based providers
-      (Cloudflare/GoogleCloudDns/DigitalOcean), which serve /internal/public-ip to
-      caddy-dynamicdns; Route53 uses native RecordSets and needs no specific version.
+      Leave the pinned default for a new deployment. When redeploying with an
+      existing database, enter the version that database currently runs; a newer
+      version can migrate it. To upgrade later, update this stack with a newer tag.
   BrochImage:
     Type: String
     Default: ghcr.io/broch-io/broch
-    Description: Broch image repository (public by default).
-  RegistryServer: { Type: String, Default: ghcr.io, Description: Registry host for a private image pull. }
-  RegistryUsername: { Type: String, Default: broch-io, Description: Registry username for a private image pull. }
+    Description: Advanced. Leave the default public Broch image unless you use a private build.
+  RegistryServer: { Type: String, Default: ghcr.io, Description: "Only for a private Broch image. Container registry hostname." }
+  RegistryUsername: { Type: String, Default: broch-io, Description: "Only for a private Broch image. Container registry username." }
   RegistryPassword:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Registry token — only for a private/pre-release image. Empty for the public image.
+    Description: Only for a private Broch image. Enter the container registry token; leave blank for the public image.
 
 Conditions:
   IsNewServer: !Equals [!Ref DatabaseMode, NewServer]
@@ -471,14 +499,34 @@ Conditions:
   HasCloudflareToken: !Not [!Equals [!Ref CloudflareApiToken, ""]]
   HasDoToken: !Not [!Equals [!Ref DoAuthToken, ""]]
   HasGcpCreds: !Not [!Equals [!Ref GcpCredentialsJson, ""]]
+  # Always true for a stack that passes AuthRequiresClientCredentials; kept as a fail-safe guard.
   HasAuthClientSecret: !Not [!Equals [!Ref AuthClientSecret, ""]]
   HasRegistryPassword: !Not [!Equals [!Ref RegistryPassword, ""]]
 
-# Fail fast at stack create/update (before any resource is built) on the two
-# configuration mistakes that would otherwise deploy "green" and then break at
-# runtime: Cloudflare DNS-01 with no token (cert never issues), and NewServer
-# with no subnets (RDS subnet group gets an empty list).
+# Fail fast at stack create/update (before any resource is built) on required
+# identity, DNS, database, and certificate inputs.
 Rules:
+  AuthRequiresClientCredentials:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AuthClientId, ""]]
+        AssertDescription: AuthClientId is required for every identity provider.
+      - Assert: !Not [!Equals [!Ref AuthClientSecret, ""]]
+        AssertDescription: AuthClientSecret is required for Broch's server-side sign-in.
+  AuthAzureAdRequiresTenant:
+    RuleCondition: !Or [!Equals [!Ref AuthProvider, AzureAd], !Equals [!Ref AuthProvider, EntraExternalId]]
+    Assertions:
+      - Assert: !And [!Not [!Equals [!Ref AuthTenantId, ""]], !Not [!Equals [!Ref AuthInstance, ""]]]
+        AssertDescription: AuthTenantId and AuthInstance are required for AzureAd and EntraExternalId.
+  AuthDomainProviderRequiresDomain:
+    RuleCondition: !Or [!Equals [!Ref AuthProvider, Auth0], !Equals [!Ref AuthProvider, Okta]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AuthDomain, ""]]
+        AssertDescription: AuthDomain is required for Auth0 and Okta.
+  AuthOidcRequiresAuthority:
+    RuleCondition: !Equals [!Ref AuthProvider, Oidc]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AuthAuthority, ""]]
+        AssertDescription: AuthAuthority is required for Oidc.
   # The DNS-token rules are guarded with `CertMode != Byo`: in Byo mode Caddy serves a
   # supplied cert and never runs ACME DNS-01, so the provider token is unused. A customer
   # whose domain is on Cloudflare and who brings their own cert legitimately sets
@@ -494,7 +542,7 @@ Rules:
     RuleCondition: !Equals [!Ref DnsProvider, Route53]
     Assertions:
       - Assert: !Not [!Equals [!Ref HostedZoneId, ""]]
-        AssertDescription: HostedZoneId is required when DnsProvider=Route53 (instance-role DNS-01 and the apex/wildcard A records both need it). Off-Route53 providers leave it empty.
+        AssertDescription: Enter the hosted zone ID whenever the DNS provider is Route53, including when you bring your own certificate. Leave it blank for other DNS providers.
   NewServerRequiresSubnets:
     RuleCondition: !Equals [!Ref DatabaseMode, NewServer]
     Assertions:
@@ -550,7 +598,7 @@ Rules:
   ElasticIpAllocationRequiresAddress:
     # The allocation id drives the association; the address feeds DNS, broch's public-IP seed and the
     # outputs. Pure CloudFormation can't look one up from the other, so both are required together
-    # (and claim-eip.sh checks at boot that they match).
+    # (and wait-eip.sh checks at boot that they match).
     Assertions:
       - Assert: !Or
           - !And [!Equals [!Ref ElasticIpAllocationId, ""], !Equals [!Ref ElasticIpAddress, ""]]
@@ -945,34 +993,13 @@ Resources:
               - Effect: Allow
                 Action: [cloudformation:DescribeStackResource, cloudformation:SignalResource, cloudformation:DescribeStacks]
                 Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-        # First boot claims THIS stack's Elastic IP before it talks to any database (see
-        # /opt/broch/claim-eip.sh), so an allow-list on the EIP covers first boot. AssociateAddress
-        # authorizes every resource it touches, each by its own statement: this one allocation only,
-        # only an instance CloudFormation tagged as this stack's, and only an ENI in this stack's
-        # subnet (the instance's primary interface carries no stack tag).
-        - PolicyName: claim-elastic-ip
+        # First boot waits for CloudFormation's EIP association before database traffic.
+        # The instance only reads the association; it must never race CloudFormation by
+        # calling AssociateAddress itself (an AlreadyExists error rolls the stack back).
+        - PolicyName: verify-elastic-ip
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
-                Action: ec2:AssociateAddress
-                Resource: !Sub
-                  - "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${Alloc}"
-                  - Alloc: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
-              - Effect: Allow
-                Action: ec2:AssociateAddress
-                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
-                Condition:
-                  StringEquals:
-                    "aws:ResourceTag/aws:cloudformation:stack-id": !Ref AWS::StackId
-              - Effect: Allow
-                Action: ec2:AssociateAddress
-                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
-                Condition:
-                  StringEquals:
-                    "ec2:Subnet": !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${InstanceSubnetId}"
-              # DescribeTags: tells an instance replacement (the address is on this stack's old
-              # instance) from an address in use elsewhere, which is never taken.
               - Effect: Allow
                 Action: [ec2:DescribeAddresses, ec2:DescribeTags]
                 Resource: "*"
@@ -990,13 +1017,148 @@ Resources:
     Properties:
       Domain: vpc
 
-  # A dedicated association (rather than EIP.InstanceId) is the documented VPC
-  # pattern and gives CloudFormation a cleaner rollback target on instance replacement.
+  # EC2 can publish an instance ID while its state is still pending. EIPAssociation
+  # sometimes calls AssociateAddress at that point and gets InvalidInstanceID,
+  # with no timely retry; the instance then waits for an address that never arrives.
+  # This gate checks EC2 state before that CFN resource starts. It must NOT Ref
+  # Instance: the instance's CreationPolicy waits for boot health, and boot waits
+  # for this association. Discover the current instance by its CloudFormation
+  # stack/logical-id tags instead. Mirror the instance properties that can require
+  # replacement so their changes trigger this gate on stack update.
+  InstanceRunningGateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: describe-instance
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+
+  InstanceRunningGateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt InstanceRunningGateRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import urllib.request
+
+          import boto3
+          def respond(event, context, status, reason, physical_id=None):
+              selected_id = physical_id or event.get("PhysicalResourceId")
+              body = {
+                  "Status": status,
+                  "Reason": reason,
+                  "PhysicalResourceId": selected_id or
+                      event["StackId"] + "/" + event["LogicalResourceId"],
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+              }
+              if status == "SUCCESS" and event["RequestType"] != "Delete":
+                  body["Data"] = {"InstanceId": selected_id}
+              request = urllib.request.Request(
+                  event["ResponseURL"], data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": ""}, method="PUT")
+              with urllib.request.urlopen(request, timeout=10):
+                  pass
+
+
+          def handler(event, context):
+              if event["RequestType"] == "Delete":
+                  respond(event, context, "SUCCESS", "Gate removed")
+                  return
+              props = event["ResourceProperties"]
+              old_props = event.get("OldResourceProperties", {})
+              old_id = event.get("PhysicalResourceId")
+              replacement_fields = ("ImageId", "SubnetId", "RootVolumeSize",
+                                    "RootVolumeType", "RootVolumeEncrypted")
+              replacing = (event["RequestType"] == "Update" and
+                           any(props[name] != old_props.get(name) for name in replacement_fields))
+              ec2 = boto3.client("ec2")
+              deadline = time.monotonic() + min(870, context.get_remaining_time_in_millis() / 1000 - 15)
+              running_since = None
+              seen_id = None
+              try:
+                  while time.monotonic() < deadline:
+                      reservations = ec2.describe_instances(Filters=[
+                          {"Name": "tag:aws:cloudformation:stack-id", "Values": [event["StackId"]]},
+                          {"Name": "tag:aws:cloudformation:logical-id", "Values": ["Instance"]},
+                      ])["Reservations"]
+                      matches = [instance for reservation in reservations
+                                 for instance in reservation["Instances"]
+                                 if instance["ImageId"] == props["ImageId"] and
+                                 instance["SubnetId"] == props["SubnetId"] and
+                                 instance["State"]["Name"] not in ("shutting-down", "terminated") and
+                                 (not replacing or instance["InstanceId"] != old_id)]
+                      if matches:
+                          instance = max(matches, key=lambda item: item["LaunchTime"])
+                          instance_id = instance["InstanceId"]
+                          state = instance["State"]["Name"]
+                          if instance_id != seen_id:
+                              seen_id = instance_id
+                              running_since = None
+                          if state == "running":
+                              # A failed Create can leave a placeholder PhysicalResourceId.
+                              # Always discover the current instance before returning its ID.
+                              if event["RequestType"] == "Update" and not replacing and instance_id == old_id:
+                                  respond(event, context, "SUCCESS", "Instance unchanged", instance_id)
+                                  return
+                              if running_since is None:
+                                  running_since = time.monotonic()
+                              # EC2 can report running before its modify APIs see the new instance.
+                              if time.monotonic() - running_since >= 30:
+                                  respond(event, context, "SUCCESS", "Instance running and settled", instance_id)
+                                  return
+                          else:
+                              running_since = None
+                      else:
+                          seen_id = None
+                          running_since = None
+                      time.sleep(5)
+                  raise TimeoutError("Current stack instance did not reach running state")
+              except Exception as error:
+                  respond(event, context, "FAILED", str(error)[:300])
+
+  InstanceRunningGate:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt InstanceRunningGateFunction.Arn
+      ServiceTimeout: 960
+      # Start after the mode-specific launch prerequisite, without depending on
+      # Instance CREATE_COMPLETE (which is held by its health CreationPolicy).
+      ProfileReady: !Ref InstanceProfile
+      Prerequisite: !If [IsNewServer, !Ref BrochDB, !If [IsLocal, !Ref DataVolume, ""]]
+      ImageId: !Ref UbuntuAmi
+      SubnetId: !Ref InstanceSubnetId
+      RootVolumeSize: 30
+      RootVolumeType: gp3
+      RootVolumeEncrypted: true
+
+  # Keep CloudFormation as the attachment owner so stack updates and rollbacks
+  # retain the association. The gate returns the running instance ID as a
+  # custom-resource attribute. Ref Instance here would wait for its health
+  # CreationPolicy, but first boot itself waits for this association.
   ElasticIpAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
       AllocationId: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
-      InstanceId: !Ref Instance
+      InstanceId: !GetAtt InstanceRunningGate.InstanceId
 
   # apex + wildcard A records: only when Route 53 owns the domain AND DnsAutoRecords=Auto.
   # Off-Route53 providers (Cloudflare/GCP/DO) host their own zone -- their A records come from
@@ -1080,19 +1242,13 @@ Resources:
               mode: "000644"
               owner: root
               group: root
-            # First boot: make sure the Elastic IP is on THIS instance BEFORE render-secrets.sh (the
-            # ExistingServer carve) and broch's first database connection, so they leave from the
-            # published address and an allow-list on it covers first boot. ElasticIpAssociation below
-            # usually gets there first: CloudFormation ran it ~30 s after launch, well before the
-            # CreationPolicy signal (seen in stack events, 2026-09). Nothing documents that ordering,
-            # so this claims the address itself when it is still unassociated. On an instance
-            # replacement the old instance (tagged with this stack's id) still holds it and
-            # ElasticIpAssociation moves it; it is never taken here. A stack-allocated EIP makes any
-            # failure a WARN (CloudFormation still attaches it). A bring-your-own EIP makes it FATAL
-            # (boot-fatal fails the deploy fast): the customer's database expects that address, the
-            # supplied address must match the allocation (it feeds DNS and the outputs), and an
-            # address held outside this stack is never taken. Shell vars are unbraced (Fn::Sub).
-            /opt/broch/claim-eip.sh:
+            # First boot waits for CloudFormation's ElasticIpAssociation BEFORE render-secrets.sh
+            # (the ExistingServer carve) and broch's first database connection. The instance
+            # never associates the address itself; that would race CloudFormation and prevent
+            # reliable rollback. InstanceRunningGate waits until EC2 reports running before
+            # CloudFormation attempts the association. A mismatched BYO address or an address
+            # held outside this stack fails boot. Shell vars are unbraced (Fn::Sub).
+            /opt/broch/wait-eip.sh:
               mode: "000700"
               owner: root
               group: root
@@ -1101,33 +1257,44 @@ Resources:
                   #!/bin/sh
                   alloc='${Alloc}'
                   addr='${Addr}'
-                  byo='${Byo}'
                   region='${AWS::Region}'
                   stackid='${AWS::StackId}'
-                  fatal() { echo "FATAL: $1" >&2; echo "claim-eip: $1" >> /opt/broch/boot-fatal; exit 0; }
-                  miss() { if [ "$byo" = true ]; then fatal "$1 -- ElasticIpAllocationId $alloc ($addr) could not be claimed, and your database allow-list expects it"; fi; echo "WARN: $1; CloudFormation's ElasticIpAssociation attaches the Elastic IP"; exit 0; }
-                  tok=$(curl -fsS --max-time 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || miss "IMDS token failed"
-                  iid=$(curl -fsS --max-time 5 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/instance-id) || miss "IMDS instance-id failed"
-                  info=$(/usr/local/bin/aws ec2 describe-addresses --region "$region" --allocation-ids "$alloc" --query 'Addresses[0].[PublicIp,AssociationId,InstanceId]' --output text) || miss "describe-addresses failed"
-                  pub=$(printf '%s' "$info" | cut -f1); assoc=$(printf '%s' "$info" | cut -f2); owner=$(printf '%s' "$info" | cut -f3)
-                  if [ "$pub" != "$addr" ]; then fatal "ElasticIpAddress $addr does not match allocation $alloc (its address is $pub)"; fi
-                  # CloudFormation starts ElasticIpAssociation once the instance is running (it doesn't
-                  # wait for the CreationPolicy signal), so on a fresh stack the address is usually on
-                  # this instance already by now.
-                  if [ "$owner" = "$iid" ]; then echo "Elastic IP $addr ($alloc) is on this instance for first boot (attached by CloudFormation)"; exit 0; fi
-                  if [ "$assoc" != None ]; then
-                    if [ "$owner" = None ]; then miss "Elastic IP $alloc ($addr) is attached to a network interface outside this stack; disassociate it first"; fi
-                    owner_stack=$(/usr/local/bin/aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$owner" "Name=key,Values=aws:cloudformation:stack-id" --query 'Tags[0].Value' --output text 2>/dev/null) || miss "describe-tags failed"
-                    if [ "$owner_stack" = "$stackid" ]; then echo "Elastic IP $alloc is held by $owner of this stack: instance replacement, CloudFormation moves it to this instance"; exit 0; fi
-                    miss "Elastic IP $alloc ($addr) is associated with $owner, outside this stack; disassociate it first"
-                  fi
-                  /usr/local/bin/aws ec2 associate-address --region "$region" --allocation-id "$alloc" --instance-id "$iid" --no-allow-reassociation >/dev/null || miss "associate-address failed"
-                  # Outbound traffic now leaves from the EIP; give the switch a moment before the next download.
-                  sleep 5
-                  echo "Elastic IP $addr ($alloc) is on this instance for first boot (claimed)"
+                  fatal() { echo "FATAL: $1" >&2; echo "wait-eip: $1" >> /opt/broch/boot-fatal; exit 0; }
+                  tok=$(curl -fsS --max-time 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || fatal "IMDS token failed"
+                  iid=$(curl -fsS --max-time 5 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/instance-id) || fatal "IMDS instance-id failed"
+                  # A fresh Elastic IP may briefly return InvalidAllocationID.NotFound; retry while EC2 propagates it.
+                  last_error=none
+                  for attempt in $(seq 1 60); do
+                    if ! info=$(/usr/local/bin/aws ec2 describe-addresses --region "$region" --allocation-ids "$alloc" --query 'Addresses[0].[PublicIp,AssociationId,InstanceId]' --output text 2>&1); then
+                      last_error=$info
+                      echo "Waiting for Elastic IP $alloc: describe-addresses failed (attempt $attempt/60): $last_error" >&2
+                      sleep 5
+                      continue
+                    fi
+                    pub=$(printf '%s' "$info" | cut -f1); assoc=$(printf '%s' "$info" | cut -f2); owner=$(printf '%s' "$info" | cut -f3)
+                    if [ -z "$pub" ] || [ "$pub" = None ]; then sleep 5; continue; fi
+                    if [ "$pub" != "$addr" ]; then fatal "ElasticIpAddress $addr does not match allocation $alloc (its address is $pub)"; fi
+                    if [ "$owner" = "$iid" ]; then
+                      # Give outbound routing a moment to converge before the database setup.
+                      sleep 5
+                      echo "Elastic IP $addr ($alloc) is on this instance for first boot"
+                      exit 0
+                    fi
+                    if [ "$assoc" != None ]; then
+                      if [ "$owner" = None ]; then fatal "Elastic IP $alloc ($addr) is attached to a network interface outside this stack; disassociate it first"; fi
+                      if ! owner_stack=$(/usr/local/bin/aws ec2 describe-tags --region "$region" --filters "Name=resource-id,Values=$owner" "Name=key,Values=aws:cloudformation:stack-id" --query 'Tags[0].Value' --output text 2>&1); then
+                        last_error=$owner_stack
+                        echo "Waiting for Elastic IP $alloc: describe-tags failed (attempt $attempt/60): $last_error" >&2
+                        sleep 5
+                        continue
+                      fi
+                      if [ "$owner_stack" != "$stackid" ]; then fatal "Elastic IP $alloc ($addr) is associated with $owner, outside this stack; disassociate it first"; fi
+                    fi
+                    sleep 5
+                  done
+                  fatal "Elastic IP $alloc ($addr) was not attached to this instance by CloudFormation within 5 minutes; last EC2 error: $last_error"
                 - Alloc: !If [CreateElasticIp, !GetAtt ElasticIp.AllocationId, !Ref ElasticIpAllocationId]
                   Addr: !If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]
-                  Byo: !If [CreateElasticIp, "false", "true"]
             # The version this instance is meant to run. First boot records the stack's BrochVersion
             # here; afterwards only on-version-change.sh (cfn-hup, below) rewrites it, once a
             # BrochVersion stack update has settled and the new image is pulled.
@@ -1179,7 +1346,8 @@ Resources:
                 #!/bin/sh
                 set -u
                 log() { echo "broch-version: $*"; logger -t broch-version "$*" 2>/dev/null || true; }
-                # cfn-hup delivers the metadata leaf JSON-encoded (e.g. "1.34.0"); strip the quotes.
+                # cfn-hup passes a string metadata leaf through raw (only non-strings are JSON-encoded);
+                # strip surrounding quotes defensively in case a future cfn-hup encodes it.
                 want=$(printf '%s' "$CFN_NEW_METADATA" | sed 's/^"\(.*\)"$/\1/')
                 case "$want" in ''|*[!A-Za-z0-9_.-]*) log "ignoring invalid BrochVersion '$want'"; exit 0 ;; esac
                 cd /opt/broch || exit 1
@@ -1703,14 +1871,19 @@ Resources:
                 - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip -o /tmp/awscliv2.zip
                 - unzip -q /tmp/awscliv2.zip -d /tmp
                 - /tmp/aws/install
-                # Claim the Elastic IP before anything below talks to a database (fatal only for a bring-your-own EIP).
-                - sh /opt/broch/claim-eip.sh
+                # Wait for CloudFormation's Elastic IP association before anything below talks to a database.
+                - sh /opt/broch/wait-eip.sh
                 - sh /opt/broch/set-version.sh || echo "set-version.sh failed -- BROCH_VERSION not written to .env" >> /opt/broch/boot-fatal
                 # Hydrate secrets into .env (and do any private-registry login) AFTER docker
                 # is installed and BEFORE the service starts. ANY non-zero exit (a set -e abort on a
                 # secret fetch, apt, a login, ...) leaves .env partial, so it is recorded as a boot FATAL
                 # too: broch is then never started and the stack fails at once (see the health wait).
-                - bash /opt/broch/render-secrets.sh || echo "render-secrets.sh exited non-zero -- see log above" >> /opt/broch/boot-fatal
+                - |
+                  if [ -s /opt/broch/boot-fatal ]; then
+                    echo "Skipping secret hydration and database setup: a boot step failed" >&2
+                  else
+                    bash /opt/broch/render-secrets.sh || echo "render-secrets.sh exited non-zero -- see log above" >> /opt/broch/boot-fatal
+                  fi
                 - systemctl daemon-reload
                 # Apply later BrochVersion stack updates in place (on-version-change.sh).
                 - systemctl enable --now cfn-hup.service || echo "WARN - cfn-hup did not start, so BrochVersion stack updates will not reach this instance until it runs"
@@ -1790,7 +1963,7 @@ Outputs:
       - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${ShareSubdomain}.${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${ShareSubdomain}.${DnsZone}/healthz returns 200."
       - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${DnsZone}/healthz returns 200."
   MasterKeySecretArn:
-    Description: Where your supplied BROCH_MASTER_KEY is stored (your account) for the instance to read. Keep the original safe — supply the same value on every redeploy that reuses the DB.
+    Description: Where your supplied BROCH_MASTER_KEY is stored in your AWS account for the instance to read. Keep the original safe and supply the same value on every redeploy that reuses the database.
     Value: !Ref MasterKeySecret
   DatabaseEndpoint:
     Description: RDS endpoint (NewServer), the existing server host (ExistingServer), on-box note (Local), or external note (ExistingDatabase).

@@ -1,0 +1,6 @@
+[
+  {"auth": "AzureAd", "db": "Shared", "dns": "Shared"},
+  {"auth": "Okta", "db": "Shared", "dns": "Shared"},
+  {"auth": "Auth0", "db": "Shared", "dns": "Shared"},
+  {"auth": "Oidc", "db": "Shared", "dns": "Shared"}
+]

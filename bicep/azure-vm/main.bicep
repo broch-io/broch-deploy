@@ -141,8 +141,9 @@ param dnsProvider string = 'Cloudflare'
 @description('Auto (default): the appliance auto-creates and maintains the apex + wildcard A records pointing at this VM\'s public IP (deploy → sign in), reusing the dnsProvider credential. Manual: you create the A records yourself — required when a load balancer, reverse proxy, or NAT gateway sits IN FRONT of this VM (its public IP is then not what clients should resolve to), or when you manage DNS out-of-band. certMode=Byo forces Manual (no DNS credential).')
 param dnsAutoRecords string = 'Auto'
 
-@description('Email Let\'s Encrypt notifies about cert-renewal failures (certMode=Auto).')
-param acmeEmail string = ''
+@description('REQUIRED in every certMode — contact email for the Let\'s Encrypt account Caddy registers. No default on purpose: with certMode=Auto, Caddy refuses to start with an empty email (no TLS, no auto-DNS records), and in EVERY mode — Byo included, where the value is otherwise unused — the shared compose file refuses to start while it is blank. So a blank value must fail the deploy here, not produce an unreachable VM. Do not scope this requirement to Auto only.')
+@minLength(3)
+param acmeEmail string
 
 @description('Resource group of the Azure DNS zone — dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
 param dnsZoneResourceGroup string = ''
