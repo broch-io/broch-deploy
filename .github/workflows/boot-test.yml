@@ -77,6 +77,20 @@ jobs:
             -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=$(openssl rand -hex 20)|" \
             .env
 
+      # CADDY_ACME_EMAIL is required: Caddy crash-loops on an empty `email` (no TLS, no automatic
+      # DNS records), so the compose file uses `${CADDY_ACME_EMAIL:?...}` to refuse to start
+      # instead. Prove a blank value is rejected up front — a shell value overrides .env for
+      # interpolation, so this exercises the real template. byo-cert has no ACME email.
+      - name: Blank CADDY_ACME_EMAIL is rejected
+        if: matrix.variant != 'with-postgres-byo-cert'
+        run: |
+          if CADDY_ACME_EMAIL='' docker compose config --quiet 2> "$RUNNER_TEMP/acme-email-err.txt"; then
+            echo "::error::docker compose accepted a blank CADDY_ACME_EMAIL -- Caddy would crash-loop"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/acme-email-err.txt"
+          grep -q "set CADDY_ACME_EMAIL in .env" "$RUNNER_TEMP/acme-email-err.txt"
+
       # The byo-cert variant bind-mounts ./certs/*.pem; the files must exist
       # before `up` or docker creates directories in their place.
       - name: Generate self-signed wildcard cert (byo-cert)

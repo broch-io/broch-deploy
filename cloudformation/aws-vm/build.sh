@@ -9,9 +9,9 @@
 # CertMode selects which one is written at deploy time. Also embeds the pinned
 # Amazon RDS CA bundle (db-ca/rds-global-bundle.pem) the database connection verifies against.
 #
-#   ./build.sh            -> dist/template.yaml
+#   ./build.sh            -> dist/template.yaml plus manifest-published variants
 #
-# Deploy dist/template.yaml (NOT the source template.yaml, which carries placeholders).
+# Deploy a dist/template-*.yaml variant (NOT the source template.yaml, which carries placeholders).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,3 +98,5 @@ for placeholder, env in (
 open(dst, "w").write(text)
 print(f"wrote {dst}")
 PY
+python3 "$here/../../scripts/generate_aws_variant.py" \
+  --source "$out/template.yaml" --output-dir "$out"
