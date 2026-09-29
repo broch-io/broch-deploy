@@ -77,7 +77,8 @@ param authClientId = '<client-id>'
 param authClientSecret = '<client-secret>' // prefer --parameters over committing
 param authAdminRoles = 'broch_admin'
 param authDomain = 'your-tenant.auth0.com'
-// AzureAd/Entra: set authTenantId + authInstance instead of authDomain.
+param authAudience = '<your-auth0-api-identifier>' // Auth0: required — the API your app has user access to
+// AzureAd/Entra: set authTenantId + authInstance instead of authDomain + authAudience.
 // Generic OIDC: set authAuthority.
 
 // Telemetry, logging, and the license are configured IN-APP (Admin UI) after first

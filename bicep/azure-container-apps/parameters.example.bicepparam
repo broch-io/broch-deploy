@@ -32,7 +32,8 @@ param authClientSecret = '<oauth-client-secret>'
 param adminRoles = 'broch_admin'
 
 // Set the value(s) your provider needs; leave the rest at their empty defaults:
-//   Auth0 / Okta:     authDomain    = 'your-tenant.auth0.com' / 'your-org.okta.com'
+//   Auth0:            authDomain    = 'your-tenant.auth0.com'  +  authAudience = '<your-auth0-api-identifier>'
+//   Okta:             authDomain    = 'your-org.okta.com'
 //   AzureAd / Entra:  authTenantId  = '...'  +  authInstance = 'https://login.microsoftonline.com/'
 //   Generic Oidc:     authAuthority = '<issuer URL serving /.well-known/openid-configuration>'
 // param authDomain = ''

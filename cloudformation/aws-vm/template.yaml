@@ -91,7 +91,7 @@ Metadata:
       AuthTenantId: { default: "Microsoft Entra tenant ID" }
       AuthInstance: { default: "Microsoft Entra sign-in URL" }
       AuthAuthority: { default: "OpenID Connect issuer URL" }
-      AuthAudience: { default: "Token audience (if required)" }
+      AuthAudience: { default: "Auth0 API audience (required for Auth0)" }
       VpcId: { default: "VPC for Broch" }
       InstanceSubnetId: { default: "Public subnet for the EC2 instance" }
       InstanceType: { default: "EC2 instance size" }
@@ -381,7 +381,7 @@ Parameters:
   AuthTenantId: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Copy the Directory (tenant) ID from your app registration.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
   AuthInstance: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Usually https://login.microsoftonline.com/.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
   AuthAuthority: { Type: String, Default: "", Description: "Required for OpenID Connect. Enter the full HTTPS issuer URL published by your provider.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthAudience: { Type: String, Default: "", Description: "Optional token audience if your identity provider requires a separate audience for Broch.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+  AuthAudience: { Type: String, Default: "", Description: "Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to (Applications > APIs). Ignored by other providers.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
 
   # ── Compute & network ───────────────────────────────────────────────────────
   VpcId:
@@ -438,7 +438,7 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.33.0"
+    Default: "1.34.0"
     # A Docker tag: spliced into a sed replacement in set-version.sh, so no | or spaces.
     AllowedPattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
     ConstraintDescription: must be a Docker image tag (letters, digits, _ . -), e.g. 1.31.0 or latest.
@@ -522,6 +522,11 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref AuthDomain, ""]]
         AssertDescription: AuthDomain is required for Auth0 and Okta.
+  AuthAuth0RequiresAudience:
+    RuleCondition: !Equals [!Ref AuthProvider, Auth0]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AuthAudience, ""]]
+        AssertDescription: AuthAudience is required for Auth0 - the Identifier of the Auth0 API your Broch application has user access to. Without it Auth0 refuses sign-in or issues no roles.
   AuthOidcRequiresAuthority:
     RuleCondition: !Equals [!Ref AuthProvider, Oidc]
     Assertions:

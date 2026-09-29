@@ -16,6 +16,7 @@
   { "ParameterKey": "AuthClientSecret", "ParameterValue": "<client-secret>" },
   { "ParameterKey": "AuthAdminRoles", "ParameterValue": "broch_admin" },
   { "ParameterKey": "AuthDomain", "ParameterValue": "your-tenant.auth0.com" },
+  { "ParameterKey": "AuthAudience", "ParameterValue": "<your-auth0-api-identifier>" },
 
   { "ParameterKey": "VpcId", "ParameterValue": "vpc-0123456789abcdef0" },
   { "ParameterKey": "InstanceSubnetId", "ParameterValue": "subnet-aaaaaaaa" }

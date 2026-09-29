@@ -24,6 +24,24 @@ AUTH_LABELS = {
     "Auth0": "Auth0",
     "Oidc": "OpenID Connect",
 }
+# Template parameter -> the AUTHENTICATION__ key it feeds in the rendered .env.
+ENV_KEYS = {
+    "AuthProvider": "PROVIDER",
+    "AuthClientId": "CLIENTID",
+    "AuthAdminRoles": "ADMINROLES",
+    "AuthAudience": "AUDIENCE",
+    "AuthDomain": "DOMAIN",
+    "AuthTenantId": "TENANTID",
+    "AuthInstance": "INSTANCE",
+    "AuthAuthority": "AUTHORITY",
+}
+# The deploy-time Rules that enforce each provider's required fields, and the fields each asserts.
+ACTIVE_RULE = {
+    "AzureAd": {"AuthAzureAdRequiresTenant": {"AuthTenantId", "AuthInstance"}},
+    "Okta": {"AuthDomainProviderRequiresDomain": {"AuthDomain"}},
+    "Auth0": {"AuthDomainProviderRequiresDomain": {"AuthDomain"}, "AuthAuth0RequiresAudience": {"AuthAudience"}},
+    "Oidc": {"AuthOidcRequiresAuthority": {"AuthAuthority"}},
+}
 
 
 def variants(path=MANIFEST):
@@ -86,7 +104,7 @@ def render(text, entry):
     if not group:
         raise ValueError("identity ParameterGroup shape changed")
     group_fields = [v.strip() for v in group.group(2).split(",")]
-    if set(group_fields) != AUTH_FIELDS | {"AuthProvider", "AuthClientId", "AuthClientSecret", "AuthAdminRoles", "AuthAudience"}:
+    if set(group_fields) != AUTH_FIELDS | {"AuthProvider", "AuthClientId", "AuthClientSecret", "AuthAdminRoles"}:
         raise ValueError("identity ParameterGroup and axis config disagree")
     before = before[:group.start(2)] + ", ".join(v for v in group_fields if v not in dropped) + before[group.end(2):]
     for field in dropped:
@@ -122,6 +140,40 @@ def render(text, entry):
     return before + "Parameters:\n" + params + "Rules:\n" + rules + "Resources:\n" + after
 
 
+def check_provider_wiring(result, entry):
+    """The fields broch refuses to boot without for this provider (its required-field check at boot)
+    must survive the filter as parameters, reach .env under the right key without being shadowed
+    by the UserData Fn::Sub map, and stay enforced by a deploy-time Rule that references them."""
+    _, params, rules, resources = sections(result)
+    params = params.split("Conditions:\n", 1)[0]
+    auth = entry["auth"]
+    for field in AUTH_BUCKETS[auth]:
+        assert re.search(rf"^  {field}:", params, re.M), f"{auth}: {field} parameter dropped"
+    for field in AUTH_BUCKETS[auth] | {"AuthProvider", "AuthClientId", "AuthAdminRoles"}:
+        # A real .env line (not a comment), and no Fn::Sub map entry overriding the parameter —
+        # a `Field: ""` there renders the line empty while the text above still reads correctly.
+        assert re.search(rf"^\s+AUTHENTICATION__{ENV_KEYS[field]}=\$\{{{field}\}}$", resources, re.M), \
+            f"{auth}: {field} not wired to .env"
+        assert not re.search(rf"^              {field}:", resources, re.M), \
+            f"{auth}: {field} shadowed in the UserData Fn::Sub map"
+    assert set().union(*ACTIVE_RULE[auth].values()) == AUTH_BUCKETS[auth], \
+        f"{auth}: its rules and its identity fields disagree"
+    for rule, fields in ACTIVE_RULE[auth].items():
+        block = re.search(rf"^  {rule}:\n(?:(?!  \S).*\n)*", rules, re.M)
+        assert block, f"{auth}: rule {rule} dropped"
+        # The whole condition must be a plain (Or of) AuthProvider equality that names this
+        # provider: a !Not or !And around it would skip the Rule while still mentioning it.
+        cond = re.search(r"^    RuleCondition: (.+)$", block.group(), re.M)
+        equals = r"!Equals \[!Ref AuthProvider, \w+\]"
+        assert cond and re.fullmatch(rf"{equals}|!Or \[{equals}(?:, {equals})+\]", cond.group(1)) \
+            and f"!Equals [!Ref AuthProvider, {auth}]" in cond.group(1), \
+            f"{auth}: rule {rule} no longer applies to {auth}"
+        for field in fields:
+            # The predicate itself, not just a mention: a dropped !Not would let "" through.
+            assert f'!Not [!Equals [!Ref {field}, ""]]' in block.group(), \
+                f"{auth}: rule {rule} no longer requires {field} to be non-empty"
+
+
 def self_test():
     entries = variants()
     source = (AWS_VM / "template.yaml").read_text()
@@ -143,7 +195,49 @@ def self_test():
         assert f"    AllowedValues: [{entry['auth']}]" in result
         assert 'Assert: !Not [!Equals [!Ref AuthClientSecret, ""]]' in rules
         assert f"Deploy Broch on an EC2 instance with {AUTH_LABELS[entry['auth']]} sign-in" in result
+        check_provider_wiring(result, entry)
     assert "EntraExternalId" in source
+    by_auth = {e["auth"]: e for e in entries}
+    anchor = '            - DataVolumeId: !If [IsLocal, !Ref DataVolume, ""]'
+    for auth, bad, expected in (
+        ("AzureAd", source.replace("AUTHENTICATION__TENANTID=${AuthTenantId}", "AUTHENTICATION__TENANT=${AuthTenantId}"),
+         "AuthTenantId not wired to .env"),
+        ("AzureAd", source.replace(anchor, anchor + '\n              AuthTenantId: ""'),
+         "AuthTenantId shadowed in the UserData Fn::Sub map"),
+        ("AzureAd", source.replace('!Not [!Equals [!Ref AuthTenantId, ""]]', '!Not [!Equals [!Ref AuthInstance, ""]]'),
+         "no longer requires AuthTenantId"),
+        ("Auth0", source.replace('!Not [!Equals [!Ref AuthDomain, ""]]', '!Equals [!Ref AuthDomain, ""]'),
+         "no longer requires AuthDomain"),
+        ("Oidc", source.replace("AUTHENTICATION__AUTHORITY=${AuthAuthority}", "AUTHENTICATION__AUTHORITY="),
+         "AuthAuthority not wired to .env"),
+        ("Oidc", source.replace("    RuleCondition: !Equals [!Ref AuthProvider, Oidc]",
+                                "    RuleCondition: !Equals [!Ref AuthProvider, OIDC]"),
+         "no longer applies to Oidc"),
+        ("Oidc", source.replace("    RuleCondition: !Equals [!Ref AuthProvider, Oidc]",
+                                "    RuleCondition: !Not [!Equals [!Ref AuthProvider, Oidc]]"),
+         "no longer applies to Oidc"),
+        ("Auth0", source.replace("    RuleCondition: !Or [!Equals [!Ref AuthProvider, Auth0], !Equals [!Ref AuthProvider, Okta]]",
+                                 "    RuleCondition: !Not [!Or [!Equals [!Ref AuthProvider, Auth0], !Equals [!Ref AuthProvider, Okta]]]"),
+         "no longer applies to Auth0"),
+        ("Auth0", source.replace("  AuthDomainProviderRequiresDomain:", "  AuthDomainRuleRenamed:"),
+         "rule AuthDomainProviderRequiresDomain dropped"),
+        ("Auth0", source.replace('!Not [!Equals [!Ref AuthAudience, ""]]', '!Equals [!Ref AuthAudience, ""]'),
+         "no longer requires AuthAudience"),
+        ("Auth0", source.replace("AUTHENTICATION__AUDIENCE=${AuthAudience}", "AUTHENTICATION__AUDIENCE="),
+         "AuthAudience not wired to .env"),
+        ("Okta", source.replace("AUTHENTICATION__CLIENTID=${AuthClientId}", "AUTHENTICATION__CLIENT=${AuthClientId}"),
+         "AuthClientId not wired to .env"),
+    ):
+        if auth not in by_auth:
+            continue
+        assert bad != source, f"fail-closed case for {auth} ({expected}) no longer matches the template"
+        result = render(bad, by_auth[auth])  # the mutation must render; only the wiring check may object
+        try:
+            check_provider_wiring(result, by_auth[auth])
+        except AssertionError as exc:
+            assert expected in str(exc), f"{auth}: wiring check failed for the wrong reason: {exc}"
+        else:
+            raise AssertionError(f"provider wiring check accepted a broken {auth} variant ({expected})")
     for bad in (source.replace("  AuthDomain:", "  MissingDomain:"),
                 source.replace("${AuthDomain}", "${OtherDomain}"),
                 source.replace("            - DataVolumeId:", "            - UnknownId:")):
