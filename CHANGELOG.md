@@ -8,6 +8,33 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.34.0
+
+### Added
+
+- **Purchases no longer get stuck during setup.** A purchase that can't be resolved right away is now kept safe in the background and checked again automatically, without blocking first-run setup or a new checkout. Setup shows a clear "Waiting for payment" state with the checkout's expiry, and Cancel checkout is always available. You can enter a license key on any setup screen, dismiss purchase notices, retry activation of a saved key, and remove a saved key. If a second purchase is made while a license is already active, the key is not applied and you're shown a notice so you can request a refund.
+- **Faster bulk transfers through Share and Access.** Large transfers through tunnels now sustain higher throughput.
+- **`broch access --fallback-local-port`.** In the separately installed `broch` CLI, Access can now fall back to another free local port when the preferred one is already taken, and reuses that port on reconnect.
+
+### Changed
+
+- **Lower memory use in the `broch` CLI.** The CLI has a smaller memory footprint, including when telemetry is configured. As with other CLI changes, upgrading the server image does not update an existing CLI install — update it separately.
+- **Azure Marketplace wizard requires a Let's Encrypt email.** The email is now required in every certificate mode, and the wizard notes that a new deployment can take 3–10 minutes to become ready (when `/healthz` returns 200). The wizard also enforces the server's length limits for the Auth0 audience (500 characters) and client ID (255 characters).
+
+### Fixed
+
+- **Checkout cancel and retry.** Cancelling a checkout and starting over is safe even when setup is open in several tabs, and a paid purchase is no longer dropped when its key was already claimed.
+- **CLI stability.** The CLI no longer errors on a tunnel channel that closes while disconnecting.
+
+### Deploy impact
+
+- **Auth0 now requires an audience.** Deployments using Auth0 must set `AUTHENTICATION__AUDIENCE` to the identifier of an Auth0 API (with the user-access grant the API needs), or the server will refuse to start. Broch no longer falls back to the client ID, which Auth0 rejected with "Service not found" and which would not have issued role information anyway. The admin auth-configuration API returns a 400 for Auth0 without an audience, and a blank audience set in the admin UI makes sign-in fail with a configuration error naming the setting. Okta and other providers are unaffected.
+- **Configuration keys:** no operator config keys were added, renamed, or removed in this release.
+- **Checkout is refused while a license is active or a key is saved.** Starting a new checkout now returns a 409 in that case; use the billing portal for seat changes and renewals. A second purchase made anyway is never applied.
+- **Purchase claiming now runs inside the server.** Purchases are claimed by the server itself (every few seconds while a checkout is open, and every few hours for unresolved ones), not by the browser, so the browser-driven purchase polling endpoint is gone. Claiming only runs while a replica is up, and is skipped on air-gapped deployments. Any scripts or tooling calling the old polling endpoint or relying on the old setup status values must be updated; setup status now reports purchases and notices separately.
+- **Database migration on upgrade.** A new migration adds purchase tracking storage and runs automatically. The previous in-flight purchase column is kept and in-flight purchase state is not carried over, so a checkout that was open at upgrade time may need to be restarted.
+- **Azure Marketplace:** redeploys from the updated wizard require a Let's Encrypt email.
+
 ## 1.33.0
 
 ### Added
