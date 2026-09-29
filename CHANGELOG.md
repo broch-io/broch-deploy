@@ -14,6 +14,7 @@ deployment or use are deliberately omitted.
 
 - **Purchases no longer get stuck during setup.** A purchase that can't be resolved right away is now kept safe in the background and checked again automatically, without blocking first-run setup or a new checkout. Setup shows a clear "Waiting for payment" state with the checkout's expiry, and Cancel checkout is always available. You can enter a license key on any setup screen, dismiss purchase notices, retry activation of a saved key, and remove a saved key. If a second purchase is made while a license is already active, the key is not applied and you're shown a notice so you can request a refund.
 - **Faster bulk transfers through Share and Access.** Large transfers through tunnels now sustain higher throughput.
+- **One AWS template per identity provider.** The AWS CloudFormation deploy now comes as a separate template for Azure AD, Okta, Auth0 and generic OIDC, each with its own Launch Stack link and only that provider's sign-in fields.
 - **`broch access --fallback-local-port`.** In the separately installed `broch` CLI, Access can now fall back to another free local port when the preferred one is already taken, and reuses that port on reconnect.
 
 ### Changed
@@ -25,6 +26,7 @@ deployment or use are deliberately omitted.
 
 - **Checkout cancel and retry.** Cancelling a checkout and starting over is safe even when setup is open in several tabs, and a paid purchase is no longer dropped when its key was already claimed.
 - **CLI stability.** The CLI no longer errors on a tunnel channel that closes while disconnecting.
+- **AWS first boot no longer hangs intermittently.** The stack now waits for the instance to be running before it attaches the Elastic IP.
 
 ### Deploy impact
 
@@ -33,7 +35,8 @@ deployment or use are deliberately omitted.
 - **Checkout is refused while a license is active or a key is saved.** Starting a new checkout now returns a 409 in that case; use the billing portal for seat changes and renewals. A second purchase made anyway is never applied.
 - **Purchase claiming now runs inside the server.** Purchases are claimed by the server itself (every few seconds while a checkout is open, and every few hours for unresolved ones), not by the browser, so the browser-driven purchase polling endpoint is gone. Claiming only runs while a replica is up, and is skipped on air-gapped deployments. Any scripts or tooling calling the old polling endpoint or relying on the old setup status values must be updated; setup status now reports purchases and notices separately.
 - **Database migration on upgrade.** A new migration adds purchase tracking storage and runs automatically. The previous in-flight purchase column is kept and in-flight purchase state is not carried over, so a checkout that was open at upgrade time may need to be restarted.
-- **Azure Marketplace:** redeploys from the updated wizard require a Let's Encrypt email.
+- **A Let's Encrypt email is now required on every deploy template.** Supply `acmeEmail` (Azure), `AcmeEmail` (AWS) or `CADDY_ACME_EMAIL` (Docker Compose `with-postgres` and `with-postgres-external`) when you next redeploy, update the stack, or run `docker compose up`. A blank value now fails the deploy, instead of starting a server whose Caddy can't run (no HTTPS, no automatic DNS records). The Azure Marketplace wizard requires it too.
+- **AWS stacks now create a Lambda function.** A small function and its IAM role wait for the instance to be running before the Elastic IP is attached. Creating or updating the stack therefore needs Lambda create rights, and a least-privilege deployer needs `iam:PassRole` for the stack's roles. The function's log group (`/aws/lambda/<stack>-…`) outlives `delete-stack`; see Teardown in the AWS README. To update an existing stack, deploy the template for your `AuthProvider` (`template-<provider>-shared-shared.yaml`).
 
 ## 1.33.0
 
