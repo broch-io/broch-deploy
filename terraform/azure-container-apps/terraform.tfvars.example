@@ -14,7 +14,8 @@ auth_client_secret = "<oauth-client-secret>"
 auth_admin_roles   = "broch_admin"
 
 # Set the value(s) your provider needs; leave the rest unset:
-#   Auth0 / Okta:     auth_domain    = "your-tenant.auth0.com"
+#   Auth0:            auth_domain    = "your-tenant.auth0.com"  +  auth_audience = "<your-auth0-api-identifier>"
+#   Okta:             auth_domain    = "your-org.okta.com"
 #   AzureAd / Entra:  auth_tenant_id = "..."  +  auth_instance = "https://login.microsoftonline.com/"
 #   Oidc (generic):   auth_authority = "https://issuer.example.com"
 # auth_domain    = ""
@@ -28,7 +29,7 @@ auth_admin_roles   = "broch_admin"
 # A Broch license is activated in-app on first sign-in (Admin → License) — there
 # is no license env var. Buy a license at https://broch.io/pricing.
 
-# broch_image         = "ghcr.io/broch-io/broch:1.33.0"   # defaults to a pinned version; set a newer tag to upgrade
+# broch_image         = "ghcr.io/broch-io/broch:1.34.0"   # defaults to a pinned version; set a newer tag to upgrade
 # location            = "eastus"
 # name_prefix         = "broch"
 # container_cpu       = 0.5

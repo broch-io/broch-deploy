@@ -66,7 +66,7 @@ variable "image" {
 variable "image_tag" {
   description = "Docker image tag. Defaults to a concrete pinned version (NOT latest) so a droplet recreate never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or \"latest\" to float (not recommended in production)."
   type        = string
-  default     = "1.33.0"
+  default     = "1.34.0"
 }
 
 
@@ -128,7 +128,7 @@ variable "auth_domain" {
 }
 
 variable "auth_audience" {
-  description = "OAuth2 audience (required for Okta)"
+  description = "Auth0 API audience — required for Auth0: the Identifier of the Auth0 API your Broch application has user access to. Leave blank for other providers."
   type        = string
   default     = ""
 }

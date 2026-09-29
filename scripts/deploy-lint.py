@@ -39,6 +39,11 @@ loses state" incident class:
        silently mis-places a data volume for a customer account/region that
        cannot satisfy it. Zones must come from a parameter/variable or a dynamic
        lookup, never a literal.
+  AUTH Every deploy target (compose, VM, container) hands broch the full
+       AUTHENTICATION__* key set from its deployment inputs (every provider's
+       fields, not just the ones the smoke tests happen to fill): a dropped
+       TENANTID / INSTANCE / AUTHORITY line boots fine for Auth0 and fails broch's
+       required-field check at boot for every Entra or OIDC customer.
   AMI  The aws-vm UbuntuAmi default pins a Canonical release serial, never the
        stable/current alias: CloudFormation re-resolves SSM parameters on every
        stack update, so the alias turned any update after a new Ubuntu image into
@@ -330,6 +335,88 @@ def rule_meta(root: str) -> None:
                 violate("META", rel, i + 1, "tooling telemetry marker in a customer template -- remove it")
 
 
+AUTH_KEYS = ("PROVIDER", "CLIENTID", "ADMINROLES", "DOMAIN", "TENANTID", "INSTANCE", "AUTHORITY", "AUDIENCE")
+# Each key's deployment input, snake_case; each target spells it in its own convention.
+AUTH_INPUT = {"PROVIDER": "provider", "CLIENTID": "client_id", "ADMINROLES": "admin_roles", "DOMAIN": "domain",
+              "TENANTID": "tenant_id", "INSTANCE": "instance", "AUTHORITY": "authority", "AUDIENCE": "audience",
+              "CLIENTSECRET": "client_secret"}
+
+
+def camel(key: str) -> str:
+    return "".join(part.title() for part in AUTH_INPUT[key].split("_"))
+
+
+def rule_auth(root: str) -> None:
+    """Every target wires every AUTHENTICATION__ key to broch from that key's own input."""
+    why = "broch refuses to boot, or ignores what the customer entered, for the providers that need it"
+
+    def live_lines(rel):
+        """Lines outside comments: `#` everywhere, plus `//` and `/* */` in Terraform and Bicep
+        (only there -- a shell glob like `lists/*` in cloud-init is not a comment opener)."""
+        lines = read_lines(root, rel)
+        if lines is None:
+            return None
+        if rel.endswith((".tf", ".bicep")):
+            lines = re.sub(r"/\*.*?\*/", "", "\n".join(lines), flags=re.S).splitlines()
+            lines = [line for line in lines if not line.lstrip().startswith("//")]
+        return [line for line in lines if not line.lstrip().startswith("#")]
+
+    def require(rel, keys, source):
+        """source(key) is a regex that one line must match."""
+        live = live_lines(rel)
+        for key in keys if live is not None else ():
+            if not any(re.search(source(key), line) for line in live):
+                violate("AUTH", rel, 1, f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
+
+    def require_block(rel, keys, name, source):
+        """Multi-line env entries: a line matching name(key) with source(key) on the next line."""
+        live = live_lines(rel)
+        for key in keys if live is not None else ():
+            if not any(re.search(name(key), a) and re.search(source(key), b) for a, b in zip(live, live[1:])):
+                violate("AUTH", rel, 1, f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
+
+    # compose: the broch service maps each key from the same-named environment/.env entry.
+    base = os.path.join(root, "docker-compose")
+    for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        rel = os.path.join("docker-compose", entry, "docker-compose.yml")
+        if os.path.isfile(os.path.join(root, rel)):
+            require(rel, (*AUTH_KEYS, "CLIENTSECRET"),
+                    lambda k: rf"^\s+AUTHENTICATION__{k}:\s*\$\{{AUTHENTICATION__{k}:-\}}\s*$")
+    # VM appliances write the keys into /opt/broch/.env: a Terraform templatefile var, a Bicep
+    # __TOKEN__ replace, a CloudFormation ${Param}. A literal, or another key's input, would boot
+    # but ignore what the customer entered. The client secret is hydrated from the platform
+    # secret store at boot on azure-vm and aws-vm, so it is not in those templates as a value.
+    do_var = lambda k: "admin_roles" if k == "ADMINROLES" else f"auth_{AUTH_INPUT[k]}"
+    require("terraform/digitalocean/cloud-init.yaml", (*AUTH_KEYS, "CLIENTSECRET"),
+            lambda k: rf"^\s+AUTHENTICATION__{k}=\$\{{{do_var(k)}\}}\s*$")
+    require("bicep/azure-vm/cloud-init.yaml", AUTH_KEYS,
+            lambda k: rf"^\s+AUTHENTICATION__{k}=__AUTH_{AUTH_INPUT[k].upper()}__\s*$")
+    for rel in aws_templates(root):
+        require(rel, AUTH_KEYS, lambda k: rf"^\s+AUTHENTICATION__{k}=\$\{{Auth{camel(k)}\}}\s*$")
+        require(rel, ("CLIENTSECRET",),
+                lambda k: rf"""AUTHENTICATION__{k}='%s'.*\$\(get "broch-auth-client-secret"\)""")
+    # Container targets set env vars as name/value (or name/secret) entries.
+    ecs = "terraform/aws-ecs/compute.tf"
+    require(ecs, AUTH_KEYS,
+            lambda k: rf'\{{\s*name\s*=\s*"AUTHENTICATION__{k}",\s*value\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*\}}')
+    require_block(ecs, ("CLIENTSECRET",), lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
+                  lambda k: r"^\s+valueFrom\s*=\s*aws_secretsmanager_secret\.auth_client_secret\.arn\s*$")
+    aca_tf = "terraform/azure-container-apps/containerapp.tf"
+    require_block(aca_tf, AUTH_KEYS, lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
+                  lambda k: rf"^\s+value\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*$")
+    require_block(aca_tf, ("CLIENTSECRET",), lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
+                  lambda k: r'^\s+secret_name\s*=\s*"auth-client-secret"\s*$')
+    # Bicep values may be expressions (INSTANCE defaults to the cloud's login endpoint), so the
+    # value line must reference the key's own parameter rather than equal it -- as an expression,
+    # not inside a '...' string literal (no quote may precede it on the line).
+    aca_bicep = "bicep/azure-container-apps/mainTemplate.bicep"
+    bicep_param = lambda k: "adminRoles" if k == "ADMINROLES" else f"auth{camel(k)}"
+    require_block(aca_bicep, AUTH_KEYS, lambda k: rf"^\s+name:\s*'AUTHENTICATION__{k}'",
+                  lambda k: rf"^\s+value:[^'\n]*\b{bicep_param(k)}\b")
+    require_block(aca_bicep, ("CLIENTSECRET",), lambda k: rf"^\s+name:\s*'AUTHENTICATION__{k}'",
+                  lambda k: r"^\s+secretRef:\s*'auth-client-secret'\s*$")
+
+
 BROCH_IMAGE = re.compile(r"ghcr\.io/broch-io/broch:([A-Za-z0-9._-]+)")
 
 
@@ -466,6 +553,7 @@ def main() -> int:
     rule_r4(root)
     rule_email(root)
     rule_meta(root)
+    rule_auth(root)
     rule_pin(root)
     rule_zone(root)
     rule_ami(root)

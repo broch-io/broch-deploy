@@ -43,7 +43,7 @@ License and telemetry are configured **in-app** (Admin UI) after first sign-in �
   - **Outside the VPC** (`ExistingDatabase`): allocate an Elastic IP first (`aws ec2 allocate-address --domain vpc`), allow-list that address on the database, and pass it as `ElasticIpAllocationId` + `ElasticIpAddress`. First boot waits for CloudFormation to attach it before any database traffic, so the allow-list covers the whole deploy. It fails fast if the address doesn't match the allocation, or if the address is attached to something else. (A stack-allocated EIP can't be allow-listed in advance, since it doesn't exist until the deploy starts.) An instance **replacement** with this external database setup is unsupported; recover by delete and re-create instead (see [Recovering](#recovering-an-existing-installation)).
 - A DNS zone for your `DnsZone`. If you choose the default `DnsProvider=Route53`, enter its hosted zone ID, including when you bring your own certificate. For automatic certificates with Cloudflare, Google Cloud DNS, or DigitalOcean, enter that provider's credential in its section. With a bring-your-own certificate, create the Broch hostname and wildcard A records yourself; provider credentials are not needed.
 - A **Let's Encrypt contact email** for `AcmeEmail`. **Required** in every `CertMode` (unused when you bring your own certificate, but the stack still needs it) — a blank value fails stack creation instead of booting an instance whose Caddy can't start.
-- An **identity provider** app (Auth0, Entra ID, Okta, or any OIDC) — Broch has no local login. Register it as a **confidential (web) client with a client secret**: Broch exchanges the sign-in code server-side, so `AuthClientSecret` is required and a public/SPA app won't work. Register the callback `https://<ShareSubdomain>.<DnsZone>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
+- An **identity provider** app (Auth0, Entra ID, Okta, or any OIDC) — Broch has no local login. Register it as a **confidential (web) client with a client secret**: Broch exchanges the sign-in code server-side, so `AuthClientSecret` is required and a public/SPA app won't work. Register the callback `https://<ShareSubdomain>.<DnsZone>/auth/callback`. Auth0 also needs an **API** (its Identifier is `AuthAudience`), with the Broch application authorized for **User Access** on the API's **Application Access** tab — an API that requires that grant rejects every sign-in without it. See the [identity-provider guides](https://broch.io/docs/identity-providers/).
 - A Broch license — activated in-app after first sign-in. Buy at [broch.io/pricing](https://broch.io/pricing).
 
 ## Launch Stack (one click)
@@ -110,7 +110,7 @@ aws cloudformation deploy \
       VpcId=vpc-0123456789abcdef0 \
       InstanceSubnetId=subnet-aaaa \
       AuthProvider=Auth0 AuthClientId=... AuthClientSecret=... \
-      AuthDomain=your-tenant.auth0.com
+      AuthDomain=your-tenant.auth0.com AuthAudience='<your-auth0-api-identifier>'
 
 # URL + where the master key landed:
 aws cloudformation describe-stacks --stack-name broch \

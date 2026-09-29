@@ -20,7 +20,7 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.33.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.34.0}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -45,7 +45,7 @@ services:
       AUTHENTICATION__CLIENTSECRET: ${AUTHENTICATION__CLIENTSECRET:-}
       AUTHENTICATION__ADMINROLES: ${AUTHENTICATION__ADMINROLES:-}
       # Provider-specific — set only what your provider needs:
-      #   Auth0/Okta → DOMAIN (Auth0 RBAC also → AUDIENCE) · AzureAd/Entra → TENANTID + INSTANCE · generic OIDC → AUTHORITY
+      #   Auth0 → DOMAIN + AUDIENCE · Okta → DOMAIN · AzureAd/Entra → TENANTID + INSTANCE · generic OIDC → AUTHORITY
       AUTHENTICATION__DOMAIN: ${AUTHENTICATION__DOMAIN:-}
       AUTHENTICATION__TENANTID: ${AUTHENTICATION__TENANTID:-}
       AUTHENTICATION__INSTANCE: ${AUTHENTICATION__INSTANCE:-}

@@ -31,7 +31,7 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 param masterKey string
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.33.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.34.0'
 
 // ============================================================================
 // Database Parameters
@@ -90,7 +90,7 @@ param authDomain string = ''
 @description('Issuer URL — required for the generic Oidc provider (serves /.well-known/openid-configuration). Leave blank for other providers.')
 param authAuthority string = ''
 
-@description('OAuth2 API audience identifier. When empty, falls back to authClientId.')
+@description('Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to. Ignored by other providers.')
 param authAudience string = ''
 
 @description('Comma-separated OAuth2 scopes (e.g., openid,profile,email). When empty, provider-specific defaults are used.')
