@@ -8,6 +8,52 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.35.0
+
+### Added
+
+- **Check your configuration before you deploy.** The image now has two commands that read your environment and configuration files as the server does at startup, without starting the server or touching the database or network. Because they don't read the database, they can't see settings saved in the admin UI. `--check-config` (optionally with `--json`) lists every problem and exits non-zero if there are any. `--describe-config` prints the rules the server enforces as JSON, so your deploy tooling can validate settings itself.
+- **Billing and seat options match your license.** Licenses that aren't billed through Stripe no longer show a Manage Billing button, and the Configuration page explains why. Update seat counts is hidden when there is no subscription, and disabled with a reason while a subscription is trialing or paused. When the licensing service refuses a seat change, you now see its message instead of a generic error.
+
+### Changed
+
+- **Azure Marketplace wizard catches unsupported characters up front.** Fields that feed the VM's configuration now reject a single quote, a line break or a trailing backslash as you type, instead of failing after Review + create.
+- **Lower Application Insights volume.** Four noisy HTTP client metrics are no longer sent to Application Insights, which reduces ingestion volume. Request duration, server metrics, traces, requests and dependencies are unchanged.
+- **Clearer licensing-service errors.** If the server can't reach the licensing service, the admin UI says so, instead of showing "unexpected error".
+
+### Fixed
+
+- **Share's public link appears only when it works.** The `broch share` CLI used to print the Public link slightly before the server could serve it, so a request in that gap could get a 502. The link now appears once the tunnel is ready. A newer CLI against an older server connects as before, and older CLIs are unaffected.
+- **Auth0 and other providers boot when settings are saved in the app.** Startup now checks your effective sign-in configuration, meaning environment values plus anything saved in the admin UI. A deployment whose Auth0 audience was saved in the app but left blank in the environment no longer refuses to start. Blank values saved in the app no longer override a valid environment value.
+- **License state no longer carries over between keys.** Clearing or replacing the license key now also clears the cached license state, so one license's billing options can't show up under the next.
+
+### Deploy impact
+
+- **Configuration keys:** no operator config keys were added, renamed, or removed in this release.
+- **Stricter startup validation.** The server now checks all settings up front, so some configurations that previously started and failed later now fail at startup. Run `--check-config` against your configuration before upgrading. These cases now fail at startup with a clear message:
+  - an unknown `AUTHENTICATION__PROVIDER`, or a numeric or comma-separated value for any setting that takes a fixed set of names
+  - a non-boolean `LICENSE__AIRGAPPED`
+  - an unparseable `SHARE__PROXYACTIVITYTIMEOUT`
+  - invalid values for `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS`, `BROCHTOKEN__LIFETIMEMINUTES`, `BROCHTOKEN__SIGNINGKEY`, `BROCHTELEMETRY__PROVIDER` (including a value saved in the app), and the tunnel limit settings (`API__MAXTUNNELS`, `BROCH__MAXTUNNELS`)
+
+  Previously, a bad `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` or `BROCHTOKEN__LIFETIMEMINUTES` only failed later, at license refresh or first sign-in. Only the first error is reported at startup, in the same order `--check-config` lists them.
+
+  Startup also checks sign-in, logging and telemetry settings saved in the admin UI, which `--check-config` can't see. Before upgrading, open Configuration and confirm the saved sign-in settings are complete for your provider (for example, an OAuth client secret where your provider needs one). A saved value that 1.34.0 tolerated can stop 1.35.0 from starting.
+- **Billing portal errors changed.** For a license that isn't billed through Stripe, the billing portal request now returns a 409 "not billed through Stripe" instead of a generic 502 "temporarily unavailable". Update any scripts that depend on the old response. The system info response also now reports whether billing and seat changes are available.
+- **Share link readiness needs a CLI update to take effect.** The fix for the early Public link needs both this server and the newer `broch` CLI. Upgrading the server image does not update an existing CLI install — update it separately.
+
+### Deploy templates
+
+The templates in this repository now pin 1.35.0 and carry these changes. Read the ones for your target before you upgrade:
+
+- **Azure Container Apps (Terraform) — upgrading replaces the database.** The module now runs Postgres on a private network and uses the azurerm 5.x provider. Upgrading a deployment made with the earlier module **replaces the database server, and its data is lost**: run `pg_dump` against the old server first (the restore must run from a host inside the VNet), and expect to redo the custom-domain binding, because the Container Apps environment is replaced too. The database server now carries `prevent_destroy`, so the plan stops until you deliberately remove that line. Run `terraform init -upgrade`, and register the `Microsoft.ContainerService` resource provider. Details in the module README.
+- **AWS ECS (Terraform):** moves to the AWS provider 6.x (run `terraform init -upgrade`). RDS deletion protection is now on by default; set `rds_deletion_protection = false` before an intentional destroy.
+- **DigitalOcean (Terraform):** the data volume carries `prevent_destroy`, and `admin_roles` now defaults to `broch_admin`.
+- **Azure VM (Bicep and Marketplace):** secrets are now written to the VM's `.env` exactly as supplied. Earlier versions let Docker Compose alter a value containing `$`, ` #` or leading/trailing spaces. If your master key or local database password contains one of those, redeploy with the value the running containers actually received (the module README shows how to read it). In `Local` database mode the password may no longer contain `;`, `"` or leading/trailing spaces. `authAdminRoles` now defaults to `broch_admin`.
+- **Azure Container Apps (Bicep):** `authProvider` no longer defaults to `AzureAd`; set it explicitly in your parameters file.
+- **AWS (CloudFormation):** `DbInstanceClass` accepts any RDS instance class name instead of a fixed list. The stack now validates `AuthProvider` and the Auth0 audience strictly, so an existing stack with a differently-cased provider name or stray whitespace in the audience needs that fixed on its next update.
+- **All templates** refuse, before deploying, the settings Broch itself would refuse at startup. `scripts/config-contract.py` checks a template against a Broch image locally; see its usage notes for the tools it needs.
+
 ## 1.34.0
 
 ### Added
