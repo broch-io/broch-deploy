@@ -8,6 +8,38 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.35.0
+
+### Added
+
+- **Check your configuration before you deploy.** The image now has two commands that read your configuration exactly as the server does at startup, without starting the server or touching the database or network. `--check-config` (optionally with `--json`) lists every problem and exits non-zero if there are any. `--describe-config` prints the rules the server enforces as JSON, so your deploy tooling can validate settings itself.
+- **Billing and seat options match your license.** Licenses that aren't billed through Stripe no longer show a Manage Billing button, and the Configuration page explains why. Update seat counts is hidden when there is no subscription, and disabled with a reason while a subscription is trialing or paused. When the licensing service refuses a seat change, you now see its message instead of a generic error.
+
+### Changed
+
+- **Azure Marketplace wizard catches unsupported characters up front.** Fields that feed the VM's configuration now reject a single quote, a line break or a trailing backslash as you type, instead of failing after Review + create.
+- **Lower Application Insights volume.** Four noisy HTTP client metrics are no longer sent to Application Insights, which reduces ingestion volume. Request duration, server metrics, traces, requests and dependencies are unchanged.
+- **Clearer licensing-service errors.** If the server can't reach the licensing service, the admin UI says so, instead of showing "unexpected error".
+
+### Fixed
+
+- **Share's public link appears only when it works.** The `broch share` CLI used to print the Public link slightly before the server could serve it, so a request in that gap could get a 502. The link now appears once the tunnel is ready. A newer CLI against an older server connects as before, and older CLIs are unaffected.
+- **Auth0 and other providers boot when settings are saved in the app.** Startup now checks your effective sign-in configuration, meaning environment values plus anything saved in the admin UI. A deployment whose Auth0 audience was saved in the app but left blank in the environment no longer refuses to start. Blank values saved in the app no longer override a valid environment value.
+- **License state no longer carries over between keys.** Clearing or replacing the license key now also clears the cached license state, so one license's billing options can't show up under the next.
+
+### Deploy impact
+
+- **Configuration keys:** no operator config keys were added, renamed, or removed in this release.
+- **Stricter startup validation.** The server now checks all settings up front, so some configurations that previously started and failed later now fail at startup. Run `--check-config` against your configuration before upgrading. These cases now fail at startup with a clear message:
+  - an unknown `AUTHENTICATION__PROVIDER`, or a numeric or comma-separated value for any setting that takes a fixed set of names
+  - a non-boolean `LICENSE__AIRGAPPED`
+  - an unparseable `SHARE__PROXYACTIVITYTIMEOUT`
+  - invalid values for `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS`, `BROCHTOKEN__LIFETIMEMINUTES`, `BROCHTOKEN__SIGNINGKEY`, `BROCHTELEMETRY__PROVIDER` (including a value saved in the app), and the tunnel limit settings (`API__MAXTUNNELS`, `BROCH__MAXTUNNELS`)
+
+  Previously, a bad `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` or `BROCHTOKEN__LIFETIMEMINUTES` only failed later, at license refresh or first sign-in. Only the first error is reported at startup, in the same order `--check-config` lists them.
+- **Billing portal errors changed.** For a license that isn't billed through Stripe, the billing portal request now returns a 409 "not billed through Stripe" instead of a generic 502 "temporarily unavailable". Update any scripts that depend on the old response. The system info response also now reports whether billing and seat changes are available.
+- **Share link readiness needs a CLI update to take effect.** The fix for the early Public link needs both this server and the newer `broch` CLI. Upgrading the server image does not update an existing CLI install — update it separately.
+
 ## 1.34.0
 
 ### Added
