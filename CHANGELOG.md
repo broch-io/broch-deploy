@@ -12,7 +12,7 @@ deployment or use are deliberately omitted.
 
 ### Added
 
-- **Check your configuration before you deploy.** The image now has two commands that read your configuration exactly as the server does at startup, without starting the server or touching the database or network. `--check-config` (optionally with `--json`) lists every problem and exits non-zero if there are any. `--describe-config` prints the rules the server enforces as JSON, so your deploy tooling can validate settings itself.
+- **Check your configuration before you deploy.** The image now has two commands that read your environment and configuration files as the server does at startup, without starting the server or touching the database or network. Because they don't read the database, they can't see settings saved in the admin UI. `--check-config` (optionally with `--json`) lists every problem and exits non-zero if there are any. `--describe-config` prints the rules the server enforces as JSON, so your deploy tooling can validate settings itself.
 - **Billing and seat options match your license.** Licenses that aren't billed through Stripe no longer show a Manage Billing button, and the Configuration page explains why. Update seat counts is hidden when there is no subscription, and disabled with a reason while a subscription is trialing or paused. When the licensing service refuses a seat change, you now see its message instead of a generic error.
 
 ### Changed
@@ -37,6 +37,8 @@ deployment or use are deliberately omitted.
   - invalid values for `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS`, `BROCHTOKEN__LIFETIMEMINUTES`, `BROCHTOKEN__SIGNINGKEY`, `BROCHTELEMETRY__PROVIDER` (including a value saved in the app), and the tunnel limit settings (`API__MAXTUNNELS`, `BROCH__MAXTUNNELS`)
 
   Previously, a bad `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` or `BROCHTOKEN__LIFETIMEMINUTES` only failed later, at license refresh or first sign-in. Only the first error is reported at startup, in the same order `--check-config` lists them.
+
+  Startup also checks sign-in, logging and telemetry settings saved in the admin UI, which `--check-config` can't see. Before upgrading, open Configuration and confirm the saved sign-in settings are complete for your provider (for example, an OAuth client secret where your provider needs one). A saved value that 1.34.0 tolerated can stop 1.35.0 from starting.
 - **Billing portal errors changed.** For a license that isn't billed through Stripe, the billing portal request now returns a 409 "not billed through Stripe" instead of a generic 502 "temporarily unavailable". Update any scripts that depend on the old response. The system info response also now reports whether billing and seat changes are available.
 - **Share link readiness needs a CLI update to take effect.** The fix for the early Public link needs both this server and the newer `broch` CLI. Upgrading the server image does not update an existing CLI install — update it separately.
 
