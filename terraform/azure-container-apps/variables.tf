@@ -3,18 +3,29 @@
 variable "wildcard_hostname" {
   description = "Wildcard DNS hostname for Broch tunnels (e.g. broch.example.com). You must own the DNS zone — Azure does not manage your DNS unless you also use Azure DNS."
   type        = string
+
+  validation {
+    condition     = trimspace(var.wildcard_hostname) != ""
+    error_message = "wildcard_hostname is required: Broch refuses to start without it."
+  }
 }
 
 # ─── Identity provider (required at boot) ────────────────────────────────────
 # Broch authenticates every user through your IdP — there is no built-in local
-# login, so the IdP is part of the boot floor. The server starts without these,
-# but no one can sign in (or finish first-run setup) until they're set. Set the
-# provider-specific values your IdP needs; leave the rest blank.
+# login, so the IdP is part of the boot floor. Set the provider-specific values
+# your IdP needs and leave the rest blank; the plan refuses a combination Broch
+# would refuse at startup.
 # Guides: https://broch.io/docs/identity-providers/
 
 variable "auth_provider" {
   description = "Identity provider type: Auth0 | AzureAd | EntraExternalId | Okta | Oidc."
   type        = string
+
+  # Matched case-insensitively, as Broch binds it.
+  validation {
+    condition     = contains(["auth0", "azuread", "entraexternalid", "okta", "oidc"], lower(trimspace(var.auth_provider)))
+    error_message = "auth_provider must be one of Auth0, AzureAd, EntraExternalId, Okta, Oidc."
+  }
 }
 
 variable "auth_client_id" {
@@ -23,7 +34,7 @@ variable "auth_client_id" {
 }
 
 variable "auth_client_secret" {
-  description = "OAuth client secret from your IdP. Stored in Key Vault; not committed to state or logs."
+  description = "OAuth client secret from your IdP. Stored in Key Vault and, in plaintext, in Terraform state (sensitive keeps it out of plan and apply output); keep state access-controlled."
   type        = string
   sensitive   = true
 }
@@ -35,19 +46,19 @@ variable "auth_admin_roles" {
 }
 
 variable "auth_domain" {
-  description = "IdP domain — required for Auth0 and Okta (e.g. your-tenant.auth0.com). Leave blank for other providers."
+  description = "IdP domain — required for Auth0 and Okta (e.g. your-tenant.auth0.com) unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
 
 variable "auth_tenant_id" {
-  description = "Tenant ID — required for AzureAd and EntraExternalId. Leave blank for other providers."
+  description = "Tenant ID — required for AzureAd and EntraExternalId unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
 
 variable "auth_instance" {
-  description = "Login instance for AzureAd/EntraExternalId (e.g. https://login.microsoftonline.com/). Leave blank for other providers."
+  description = "Login instance — required for AzureAd (https://login.microsoftonline.com/) and EntraExternalId (https://<tenant>.ciamlogin.com/) unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
@@ -69,13 +80,26 @@ variable "auth_audience" {
 variable "broch_image" {
   description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or :latest to float (not recommended in production)."
   type        = string
-  default     = "ghcr.io/broch-io/broch:1.34.0"
+  default     = "ghcr.io/broch-io/broch:1.35.0"
 }
 
 variable "location" {
   description = "Azure region. Container Apps + Postgres Flexible Server must be in the same region."
   type        = string
   default     = "eastus"
+}
+
+variable "vnet_address_space" {
+  description = "Address space (an IPv4 /16) for the private VNet that holds the Container Apps environment and the database: it is carved into a /23 for the environment and a /28 for the database. Change it only if it overlaps a network you peer with, and only at first deploy: the subnets can't be moved once in use."
+  type        = string
+  default     = "10.2.0.0/16"
+
+  # try(): && does not short-circuit before Terraform 1.12, so a value with no "/" would
+  # otherwise raise an index error instead of this message.
+  validation {
+    condition     = try(cidrsubnet(var.vnet_address_space, 0, 0) == var.vnet_address_space && can(regex("^[0-9.]+/16$", var.vnet_address_space)), false)
+    error_message = "vnet_address_space must be an IPv4 /16 network address, e.g. 10.2.0.0/16."
+  }
 }
 
 variable "name_prefix" {

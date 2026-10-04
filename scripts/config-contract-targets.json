@@ -1,0 +1,419 @@
+{
+  "_doc": [
+    "What scripts/config-contract.py needs to know about each template, and nothing about what Broch requires",
+    "(that comes from the Broch image: --describe-config / --check-config).",
+    "Every target, every kind:",
+    "- inputs: the template input that sets each Broch configuration key. The check fails if the template sends a key a",
+    "  rule checks that is not accounted for here (inputs, fixed, generated, secret_inputs), so this can't drop a key silently.",
+    "- fixed: keys the template hard-codes (the check verifies they are the same in every case; Broch still judges them).",
+    "- secret_inputs: settings the template passes from an input as a secret reference (not in what it renders).",
+    "  deploy-lint is what proves those references are wired.",
+    "- generated: values the template generates itself, judged at the size its generator produces: random_password (the",
+    "  resource's literal length), command (a regex over the render whose group is openssl's byte count; placeholder is",
+    "  what the render shows until the droplet replaces it), or stand_in (a value from `values`).",
+    "- stricter (and stricter_extra, for one target on top of its defaults): where the template deliberately refuses what",
+    "  Broch would accept, each with its reason. An `error` regex narrows any kind to the template's own message, and may",
+    "  name the case's input as {input}. Kinds: refuses_first_run (no identity provider), refuses_whitespace_only,",
+    "  refuses_pattern (a value matching `pattern`, the error naming the input), refuses_constraint (one constraint of",
+    "  `parameter`: CloudFormation's wording for `constraint`, or `error`), refuses_rule_when_set (a CloudFormation Rule,",
+    "  only when `key`, which waives Broch's own check, is set).",
+    "- unvalidated: {why}: the template validates nothing (a compose .env); then only fidelity, over-strictness and",
+    "  coverage are checked.",
+    "- boot_refusals: a deploy that succeeds and then never starts Broch (a boot gate, a missing Key Vault secret, compose",
+    "  refusing the .env) is a failure, except a stop matching `boot` when the case leaves `key` blank, with its reason.",
+    "- base_vars / base_parameters: the template's other inputs, fixed for every case (keys starting with _ are comments).",
+    "Per kind:",
+    "- terraform: mocks, plan_target, render (map | cloud-init), render_expression, dotenv_path, compose_service.",
+    "- compose: compose_file, compose_service; values written to the .env single-quoted; docker compose config renders.",
+    "- cloudformation: dir, template, build_script, instance, compose_service; embeds (the compose file build.sh embeds",
+    "  under each placeholder); variant (a published variant rendered by scripts/generate_aws_variant.py: every published",
+    "  variant must be a target). Parameter constraints and Rules are evaluated here.",
+    "- bicep: template, resource_group_env (the environment variable naming the resource group to validate in; verdicts from Azure's preflight there), render (container-app | vm), container,",
+    "  secret_map / secret_vault (the VM's Key Vault boot fetch), compose_service.",
+    "Each target judges one database / DNS / certificate mode (its base parameters). Modes whose values the template",
+    "generates (azure-vm Managed and Local, the container-apps Embedded sidecar, CloudFormation NewServer and Local) are",
+    "exercised by a real deploy, not here."
+  ],
+  "values": {
+    "_doc": "Stand-ins for generated values with no size to derive: valid by construction.",
+    "ConnectionStrings__BrochConnection": "Host=postgres;Database=brochdb;Username=broch;Password=contract-test"
+  },
+  "defaults": {
+    "compose": {
+      "kind": "compose",
+      "compose_file": "docker-compose.yml",
+      "compose_service": "broch",
+      "inputs": {
+        "BROCH_MASTER_KEY": "BROCH_MASTER_KEY",
+        "Api:WildcardHostname": "BROCH_WILDCARD_HOSTNAME",
+        "Authentication:Provider": "AUTHENTICATION__PROVIDER",
+        "Authentication:ClientId": "AUTHENTICATION__CLIENTID",
+        "Authentication:ClientSecret": "AUTHENTICATION__CLIENTSECRET",
+        "Authentication:Domain": "AUTHENTICATION__DOMAIN",
+        "Authentication:TenantId": "AUTHENTICATION__TENANTID",
+        "Authentication:Instance": "AUTHENTICATION__INSTANCE",
+        "Authentication:Authority": "AUTHENTICATION__AUTHORITY",
+        "Authentication:Audience": "AUTHENTICATION__AUDIENCE"
+      },
+      "base_vars": {
+        "CADDY_ACME_EMAIL": "ops@example.com",
+        "POSTGRES_PASSWORD": "contract-test"
+      },
+      "generated": {},
+      "secret_inputs": {},
+      "fixed": ["Database:Provider", "ConnectionStrings:BrochConnection"],
+      "unvalidated": {
+        "why": "The operator writes the .env and docker compose checks nothing in it beyond ${VAR:?}; Broch is the first to judge these values, at startup. What's checked here is that compose delivers each value unchanged and refuses nothing Broch accepts."
+      },
+      "stricter": [
+        {
+          "kind": "refuses_pattern",
+          "pattern": "['\\n\\r]|\\\\$",
+          "error": "single-quoted \\.env value",
+          "why": ".env.example says to single-quote values so docker compose takes them literally (no $ interpolation, no trimming, no ' #' comment); a single quote, a line break or a trailing backslash can't be written that way."
+        }
+      ]
+    },
+    "bicep": {
+      "kind": "bicep",
+      "resource_group_env": "CONTRACT_AZURE_RESOURCE_GROUP",
+      "compose_service": "broch",
+      "generated": {},
+      "secret_inputs": {},
+      "stricter": [
+        {
+          "kind": "refuses_whitespace_only",
+          "error": "\\b{input}\\b(?:[^.]*?\\b(?:is|are) required| must not be only spaces)",
+          "why": "A value of only spaces is refused. Broch requires these to be non-empty only, so it would start and then fail at sign-in or on the first database call; the template catches the typo at preflight."
+        },
+        {
+          "kind": "refuses_pattern",
+          "pattern": "[^\\u0000-\\u007f]",
+          "error": "Length of the value should be greater than or equal",
+          "why": "Azure counts characters, Broch counts UTF-8 bytes: a master key of 32 bytes in fewer than 32 characters (non-ASCII) is refused. The key the template documents (openssl rand -base64 48) is ASCII."
+        }
+      ],
+      "fixed": ["Database:Provider"]
+    },
+    "cloudformation": {
+      "kind": "cloudformation",
+      "dir": "cloudformation/aws-vm",
+      "template": "template.yaml",
+      "build_script": "cloudformation/aws-vm/build.sh",
+      "instance": "Instance",
+      "compose_service": "broch",
+      "embeds": {
+        "__COMPOSE_B64__": "docker-compose/with-postgres-external/docker-compose.yml",
+        "__COMPOSE_LOCAL_B64__": "docker-compose/with-postgres/docker-compose.yml"
+      },
+      "inputs": {
+        "BROCH_MASTER_KEY": "BrochMasterKey",
+        "Api:WildcardHostname": "DnsZone",
+        "ConnectionStrings:BrochConnection": "DatabaseConnectionString",
+        "Authentication:Provider": "AuthProvider",
+        "Authentication:ClientId": "AuthClientId",
+        "Authentication:ClientSecret": "AuthClientSecret",
+        "Authentication:Domain": "AuthDomain",
+        "Authentication:TenantId": "AuthTenantId",
+        "Authentication:Instance": "AuthInstance",
+        "Authentication:Authority": "AuthAuthority",
+        "Authentication:Audience": "AuthAudience"
+      },
+      "base_parameters": {
+        "_doc": "ExistingDatabase: the mode whose connection string is an input. Route53 and Auto: no token parameters.",
+        "DatabaseMode": "ExistingDatabase",
+        "DnsProvider": "Route53",
+        "ShareSubdomain": "",
+        "HostedZoneId": "ZEXAMPLEZONEID",
+        "AcmeEmail": "ops@example.com",
+        "VpcId": "vpc-0123456789abcdef0",
+        "InstanceSubnetId": "subnet-0123456789abcdef0"
+      },
+      "generated": {},
+      "secret_inputs": {},
+      "fixed": ["Database:Provider"],
+      "stricter": [
+        {
+          "kind": "refuses_first_run",
+          "error": "^Rule AuthRequiresClientCredentials:",
+          "why": "The template requires an identity provider at deploy time; Broch would also start without one and let the admin configure sign-in in the app."
+        },
+        {
+          "kind": "refuses_pattern",
+          "pattern": "['\\n\\r]|\\\\$",
+          "error": "constraint AllowedPattern",
+          "why": "The instance's .env single-quotes each value so docker compose takes it literally (no $ interpolation, no trimming); a single quote, a line break or a trailing backslash can't be written that way."
+        },
+        {
+          "kind": "refuses_constraint",
+          "parameter": "DnsZone",
+          "constraint": "AllowedPattern",
+          "why": "The hostname is a DNS zone the stack creates records in, so it must be a DNS name; Broch only requires it to be set."
+        },
+        {
+          "kind": "refuses_constraint",
+          "parameter": "AuthProvider",
+          "constraint": "AllowedValues",
+          "why": "A dropdown of the providers' exact names; Broch also accepts other casings."
+        },
+        {
+          "kind": "refuses_constraint",
+          "parameter": "AuthAudience",
+          "constraint": "AllowedPattern",
+          "why": "An Auth0 API identifier has no whitespace; refusing it catches a pasted value with a stray space, which Broch would accept and then fail every token check on."
+        },
+        {
+          "kind": "refuses_constraint",
+          "parameter": "BrochMasterKey",
+          "constraint": "MinLength",
+          "why": "CloudFormation counts characters, Broch counts UTF-8 bytes: a key of 32 bytes in fewer than 32 characters (non-ASCII) is refused. The key the template documents (openssl rand -base64 48) is ASCII."
+        }
+      ]
+    },
+    "terraform": {
+      "kind": "terraform",
+      "mocks": "ci-tests/auth_provider_fields.tftest.hcl",
+      "inputs": {
+        "Api:WildcardHostname": "wildcard_hostname",
+        "Authentication:Provider": "auth_provider",
+        "Authentication:ClientId": "auth_client_id",
+        "Authentication:ClientSecret": "auth_client_secret",
+        "Authentication:Domain": "auth_domain",
+        "Authentication:TenantId": "auth_tenant_id",
+        "Authentication:Instance": "auth_instance",
+        "Authentication:Authority": "auth_authority",
+        "Authentication:Audience": "auth_audience"
+      },
+      "generated": {
+        "BROCH_MASTER_KEY": { "random_password": "master_key" },
+        "ConnectionStrings__BrochConnection": {
+          "stand_in": "ConnectionStrings__BrochConnection",
+          "_doc": "A Terraform-built Host=...;Password=... string from the database resource: never empty."
+        }
+      },
+      "fixed": ["Database:Provider"],
+      "stricter": [
+        {
+          "kind": "refuses_first_run",
+          "error": "\\bauth_client_id\\b",
+          "why": "The module requires an identity provider at deploy time; Broch would also start without one and let the admin configure sign-in in the app."
+        },
+        {
+          "kind": "refuses_whitespace_only",
+          "why": "A value of only spaces is refused. Broch requires these to be non-empty only, so it would start and then fail at sign-in; the module catches the typo at plan."
+        }
+      ]
+    }
+  },
+  "targets": {
+    "docker-compose/with-postgres": {
+      "extends": "compose"
+    },
+    "docker-compose/with-postgres-byo-cert": {
+      "extends": "compose"
+    },
+    "docker-compose/with-postgres-external": {
+      "extends": "compose",
+      "inputs": {
+        "BROCH_MASTER_KEY": "BROCH_MASTER_KEY",
+        "Api:WildcardHostname": "BROCH_WILDCARD_HOSTNAME",
+        "ConnectionStrings:BrochConnection": "BROCH_DB_CONNECTION_STRING",
+        "Authentication:Provider": "AUTHENTICATION__PROVIDER",
+        "Authentication:ClientId": "AUTHENTICATION__CLIENTID",
+        "Authentication:ClientSecret": "AUTHENTICATION__CLIENTSECRET",
+        "Authentication:Domain": "AUTHENTICATION__DOMAIN",
+        "Authentication:TenantId": "AUTHENTICATION__TENANTID",
+        "Authentication:Instance": "AUTHENTICATION__INSTANCE",
+        "Authentication:Authority": "AUTHENTICATION__AUTHORITY",
+        "Authentication:Audience": "AUTHENTICATION__AUDIENCE"
+      },
+      "base_vars": {
+        "CADDY_ACME_EMAIL": "ops@example.com"
+      },
+      "fixed": ["Database:Provider"]
+    },
+    "bicep/azure-container-apps": {
+      "extends": "bicep",
+      "template": "mainTemplate.bicep",
+      "render": "container-app",
+      "container": "broch",
+      "inputs": {
+        "BROCH_MASTER_KEY": "masterKey",
+        "Api:WildcardHostname": "wildcardHostname",
+        "Api:AccessDomainName": "accessDomainName",
+        "ConnectionStrings:BrochConnection": "databaseConnectionString",
+        "Authentication:Provider": "authProvider",
+        "Authentication:ClientId": "authClientId",
+        "Authentication:ClientSecret": "authClientSecret",
+        "Authentication:Domain": "authDomain",
+        "Authentication:TenantId": "authTenantId",
+        "Authentication:Instance": "authInstance",
+        "Authentication:Authority": "authAuthority",
+        "Authentication:Audience": "authAudience"
+      },
+      "base_parameters": {
+        "_doc": "Shared: the mode whose connection string is an input.",
+        "databaseMode": "Shared"
+      },
+      "stricter_extra": [
+        {
+          "kind": "refuses_constraint",
+          "parameter": "authProvider",
+          "error": "template parameter 'authProvider' is not valid",
+          "why": "A dropdown of the providers' exact names; Broch also accepts other casings."
+        }
+      ]
+    },
+    "bicep/azure-vm": {
+      "extends": "bicep",
+      "template": "main.bicep",
+      "render": "vm",
+      "secret_map": "kvSecretMap",
+      "secret_vault": "kvName",
+      "inputs": {
+        "BROCH_MASTER_KEY": "brochMasterKey",
+        "Api:WildcardHostname": "dnsZone",
+        "ConnectionStrings:BrochConnection": "databaseConnectionString",
+        "Authentication:Provider": "authProvider",
+        "Authentication:ClientId": "authClientId",
+        "Authentication:ClientSecret": "authClientSecret",
+        "Authentication:Domain": "authDomain",
+        "Authentication:TenantId": "authTenantId",
+        "Authentication:Instance": "authInstance",
+        "Authentication:Authority": "authAuthority",
+        "Authentication:Audience": "authAudience"
+      },
+      "base_parameters": {
+        "_doc": "Existing: the mode whose connection string is an input. An empty share subdomain, so dnsZone is the hostname.",
+        "databaseMode": "Existing",
+        "shareSubdomain": "",
+        "certMode": "Auto",
+        "dnsProvider": "Cloudflare",
+        "cloudflareApiToken": "cf-token",
+        "acmeEmail": "ops@example.com"
+      },
+      "boot_refusals": [
+        {
+          "key": "Authentication:ClientSecret",
+          "boot": "Key Vault secret auth-client-secret \\(AUTHENTICATION__CLIENTSECRET\\) is never created",
+          "why": "Deliberately not a preflight check: a Redeploy retry leaves the secret blank (the vault already holds it), and the marketplace wizard requires it on a first deploy. A first deploy without it stops at the boot fetch instead of starting Broch without sign-in."
+        },
+        {
+          "key": "ConnectionStrings:BrochConnection",
+          "boot": "Key Vault secret db-connection-string \\(BROCH_DB_CONNECTION_STRING\\) is never created",
+          "why": "Likewise for the Existing-mode connection string: blank on a Redeploy retry, required by the wizard, and a first deploy without it stops at the boot fetch."
+        }
+      ],
+      "stricter_extra": [
+        {
+          "kind": "refuses_constraint",
+          "parameter": "authProvider",
+          "error": "authProvider must be one of",
+          "why": "The template takes a provider's name (any casing) or blank, so a typo fails at preflight; Broch would also accept its own word for not set (None)."
+        },
+        {
+          "kind": "refuses_pattern",
+          "pattern": "['\\n\\r]|\\\\$",
+          "error": "can't contain a single quote or a line break",
+          "why": "The VM's .env single-quotes each value so docker compose takes it literally (no $ interpolation, no trimming); a single quote, a line break or a trailing backslash can't be written that way."
+        }
+      ]
+    },
+    "cloudformation/aws-vm": {
+      "extends": "cloudformation",
+      "stricter_extra": [
+        {
+          "kind": "refuses_rule_when_set",
+          "rule": "AuthAzureAdRequiresTenant",
+          "key": "Authentication:Authority",
+          "why": "This all-providers template asks Entra ID for its tenant and instance even when an authority is also set (Broch would use the authority instead). AuthAuthority is documented for OpenID Connect only, and the per-provider templates don't offer it to Entra ID at all."
+        },
+        {
+          "kind": "refuses_rule_when_set",
+          "rule": "AuthDomainProviderRequiresDomain",
+          "key": "Authentication:Authority",
+          "why": "Likewise for the Auth0 and Okta domain."
+        }
+      ]
+    },
+    "cloudformation/aws-vm (AzureAd)": {
+      "extends": "cloudformation",
+      "variant": "AzureAd"
+    },
+    "cloudformation/aws-vm (Okta)": {
+      "extends": "cloudformation",
+      "variant": "Okta"
+    },
+    "cloudformation/aws-vm (Auth0)": {
+      "extends": "cloudformation",
+      "variant": "Auth0"
+    },
+    "cloudformation/aws-vm (Oidc)": {
+      "extends": "cloudformation",
+      "variant": "Oidc"
+    },
+    "terraform/azure-container-apps": {
+      "extends": "terraform",
+      "plan_target": "azurerm_container_app.broch",
+      "render": "map",
+      "render_expression": "local.broch_environment",
+      "base_vars": {
+        "wildcard_hostname": "broch.example.com"
+      },
+      "secret_inputs": {
+        "AUTHENTICATION__CLIENTSECRET": "auth_client_secret"
+      }
+    },
+    "terraform/aws-ecs": {
+      "extends": "terraform",
+      "plan_target": "aws_ecs_task_definition.broch",
+      "render": "map",
+      "render_expression": "local.broch_environment",
+      "base_vars": {
+        "wildcard_hostname": "broch.example.com",
+        "route53_zone_id": "ZEXAMPLEZONEID"
+      },
+      "secret_inputs": {
+        "AUTHENTICATION__CLIENTSECRET": "auth_client_secret"
+      }
+    },
+    "terraform/digitalocean": {
+      "extends": "terraform",
+      "plan_target": "digitalocean_droplet.broch",
+      "render": "cloud-init",
+      "render_expression": "local.user_data",
+      "dotenv_path": "/opt/broch/.env",
+      "compose_service": "broch-server",
+      "base_vars": {
+        "wildcard_hostname": "broch.example.com",
+        "do_token": "do-token",
+        "dns_api_token": "dns-token",
+        "ssh_key_fingerprint": "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+      },
+      "secret_inputs": {},
+      "generated": {
+        "BROCH_MASTER_KEY": {
+          "placeholder": "__GENERATED_AT_RUNTIME__",
+          "command": "^\\s*MASTER_KEY=\\$\\(openssl rand -base64 (\\d+) \\| tr -d '\\\\n'\\)\\s*$"
+        }
+      },
+      "fixed": ["Database:Provider", "ConnectionStrings:BrochConnection"],
+      "stricter": [
+        {
+          "kind": "refuses_first_run",
+          "error": "\\bauth_client_id\\b",
+          "why": "The module requires an identity provider at deploy time; Broch would also start without one and let the admin configure sign-in in the app."
+        },
+        {
+          "kind": "refuses_whitespace_only",
+          "why": "A value of only spaces is refused. Broch requires these to be non-empty only, so it would start and then fail at sign-in; the module catches the typo at plan."
+        },
+        {
+          "kind": "refuses_pattern",
+          "pattern": "['\\n\\r]|\\\\$",
+          "why": "The droplet's .env single-quotes each value so docker compose takes it literally (no $ interpolation, no trimming); a single quote, a line break or a trailing backslash can't be written that way."
+        }
+      ]
+    }
+  }
+}

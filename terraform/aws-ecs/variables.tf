@@ -4,6 +4,11 @@
 variable "wildcard_hostname" {
   description = "Wildcard DNS hostname for Broch tunnels (e.g. broch.example.com). The ACM cert covers both this hostname AND *.<hostname>. You must own the Route 53 zone."
   type        = string
+
+  validation {
+    condition     = trimspace(var.wildcard_hostname) != ""
+    error_message = "wildcard_hostname is required: Broch refuses to start without it."
+  }
 }
 
 variable "route53_zone_id" {
@@ -13,14 +18,20 @@ variable "route53_zone_id" {
 
 # ─── Identity provider (required at boot) ────────────────────────────────────
 # Broch authenticates every user through your IdP — there is no built-in local
-# login, so the IdP is part of the boot floor. The server starts without these,
-# but no one can sign in (or finish first-run setup) until they're set. Set the
-# provider-specific values your IdP needs; leave the rest blank.
+# login, so the IdP is part of the boot floor. Set the provider-specific values
+# your IdP needs and leave the rest blank; the plan refuses a combination Broch
+# would refuse at startup.
 # Guides: https://broch.io/docs/identity-providers/
 
 variable "auth_provider" {
   description = "Identity provider type: Auth0 | AzureAd | EntraExternalId | Okta | Oidc."
   type        = string
+
+  # Matched case-insensitively, as Broch binds it.
+  validation {
+    condition     = contains(["auth0", "azuread", "entraexternalid", "okta", "oidc"], lower(trimspace(var.auth_provider)))
+    error_message = "auth_provider must be one of Auth0, AzureAd, EntraExternalId, Okta, Oidc."
+  }
 }
 
 variable "auth_client_id" {
@@ -29,7 +40,7 @@ variable "auth_client_id" {
 }
 
 variable "auth_client_secret" {
-  description = "OAuth client secret from your IdP. Stored in AWS Secrets Manager; not committed to state or logs."
+  description = "OAuth client secret from your IdP. Stored in AWS Secrets Manager and, in plaintext, in Terraform state (sensitive keeps it out of plan and apply output); keep state access-controlled."
   type        = string
   sensitive   = true
 }
@@ -41,19 +52,19 @@ variable "auth_admin_roles" {
 }
 
 variable "auth_domain" {
-  description = "IdP domain — required for Auth0 and Okta (e.g. your-tenant.auth0.com). Leave blank for other providers."
+  description = "IdP domain — required for Auth0 and Okta (e.g. your-tenant.auth0.com) unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
 
 variable "auth_tenant_id" {
-  description = "Tenant ID — required for AzureAd and EntraExternalId. Leave blank for other providers."
+  description = "Tenant ID — required for AzureAd and EntraExternalId unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
 
 variable "auth_instance" {
-  description = "Login instance for AzureAd/EntraExternalId (e.g. https://login.microsoftonline.com/). Leave blank for other providers."
+  description = "Login instance — required for AzureAd (https://login.microsoftonline.com/) and EntraExternalId (https://<tenant>.ciamlogin.com/) unless auth_authority is set. Leave blank for other providers."
   type        = string
   default     = ""
 }
@@ -73,9 +84,9 @@ variable "auth_audience" {
 # ─── Optional inputs (sensible defaults) ─────────────────────────────────────
 
 variable "broch_image" {
-  description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a task redeploy never silently rolls the service across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or :latest to float (not recommended in production)."
+  description = "Full image reference for the broch server. Defaults to a concrete pinned version (NOT :latest) so a task redeploy never silently rolls the service across an EF-migration boundary; new releases of this template bump this default. To upgrade deliberately, set a newer tag, then apply and run `aws ecs update-service --task-definition broch-broch` (see README); :latest floats (not recommended in production)."
   type        = string
-  default     = "ghcr.io/broch-io/broch:1.34.0"
+  default     = "ghcr.io/broch-io/broch:1.35.0"
 }
 
 variable "aws_region" {
@@ -112,6 +123,12 @@ variable "rds_allocated_storage" {
   description = "RDS storage in GB."
   type        = number
   default     = 20
+}
+
+variable "rds_deletion_protection" {
+  description = "RDS deletion protection. On by default so a destroy or replacing change can't delete the database (no final snapshot is taken). Set false and apply before an intentional destroy."
+  type        = bool
+  default     = true
 }
 
 variable "postgres_db_name" {

@@ -18,7 +18,8 @@
 # The weekly schedule re-runs the templates against ghcr.io/broch-io/broch:latest
 # so an image regression surfaces here instead of in a customer install.
 
-name: Compose Boot Test
+name: "Verify / Compose boot test"
+run-name: "Verify Compose boot test / ${{ github.event_name == 'pull_request' && format('PR to {0}', github.base_ref) || github.ref_name }}"
 
 # No paths filter on pull_request — same reason as terraform-validate.yml:
 # path-filtered workflows never report on PRs outside their paths, which
@@ -55,7 +56,9 @@ jobs:
         working-directory: docker-compose/${{ matrix.variant }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Start from the customer template so a broken .env.example fails here.
       # sed-replace (not append) so the values hold regardless of which
@@ -65,7 +68,7 @@ jobs:
       # this is the customer's "boot first, configure IdP in-app" first-run
       # path, and empty-provider boot is the floor this job asserts. broch
       # < 1.26.0 crashed on the empty string (empty != absent in the enum
-      # binder; fixed in 1.26.0, the compose default this job boots); keep
+      # binder; fixed in 1.26.0, older than the compose default this job boots); keep
       # the values empty so a regression surfaces here.
       - name: Fill .env from the customer template
         run: |
@@ -75,7 +78,26 @@ jobs:
             -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=boot-test-pg-password|" \
             -e "s|^CADDY_ACME_EMAIL=.*|CADDY_ACME_EMAIL=boot-test@example.invalid|" \
             -e "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=$(openssl rand -hex 20)|" \
+            -e "s|^BROCH_DB_CONNECTION_STRING=.*|BROCH_DB_CONNECTION_STRING=Host=pg-external;Port=5432;Database=brochdb;Username=broch;Password=boot-test-pg-password;SSL Mode=Disable|" \
             .env
+
+      # The values Broch (or its postgres) refuses to start without are `${VAR:?...}` in the
+      # compose files, so a blank one stops `docker compose` up front instead of a crash loop.
+      # A shell value overrides .env for interpolation, so this exercises the real template.
+      - name: Blank required values are rejected
+        run: |
+          case "${{ matrix.variant }}" in
+            with-postgres-external) required="BROCH_MASTER_KEY BROCH_WILDCARD_HOSTNAME BROCH_DB_CONNECTION_STRING" ;;
+            *)                      required="BROCH_MASTER_KEY BROCH_WILDCARD_HOSTNAME POSTGRES_PASSWORD" ;;
+          esac
+          for var in $required; do
+            if env "$var=" docker compose config --quiet 2> "$RUNNER_TEMP/required-err.txt"; then
+              echo "::error::docker compose accepted a blank $var -- broch would crash-loop"
+              exit 1
+            fi
+            grep -q "set $var in .env" "$RUNNER_TEMP/required-err.txt" || {
+              echo "::error::blank $var was rejected for another reason:"; cat "$RUNNER_TEMP/required-err.txt"; exit 1; }
+          done
 
       # CADDY_ACME_EMAIL is required: Caddy crash-loops on an empty `email` (no TLS, no automatic
       # DNS records), so the compose file uses `${CADDY_ACME_EMAIL:?...}` to refuse to start
@@ -103,12 +125,12 @@ jobs:
 
       # Stand in for the customer's managed Postgres: a sidecar container,
       # attached to the compose network once `up --no-start` has created it.
-      # SSL Mode=Disable because the alpine image ships without TLS — the
-      # template's documented default for managed services is Require.
+      # The fill step points BROCH_DB_CONNECTION_STRING at it, with SSL Mode=Disable
+      # because the alpine image ships without TLS — the template's documented
+      # default for managed services is Require.
       - name: Provision external Postgres (external)
         if: matrix.variant == 'with-postgres-external'
         run: |
-          sed -i "s|^BROCH_DB_CONNECTION_STRING=.*|BROCH_DB_CONNECTION_STRING=Host=pg-external;Port=5432;Database=brochdb;Username=broch;Password=boot-test-pg-password;SSL Mode=Disable|" .env
           docker run -d --name pg-external \
             -e POSTGRES_DB=brochdb \
             -e POSTGRES_USER=broch \
@@ -155,9 +177,11 @@ jobs:
     name: caddy DNS-01 provider block sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --user pyyaml
+        run: python3 -m pip install --user pyyaml==6.0.2
       - name: Assert Caddy DNS-01 tls fragments + tuning are in sync across all deploy targets
         run: python3 scripts/check-caddy-dns-sync.py
 
@@ -174,7 +198,9 @@ jobs:
     name: auto-DNS render -> caddy adapt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Public GHCR package -- `docker run` pulls it directly, unauthenticated (like the `boot`
       # job's `docker compose up`, which pulls the same broch-caddy image).
       - name: Render every dynamic_dns arm and caddy adapt it (broch-caddy image)

@@ -45,9 +45,21 @@
 #
 #   AWS Route 53 (slow propagation — add the propagation_delay floor):
 #     tls {
-#       dns route53 { access_key_id {env.AWS_ACCESS_KEY_ID} secret_access_key {env.AWS_SECRET_ACCESS_KEY} }
+#       dns route53 {
+#         access_key_id {env.AWS_ACCESS_KEY_ID}
+#         secret_access_key {env.AWS_SECRET_ACCESS_KEY}
+#       }
 #       resolvers 1.1.1.1 8.8.8.8
 #       propagation_delay 60s
+#       propagation_timeout 300s
+#     }
+#
+#   Google Cloud DNS (GOOGLE_APPLICATION_CREDENTIALS points at the service-account JSON):
+#     tls {
+#       dns googleclouddns {
+#         gcp_project {env.GCP_PROJECT}
+#       }
+#       resolvers 1.1.1.1 8.8.8.8
 #       propagation_timeout 300s
 #     }
 #

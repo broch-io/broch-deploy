@@ -6,8 +6,10 @@
 #   - Your team has internal PKI / a centralised cert renewal pipeline
 #   - You're using certbot externally and copying the cert into ./certs/
 #
-# Renewal is YOUR responsibility — Caddy won't refresh these certs. Replace
-# the files on disk and run `docker compose exec caddy caddy reload`.
+# Renewal is YOUR responsibility — Caddy won't refresh these certs. Overwrite
+# the files in place (cp, not mv) and run
+# `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile --force`
+# (without --force an unchanged config is not reloaded, so the old cert stays).
 
 {
 	# Disable Caddy's automatic HTTPS — we're providing the cert ourselves.

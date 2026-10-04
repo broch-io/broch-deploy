@@ -1,7 +1,8 @@
 # Deploy-surface lint — structural redeploy-safety and customer-template invariants
 # (the rule list lives in scripts/deploy-lint.py's docstring). Credential-free and
 # runnable from any fork.
-name: Deploy Lint
+name: "Verify / Deploy lint"
+run-name: "Verify deploy lint / ${{ github.event_name == 'pull_request' && format('PR to {0}', github.base_ref) || github.ref_name }}"
 
 on:
   pull_request:
@@ -19,7 +20,7 @@ jobs:
   deploy-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Run deploy lint

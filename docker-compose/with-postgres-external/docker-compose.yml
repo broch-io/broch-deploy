@@ -6,8 +6,6 @@
 #     CloudSQL, Neon, Supabase, …) and you point Broch at a connection string
 #   - You need encryption-at-rest, point-in-time recovery, automated backups,
 #     or a maintenance/upgrade flow you don't want to operate yourself
-#   - You need horizontal scaling — multi-replica Broch requires a shared
-#     external DB
 #
 # Caddy still handles TLS exactly the same way as ../with-postgres/ —
 # wildcard certs via ACME DNS-01 with Cloudflare by default.
@@ -19,17 +17,17 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.34.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.35.0}
     restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
-      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME:?set BROCH_WILDCARD_HOSTNAME in .env}
       # Public IP broch advertises for auto-DNS (seeded at deploy, admin-overridable). See with-postgres.
       API__PUBLICIP: ${BROCH_PUBLIC_IP:-}
       # Trusted-proxy CIDRs so Caddy's X-Forwarded-For/-Proto are honored (first boot only,
       # admin-overridable). See with-postgres for the full rationale.
       API__TRUSTEDPROXYCIDRS: ${BROCH_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
-      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
+      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY:?set BROCH_MASTER_KEY in .env, at least 32 bytes (openssl rand -base64 48)}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a
       # license is activated in-app (Admin → License), not here. See .env.example / README.
@@ -53,7 +51,7 @@ services:
       # the server and collect the credentials. If your provider's CA is not in the
       # system trust store (RDS, DigitalOcean, ...), drop its CA file into ./db-ca
       # and add Root Certificate=/etc/broch/db-ca/<file>. See .env.example.
-      ConnectionStrings__BrochConnection: ${BROCH_DB_CONNECTION_STRING}
+      ConnectionStrings__BrochConnection: ${BROCH_DB_CONNECTION_STRING:?set BROCH_DB_CONNECTION_STRING in .env}
     volumes:
       # CA certificates for verifying the database server (read-only; public certs,
       # not secrets). Created empty if absent; the AWS VM appliance places the

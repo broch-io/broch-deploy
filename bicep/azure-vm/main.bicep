@@ -23,6 +23,9 @@ param vmName string = 'broch'
 @minLength(32)
 @secure()
 param brochMasterKey string
+// @minLength counts spaces; Broch also refuses a key that is only whitespace. Checked at preflight
+// like the auth guards below, and the vault secret reads the key through it.
+var checkedMasterKey = empty(trim(brochMasterKey)) ? fail('brochMasterKey must not be only spaces.') : brochMasterKey
 
 @description('REQUIRED whenever authProvider is set — on a FIRST deployment (the form cannot enforce this; leaving it empty then makes the appliance halt at the boot-time secret fetch, fail-closed). OIDC client secret the server uses to exchange authorization codes. On a Redeploy retry it may be left blank: the value stored by the failed attempt is reused; supply a value only to overwrite it.')
 @secure()
@@ -48,15 +51,15 @@ param awsSecretAccessKey string = ''
 @secure()
 param doAuthToken string = ''
 
-@description('REQUIRED when databaseMode=Managed — on a FIRST deployment. Admin password for the provisioned PostgreSQL (8-128 chars; at least 3 of lower/upper/digit/symbol). On a Redeploy retry it may be left blank: the deployment reads the value the failed attempt stored in the Key Vault and applies it to the database server. Supply a value only to set or rotate the password.')
+@description('REQUIRED when databaseMode=Managed — on a FIRST deployment. Admin password for the provisioned PostgreSQL (8-128 chars; at least 3 of lower/upper/digit/symbol; no single quote, and no trailing backslash). On a Redeploy retry it may be left blank: the deployment reads the value the failed attempt stored in the Key Vault and applies it to the database server. Supply a value only to set or rotate the password.')
 @secure()
 param postgresAdminPassword string = ''
 
-@description('REQUIRED when databaseMode=Existing — on a FIRST deployment. Npgsql connection string for your existing PostgreSQL. Use SSL Mode=VerifyFull, which authenticates the server (certificate chain + hostname) as well as encrypting; SSL Mode=Require only encrypts. On a Redeploy retry it may be left blank: the stored value is reused. Ignored when databaseMode=Managed/Local.')
+@description('REQUIRED when databaseMode=Existing — on a FIRST deployment. Npgsql connection string for your existing PostgreSQL. Use SSL Mode=VerifyFull, which authenticates the server (certificate chain + hostname) as well as encrypting; SSL Mode=Require only encrypts. No single quote anywhere in it: quote a password with double quotes (Password="a;b"). On a Redeploy retry it may be left blank: the stored value is reused. Ignored when databaseMode=Managed/Local.')
 @secure()
 param databaseConnectionString string = ''
 
-@description('Optional password for the bundled Local PostgreSQL (databaseMode=Local). Leave empty for a zero-config default DERIVED from the resource group + VM name. That default is computable by anyone with Reader on the subscription, so SET an explicit value for any deployment where the VM identity could be compromised (Postgres has no host port, so the practical blast radius is limited to in-container code execution). If you set one, STORE IT and re-supply the SAME value on every (re)deploy of the VM (Postgres keeps the password from when its data dir was first initialised). Ignored for Existing/Managed.')
+@description('Optional password for the bundled Local PostgreSQL (databaseMode=Local). Leave empty for a zero-config default DERIVED from the resource group + VM name. That default is computable by anyone with Reader on the subscription, so SET an explicit value for any deployment where the VM identity could be compromised (Postgres has no host port, so the practical blast radius is limited to in-container code execution). If you set one (no ; or " in it, no leading or trailing space), STORE IT and re-supply the SAME value on every (re)deploy of the VM (Postgres keeps the password from when its data dir was first initialised). Ignored for Existing/Managed.')
 @secure()
 param localDbAdminPassword string = ''
 
@@ -91,7 +94,7 @@ param adminUsername string = 'broch'
 @description('Optional, advanced. BYO SSH public key for break-glass access. Leave empty (default) and the VM is provisioned with a generated password instead — Broch is managed via `az vm run-command` / Azure Serial Console and needs no SSH. Setting a key switches the VM to key-only auth.')
 param adminSshPublicKey string = ''
 
-@description('Optional. AAD object ID of a user/group to grant read access to the generated break-glass VM password (Key Vault Secrets User, scoped to JUST that secret) so you can retrieve it without a manual role grant. Only applies when no SSH key is supplied (otherwise there is no break-glass password). It deliberately does NOT grant the app secrets (master key, DB credential, IdP secret, DNS tokens) — those are read only by the VM managed identity; grant yourself vault-level access manually if you need to inspect them. Empty (default) grants nothing.')
+@description('Optional. AAD object ID of a user/group to grant read access to the generated break-glass VM password (Key Vault Secrets User on the break-glass vault, which holds ONLY that secret) so you can retrieve it without a manual role grant. Only applies when no SSH key is supplied (otherwise there is no break-glass password). It deliberately does NOT grant the app secrets (master key, DB credential, IdP secret, DNS tokens) — those are read only by the VM managed identity; grant yourself vault-level access manually if you need to inspect them. Empty (default) grants nothing.')
 param adminObjectId string = ''
 
 @description('Principal type of adminObjectId — set Group if it is an AAD group, or ServicePrincipal for a CI/CD managed identity / service principal. Lets ARM skip a type lookup that can race AAD replication and fail the role assignment.')
@@ -105,6 +108,9 @@ param adminObjectType string = 'User'
 @description('DNS zone you own, e.g. example.com — the parent domain Broch builds tunnel URLs under. This is the ZONE ONLY, not the full tunnel host: put the tunnel label in shareSubdomain below (dnsZone=example.com + shareSubdomain=broch), NOT dnsZone=broch.example.com. You must control this zone at a supported DNS provider (see README). Combined with shareSubdomain, it fixes the public hostname: Broch serves <shareSubdomain>.<dnsZone> and *.<shareSubdomain>.<dnsZone>.')
 @minLength(1)
 param dnsZone string
+
+// Broch refuses a hostname of only spaces at startup; refuse the zone at preflight instead.
+var checkedDnsZone = empty(trim(dnsZone)) ? fail('dnsZone must not be only spaces.') : dnsZone
 
 @description('Subdomain of dnsZone that hosts the public tunnel URLs. Default "broch" → Broch serves broch.<dnsZone> and *.broch.<dnsZone>. Leave EMPTY to serve tunnels at the zone apex itself (<dnsZone> and *.<dnsZone>). Usually a single label; a dotted value (e.g. "a.b") is accepted for a deeper subdomain.')
 param shareSubdomain string = 'broch'
@@ -145,7 +151,7 @@ param dnsAutoRecords string = 'Auto'
 @minLength(3)
 param acmeEmail string
 
-@description('Resource group of the Azure DNS zone — dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
+@description('Resource group of the Azure DNS zone — required for dnsProvider=AzureDns or AzureDnsServicePrincipal (zone in this deployment\'s subscription).')
 param dnsZoneResourceGroup string = ''
 
 @description('Azure AD tenant ID of the service principal — dnsProvider=AzureDnsServicePrincipal.')
@@ -157,8 +163,8 @@ param azureClientId string = ''
 @description('GCP project ID hosting the Cloud DNS zone — dnsProvider=GoogleCloudDns.')
 param gcpProject string = ''
 
-@description('Broch server image tag. Defaults to a concrete pinned version (NOT latest) so a redeploy never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Redeploying an existing installation? Enter the version it currently runs — the Deployments history of the resource group shows it, and the Redeploy button on the prior deployment pre-fills it — because a newer version migrates the database irreversibly. Set a newer tag to upgrade deliberately, or "latest" to float. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
-param brochVersion string = '1.34.0'
+@description('Broch server image tag the VM is created with. Defaults to a concrete pinned version (NOT latest) so a recreated VM never silently rolls the database across an EF-migration boundary; new releases of this template bump this default. It takes effect only when the VM is created or recreated: it is part of the VM\'s boot configuration (customData), which Azure will not change on an existing VM, so a redeploy over a live VM that changes it is rejected (PropertyChangeNotAllowed). Upgrade a running VM in place instead (README, "Pulling a new Broch image"). Recreating an existing installation? Enter the version it currently runs, because a newer version migrates the database irreversibly. The Redeploy button on the prior deployment pre-fills the version that deployment used; if you have upgraded in place since, enter the version you upgraded to. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
+param brochVersion string = '1.35.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
 param brochImage string = 'ghcr.io/broch-io/broch'
@@ -206,14 +212,93 @@ param postgresSkuName string = 'Standard_B1ms'
 @description('Auth0 | AzureAd | EntraExternalId | Okta | Oidc')
 param authProvider string = ''
 param authClientId string = ''
-@description('Comma-separated admin role(s); a user holding any one is granted admin.')
-param authAdminRoles string = ''
+@description('Comma-separated role/group names that grant admin access. Your first admin signs in holding one of these.')
+param authAdminRoles string = 'broch_admin'
 param authDomain string = ''
 param authTenantId string = ''
 param authInstance string = ''
 param authAuthority string = ''
 @description('Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to. Ignored by other providers.')
+@maxLength(500)
 param authAudience string = ''
+
+// Broch refuses to start as Auth0 without an audience, and only after the VM is built and the
+// database migrated. This variable depends only on parameters, so ARM evaluates it at preflight
+// validation and the fail() stops the deployment before any resource exists. Cloud-init reads the
+// audience through it (not authAudience directly), which keeps the check wired in. Provider match
+// is case-insensitive, as Broch binds it.
+var checkedAuthAudience = toLower(trim(authProvider)) == 'auth0' && empty(trim(authAudience))
+  ? fail('authAudience is required when authProvider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to.')
+  : authAudience
+
+// The rest of Broch's sign-in startup checks, the same way: each fail()s at preflight, and
+// cloud-init reads the provider through this variable. A blank authProvider is the in-app setup
+// path, which Broch allows only when no other sign-in value is set either (the raw empty() here
+// matches its check: a value of spaces counts as set). An authAuthority waives the domain, tenant
+// and instance checks, as it does in the server. The client secret is not checked: a Redeploy
+// retry leaves it blank on purpose, and the boot-time fetch fails closed without one (above).
+var authProviderKey = toLower(trim(authProvider))
+var authAuthoritySet = !empty(trim(authAuthority))
+var checkedAuthProvider = !empty(authProvider) && empty(authProviderKey)
+  ? fail('authProvider must not be only spaces: leave it empty to set up sign-in in the app.')
+  : !empty(authProviderKey) && !contains(['auth0', 'azuread', 'entraexternalid', 'okta', 'oidc'], authProviderKey)
+  ? fail('authProvider must be one of Auth0, AzureAd, EntraExternalId, Okta, Oidc, or blank to set up sign-in in the app.')
+  : empty(authProviderKey) && (!empty(authClientId) || !empty(authClientSecret) || !empty(authTenantId) || !empty(authDomain))
+  ? fail('authProvider is required when authClientId, authClientSecret, authTenantId or authDomain is set: Broch refuses to start without it.')
+  : !empty(authProviderKey) && empty(authClientId)
+  ? fail('authClientId is required when authProvider is set.')
+  : authProviderKey == 'oidc' && !authAuthoritySet
+  ? fail('authAuthority is required when authProvider is Oidc: set it to your IdP\'s issuer URL.')
+  : contains(['auth0', 'okta'], authProviderKey) && !authAuthoritySet && empty(trim(authDomain))
+  ? fail('authDomain is required when authProvider is Auth0 or Okta (e.g. your-tenant.auth0.com).')
+  : contains(['azuread', 'entraexternalid'], authProviderKey) && !authAuthoritySet && (empty(trim(authInstance)) || empty(trim(authTenantId)))
+  ? fail('authInstance and authTenantId are required when authProvider is AzureAd or EntraExternalId (authInstance is your cloud\'s Microsoft login endpoint for AzureAd, your tenant\'s ciamlogin endpoint for EntraExternalId).')
+  : authProvider
+
+// Every parameter whose value lands in /opt/broch/.env: the settings cloud-init writes, and the
+// secrets the boot-fetch appends from Key Vault. Both write them single-quoted, which docker compose
+// takes literally (unquoted, it would trim them, cut them at " #" and expand any $VAR in them). A
+// single quote, a line break or a trailing backslash can't be written that way, so they are refused
+// here, at preflight, naming the parameters. cloudInit reads through this, which keeps it wired in.
+// registryPassword is here too: cloud-init single-quotes it into the `docker login` shell line.
+var envFileParameters = {
+  dnsZone: dnsZone
+  shareSubdomain: shareSubdomain
+  acmeEmail: acmeEmail
+  dnsZoneResourceGroup: dnsZoneResourceGroup
+  azureTenantId: azureTenantId
+  azureClientId: azureClientId
+  gcpProject: gcpProject
+  authProvider: authProvider
+  authClientId: authClientId
+  authAdminRoles: authAdminRoles
+  authDomain: authDomain
+  authTenantId: authTenantId
+  authInstance: authInstance
+  authAuthority: authAuthority
+  authAudience: authAudience
+  brochMasterKey: brochMasterKey
+  authClientSecret: authClientSecret
+  cloudflareApiToken: cloudflareApiToken
+  azureClientSecret: azureClientSecret
+  awsAccessKeyId: awsAccessKeyId
+  awsSecretAccessKey: awsSecretAccessKey
+  doAuthToken: doAuthToken
+  postgresAdminPassword: postgresAdminPassword
+  databaseConnectionString: databaseConnectionString
+  localDbAdminPassword: localDbAdminPassword
+  registryPassword: registryPassword
+}
+var envFileUnsafe = map(filter(items(envFileParameters), p => contains(p.value, '\'') || contains(p.value, '\n') || contains(p.value, '\r') || endsWith(p.value, '\\')), p => p.key)
+var checkedEnvFileParameters = empty(envFileUnsafe)
+  ? true
+  : fail('These parameters can\'t contain a single quote or a line break, or end with a backslash (the VM\'s /opt/broch/.env and cloud-init single-quote them): ${join(envFileUnsafe, ', ')}')
+// The bundled compose splices the Local password unquoted into its connection string
+// (...;Password=<value>): a ; ends the value, a " can start a quoted one, and the parser trims
+// leading/trailing spaces that Postgres itself keeps.
+var checkedLocalDbAdminPassword = databaseMode == 'Local' && (contains(localDbAdminPassword, ';') || contains(localDbAdminPassword, '"') || trim(localDbAdminPassword) != localDbAdminPassword)
+  ? fail('localDbAdminPassword can\'t contain a ; or a ", or start or end with whitespace (the bundled PostgreSQL\'s connection string carries it unquoted).')
+  : true
 
 // Managed mode provisions a PRIVATE Flex Server below; its connection string is built from
 // the server's deterministic FQDN (no resource reference, so it stays valid when Managed is
@@ -297,7 +382,7 @@ var tlsCaddyContent = certMode == 'Byo' ? '# BYO-cert mode: TLS is set in the Ca
 // shareSubdomain => the share lives at the zone apex. Fanned out to both Caddy and broch in the
 // compose (via BROCH_WILDCARD_HOSTNAME); the auto-DNS runcmd derives the record labels from the
 // zone + subdomain directly.
-var wildcardHostname = empty(shareSubdomain) ? dnsZone : '${shareSubdomain}.${dnsZone}'
+var wildcardHostname = empty(shareSubdomain) ? checkedDnsZone : '${shareSubdomain}.${checkedDnsZone}'
 // Automatic apex+wildcard A-record management (dynamic-dns.caddy). Byo-cert has no DNS
 // credential, so it can never auto-manage records — force Manual there. cloud-init renders
 // the caddy-dynamicdns block from this + dnsProvider + the zone + share subdomain when Auto.
@@ -312,6 +397,13 @@ var caddyfileContent = certMode == 'Byo' ? loadTextContent('../../docker-compose
 // authenticates with the supplied credential, so no identity and no role assignment.
 var usesAzureDns = certMode == 'Auto' && (dnsProvider == 'AzureDns' || dnsProvider == 'AzureDnsServicePrincipal')
 var azureDnsManagedIdentity = certMode == 'Auto' && dnsProvider == 'AzureDns'
+// Caddy's Azure DNS provider reads the zone's resource group from AZURE_DNS_RESOURCE_GROUP in both
+// modes, for the certificate and the A records alike; blank, it can't issue the certificate. This
+// depends only on parameters, so the fail() stops the deployment at preflight. Cloud-init reads the
+// resource group through this variable, which keeps the check wired in.
+var checkedDnsZoneResourceGroup = usesAzureDns && empty(trim(dnsZoneResourceGroup))
+  ? fail('dnsZoneResourceGroup is required when dnsProvider is AzureDns or AzureDnsServicePrincipal: set it to the resource group of your Azure DNS zone.')
+  : dnsZoneResourceGroup
 var azureSubscriptionId = usesAzureDns ? subscription().subscriptionId : ''
 // GCP Cloud DNS: Caddy reads the service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (ADC);
 // cloud-init writes it (base64) into the certs dir already mounted into the Caddy container.
@@ -367,7 +459,7 @@ var cloudInitTokens = [
   // substitution placeholders. The .env var NAMES they populate were renamed to
   // AZURE_DNS_* in cloud-init.yaml; "correcting" this apparent mismatch breaks substitution.
   ['__AZURE_SUBSCRIPTION_ID__', azureSubscriptionId]
-  ['__AZURE_DNS_RESOURCE_GROUP__', dnsZoneResourceGroup]
+  ['__AZURE_DNS_RESOURCE_GROUP__', checkedDnsZoneResourceGroup]
   ['__AZURE_TENANT_ID__', azureTenantId]
   ['__AZURE_CLIENT_ID__', azureClientId]
   ['__GCP_PROJECT__', gcpProject]
@@ -381,14 +473,14 @@ var cloudInitTokens = [
   // bundled Postgres needs none). The data-disk mount is UNCONDITIONAL in cloud-init (the disk is
   // attached in every mode) and no longer reads this token.
   ['__LOCAL_DB__', databaseMode == 'Local' ? 'true' : 'false']
-  ['__AUTH_PROVIDER__', authProvider]
+  ['__AUTH_PROVIDER__', checkedAuthProvider]
   ['__AUTH_CLIENT_ID__', authClientId]
   ['__AUTH_ADMIN_ROLES__', authAdminRoles]
   ['__AUTH_DOMAIN__', authDomain]
   ['__AUTH_TENANT_ID__', authTenantId]
   ['__AUTH_INSTANCE__', authInstance]
   ['__AUTH_AUTHORITY__', authAuthority]
-  ['__AUTH_AUDIENCE__', authAudience]
+  ['__AUTH_AUDIENCE__', checkedAuthAudience]
   // Key Vault boot-fetch (replaces the secret values that used to be substituted into .env here, so
   // they never enter customData). cloud-init reads each named secret with the VM's user-assigned
   // identity and appends it to .env. __KV_SECRETS__ lists ENVKEY=secret-name pairs for exactly the
@@ -401,10 +493,10 @@ var cloudInitTokens = [
   ['__UAI_CLIENT_ID__', vmIdentity.properties.clientId]
   ['__KV_SECRETS__', kvSecretMap]
 ]
-var cloudInit = reduce(
+var cloudInit = checkedEnvFileParameters && checkedLocalDbAdminPassword ? reduce(
   cloudInitTokens,
   loadTextContent('cloud-init.yaml'),
-  (cur, t) => replace(string(cur), t[0], t[1]))
+  (cur, t) => replace(string(cur), t[0], t[1])) : ''
 
 // SSH is opt-in: only when sshAllowedCidr is set. Empty (default) = no inbound 22 at all
 // (manage via `az vm run-command` / Serial Console). Default-closed beats the old `*`.
@@ -610,8 +702,9 @@ var bgKvName = '${kvBaseName}-bg-${kvId}'
 var recoverAppVault = contains(softDeletedVaultNames, kvName)
 var recoverBgVault = usePassword && contains(softDeletedVaultNames, bgKvName)
 
-// User-assigned managed identity the VM uses to (a) read the deploy-time secrets from Key Vault at boot
-// and (b) complete Caddy's AzureDns ACME challenge (dnsProvider=AzureDns). User-assigned, NOT
+// User-assigned managed identity the VM uses to read the deploy-time secrets from Key Vault at boot.
+// (Caddy's AzureDns challenge uses the system-assigned identity instead, added only in that mode and
+// granted DNS Zone Contributor by dnsRoleAssignment; see the vm resource.) User-assigned, NOT
 // system-assigned, on purpose: its principalId exists BEFORE the VM, so the app vault's access policy
 // (below) names it and is in place the instant the vault is created -- cloud-init's boot-time secret
 // fetch then does not race grant propagation. Declared ahead of the vault so the vault can reference it.
@@ -713,7 +806,7 @@ resource kvVmPassword 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = if (usePa
 resource secMasterKey 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = {
   parent: keyVault
   name: 'broch-master-key'
-  properties: { value: brochMasterKey }
+  properties: { value: checkedMasterKey }
 }
 // Existing mode only — Managed mode's db-connection-string is written by pg.bicep from the
 // getSecret-resolved password (one source with the server's own password; see the module header).
@@ -915,10 +1008,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2025-04-01' = {
 // Auto-grant the VM's managed identity "DNS Zone Contributor" on the DNS zone's resource group,
 // so Caddy's ACME DNS-01 works with NO manual post-deploy step. Scoped to the RG (Caddy is
 // configured with the RG, not a single zone — it finds the zone matching the hostname). Requires
-// the deployer to have Owner / User Access Administrator on that RG; if they don't, leave
-// dnsZoneResourceGroup empty and grant the role by hand instead. RBAC propagation is eventual —
+// the deployer to have Owner / User Access Administrator on that RG; a deployer with only
+// Contributor uses dnsProvider=AzureDnsServicePrincipal instead. RBAC propagation is eventual —
 // Caddy retries issuance until the grant lands.
-module dnsRoleAssignment 'dns-role.bicep' = if (azureDnsManagedIdentity && !empty(dnsZoneResourceGroup)) {
+module dnsRoleAssignment 'dns-role.bicep' = if (azureDnsManagedIdentity) {
   name: 'broch-dns-role'
   scope: resourceGroup(dnsZoneResourceGroup)
   params: {
@@ -936,14 +1029,17 @@ var sshStateWithHint = empty(sshAllowedCidr) ? 'closed (set sshAllowedCidr to op
 // so the first-boot wait is not misread as a failed deploy.
 output readiness string = 'First boot takes ~3-10 minutes: VM provisioning, container pulls, DNS propagation, and Let\'s Encrypt TLS issuance. https://${wildcardHostname} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${wildcardHostname}/healthz returns 200.'
 output publicIpAddress string = publicIp.properties.ipAddress
-output dnsHint string = 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
+output dnsHint string = effectiveDnsAuto == 'Auto'
+  ? 'dnsAutoRecords=Auto: the appliance creates and maintains the A records ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} itself; there are none to create.'
+  : 'Create A records: ${wildcardHostname} and *.${wildcardHostname} -> ${publicIp.properties.ipAddress} (DNS-only / grey-cloud on Cloudflare)'
 output databaseHost string = databaseMode == 'Managed' ? pgHost : (databaseMode == 'Local' ? 'local (PostgreSQL on this VM)' : 'external (you supplied the connection string)')
 output keyVaultName string = keyVault.name
 output breakGlassKeyVaultName string = usePassword ? bgKvName : ''
 output managedIdentityPrincipalId string = vm.?identity.?principalId ?? ''
-// The user-assigned identity the app vault's access policy grants secret-read (and that holds AzureDns
-// rights). Use THIS to grant the VM identity more permissions; managedIdentityPrincipalId above is the
-// system-assigned one, present only in dnsProvider=AzureDns mode.
+// The user-assigned identity the app vault's access policy grants secret-read; cloud-init's boot-time
+// fetch selects it by client_id. It holds no DNS rights: in dnsProvider=AzureDns mode, DNS Zone
+// Contributor goes to the system-assigned identity (managedIdentityPrincipalId above, present only in
+// that mode), which Caddy's Azure DNS module picks because it is configured without a client_id.
 output vmIdentityPrincipalId string = vmIdentity.properties.principalId
-output dnsRoleAssignment string = azureDnsManagedIdentity ? (empty(dnsZoneResourceGroup) ? 'Set dnsZoneResourceGroup to auto-grant, or grant the VM identity "DNS Zone Contributor" on your zone manually.' : 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".') : '(provider authenticates with a supplied credential; no role assignment)'
+output dnsRoleAssignment string = azureDnsManagedIdentity ? 'DNS Zone Contributor granted automatically on resource group "${dnsZoneResourceGroup}".' : '(provider authenticates with a supplied credential; no role assignment)'
 output vmAccess string = usePassword ? 'No SSH key set; inbound SSH ${sshState}. Break-glass: Azure Serial Console as "${adminUsername}" (password in Key Vault "${bgKvName}", secret "vm-admin-password"), or `az vm run-command`.' : 'SSH key set for "${adminUsername}"; inbound SSH ${sshStateWithHint}.'

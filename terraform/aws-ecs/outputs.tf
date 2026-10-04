@@ -14,7 +14,7 @@ output "rds_endpoint" {
 }
 
 output "secrets_arns" {
-  description = "ARNs of the Secrets Manager secrets this stack creates. Rotate values via the AWS console / CLI; the ECS task picks up new values on the next deployment."
+  description = "ARNs of the Secrets Manager secrets this stack creates. Terraform owns their values: rotate through Terraform (set the variable and `terraform apply`; for the generated Postgres password, `terraform apply -replace=random_password.postgres`), then force a new ECS deployment so the task reads them at start."
   value = {
     auth_client_secret = aws_secretsmanager_secret.auth_client_secret.arn
     postgres_password  = aws_secretsmanager_secret.postgres_password.arn

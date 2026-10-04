@@ -115,11 +115,12 @@ def render(text, entry):
 
     params = filter_blocks(params, dropped)
     provider = re.search(r"  AuthProvider:\n(?:(?!^  \w).)*", params, re.M | re.S)
-    if (not provider or provider.group().count('    Default: ""') != 1 or
-            "    AllowedValues:" in provider.group()):
+    allowed = provider and re.findall(r"^    AllowedValues: \[([^\n]*)\]\n", provider.group(), re.M)
+    if (not provider or provider.group().count('    Default: ""') != 1 or not allowed or len(allowed) != 1
+            or auth not in [v.strip() for v in allowed[0].split(",")]):
         raise ValueError("AuthProvider default or allowed values missing or ambiguous")
-    replacement = provider.group().replace('    Default: ""',
-        f"    Default: {auth}\n    AllowedValues: [{auth}]")
+    replacement = provider.group().replace('    Default: ""', f"    Default: {auth}").replace(
+        f"    AllowedValues: [{allowed[0]}]", f"    AllowedValues: [{auth}]")
     params = params[:provider.start()] + replacement + params[provider.end():]
 
     inactive = inactive_auth_rules(auth)
@@ -152,7 +153,7 @@ def check_provider_wiring(result, entry):
     for field in AUTH_BUCKETS[auth] | {"AuthProvider", "AuthClientId", "AuthAdminRoles"}:
         # A real .env line (not a comment), and no Fn::Sub map entry overriding the parameter —
         # a `Field: ""` there renders the line empty while the text above still reads correctly.
-        assert re.search(rf"^\s+AUTHENTICATION__{ENV_KEYS[field]}=\$\{{{field}\}}$", resources, re.M), \
+        assert re.search(rf"^\s+AUTHENTICATION__{ENV_KEYS[field]}='\$\{{{field}\}}'$", resources, re.M), \
             f"{auth}: {field} not wired to .env"
         assert not re.search(rf"^              {field}:", resources, re.M), \
             f"{auth}: {field} shadowed in the UserData Fn::Sub map"
@@ -193,14 +194,22 @@ def self_test():
             assert not re.search(rf"^      {field}: \{{ default:", result, re.M)
             assert f'              {field}: ""' in result
         assert f"    AllowedValues: [{entry['auth']}]" in result
+        assert result.count("    AllowedValues: [") == source.count("    AllowedValues: [")
         assert 'Assert: !Not [!Equals [!Ref AuthClientSecret, ""]]' in rules
         assert f"Deploy Broch on an EC2 instance with {AUTH_LABELS[entry['auth']]} sign-in" in result
         check_provider_wiring(result, entry)
     assert "EntraExternalId" in source
+    # ACTIVE_RULE (rules each provider keeps, with the fields they assert) and variant_axes'
+    # inactive_auth_rules (rules each variant drops) must describe the same split.
+    provider_rules = set().union(*ACTIVE_RULE.values())
+    for auth in AUTH_BUCKETS:
+        active, inactive = set(ACTIVE_RULE[auth]), inactive_auth_rules(auth)
+        assert not active & inactive and active | inactive == provider_rules, \
+            f"{auth}: ACTIVE_RULE and inactive_auth_rules disagree"
     by_auth = {e["auth"]: e for e in entries}
     anchor = '            - DataVolumeId: !If [IsLocal, !Ref DataVolume, ""]'
     for auth, bad, expected in (
-        ("AzureAd", source.replace("AUTHENTICATION__TENANTID=${AuthTenantId}", "AUTHENTICATION__TENANT=${AuthTenantId}"),
+        ("AzureAd", source.replace("AUTHENTICATION__TENANTID='${AuthTenantId}'", "AUTHENTICATION__TENANT='${AuthTenantId}'"),
          "AuthTenantId not wired to .env"),
         ("AzureAd", source.replace(anchor, anchor + '\n              AuthTenantId: ""'),
          "AuthTenantId shadowed in the UserData Fn::Sub map"),
@@ -208,7 +217,7 @@ def self_test():
          "no longer requires AuthTenantId"),
         ("Auth0", source.replace('!Not [!Equals [!Ref AuthDomain, ""]]', '!Equals [!Ref AuthDomain, ""]'),
          "no longer requires AuthDomain"),
-        ("Oidc", source.replace("AUTHENTICATION__AUTHORITY=${AuthAuthority}", "AUTHENTICATION__AUTHORITY="),
+        ("Oidc", source.replace("AUTHENTICATION__AUTHORITY='${AuthAuthority}'", "AUTHENTICATION__AUTHORITY=''"),
          "AuthAuthority not wired to .env"),
         ("Oidc", source.replace("    RuleCondition: !Equals [!Ref AuthProvider, Oidc]",
                                 "    RuleCondition: !Equals [!Ref AuthProvider, OIDC]"),
@@ -223,9 +232,9 @@ def self_test():
          "rule AuthDomainProviderRequiresDomain dropped"),
         ("Auth0", source.replace('!Not [!Equals [!Ref AuthAudience, ""]]', '!Equals [!Ref AuthAudience, ""]'),
          "no longer requires AuthAudience"),
-        ("Auth0", source.replace("AUTHENTICATION__AUDIENCE=${AuthAudience}", "AUTHENTICATION__AUDIENCE="),
+        ("Auth0", source.replace("AUTHENTICATION__AUDIENCE='${AuthAudience}'", "AUTHENTICATION__AUDIENCE=''"),
          "AuthAudience not wired to .env"),
-        ("Okta", source.replace("AUTHENTICATION__CLIENTID=${AuthClientId}", "AUTHENTICATION__CLIENT=${AuthClientId}"),
+        ("Okta", source.replace("AUTHENTICATION__CLIENTID='${AuthClientId}'", "AUTHENTICATION__CLIENT='${AuthClientId}'"),
          "AuthClientId not wired to .env"),
     ):
         if auth not in by_auth:
@@ -240,6 +249,7 @@ def self_test():
             raise AssertionError(f"provider wiring check accepted a broken {auth} variant ({expected})")
     for bad in (source.replace("  AuthDomain:", "  MissingDomain:"),
                 source.replace("${AuthDomain}", "${OtherDomain}"),
+                re.sub(r"^    AllowedValues: \[\"\", AzureAd[^\n]*\n", "", source, flags=re.M),
                 source.replace("            - DataVolumeId:", "            - UnknownId:")):
         try:
             render(bad, entries[0])

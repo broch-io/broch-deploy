@@ -11,9 +11,9 @@
 # Use this when: running Broch on a public-facing host (a VM with a real
 # DNS name) and you want managed TLS without configuring certs by hand.
 #
-# DNS provider: this example uses Cloudflare's DNS-01 API. If you use a
-# different provider (Route53, Google Cloud DNS, etc.), see the Caddyfile
-# and the README — Caddy supports most providers via build-time modules.
+# DNS provider: this example uses Cloudflare's DNS-01 API. For Azure DNS,
+# Route 53, Google Cloud DNS or DigitalOcean, switch the block in tls.caddy
+# and set that provider's credentials in .env — see the README.
 
 services:
   broch:
@@ -22,14 +22,14 @@ services:
     # New releases of this template bump this default; override BROCH_VERSION=latest to float.
     # BROCH_IMAGE overrides the repo for a private mirror or a pre-release/beta image
     # (set the registry login in your .env / deploy if it's private).
-    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.34.0}
+    image: ${BROCH_IMAGE:-ghcr.io/broch-io/broch}:${BROCH_VERSION:-1.35.0}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
-      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME}
+      API__WILDCARDHOSTNAME: ${BROCH_WILDCARD_HOSTNAME:?set BROCH_WILDCARD_HOSTNAME in .env}
       # The public IP broch advertises for auto-DNS: caddy-dynamicdns fetches it from broch and
       # writes the apex+wildcard A records at it. Seeded at deploy (the VM's allocated IP), and
       # admin-overridable at runtime in broch. Optional/empty for a plain docker-direct run.
@@ -42,7 +42,7 @@ services:
       # Override if your Docker daemon uses custom address pools. First boot only — the value
       # in Admin → Share Settings wins afterwards.
       API__TRUSTEDPROXYCIDRS: ${BROCH_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
-      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY}
+      BROCH_MASTER_KEY: ${BROCH_MASTER_KEY:?set BROCH_MASTER_KEY in .env, at least 32 bytes (openssl rand -base64 48)}
       # Identity provider — part of the boot floor. The server starts without
       # these, but no one can sign in (or finish setup) until they're set; a
       # license is activated in-app (Admin → License), not here. See .env.example / README.
@@ -86,7 +86,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-brochdb}
       POSTGRES_USER: ${POSTGRES_USER:-broch}
       # Required -- postgres:17 rejects an empty password (set it in .env; the VM appliance injects it).
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     expose:
@@ -122,9 +122,10 @@ services:
       # provider needs (the rest stay empty). Cert issuance only, NOT app sign-in (login is the
       # AUTHENTICATION__* vars on the broch service). Full provider set, matching with-postgres-external
       # — the Azure VM appliance's Local-DB mode runs this compose and offers all of these providers.
-      # SYNC: keep this provider block byte-identical to with-postgres-external/docker-compose.yml. They
-      # are a manual copy (no CI diff guard); if a provider is added there but not here, the VM appliance
-      # silently drops that env var and cert issuance fails at runtime with no deploy-time error.
+      # SYNC: keep these provider keys the same as with-postgres-external/docker-compose.yml's (the
+      # comments differ). scripts/check-caddy-dns-sync.py fails CI when the two key sets differ; a key
+      # missing here would leave the VM appliance's Local-DB mode without that provider's credential,
+      # and cert issuance would fail at runtime.
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       # Azure DNS — managed identity needs only subscription + resource group; service-principal adds tenant/client/secret:
       AZURE_DNS_SUBSCRIPTION_ID: ${AZURE_DNS_SUBSCRIPTION_ID:-}

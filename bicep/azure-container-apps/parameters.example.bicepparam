@@ -19,11 +19,11 @@ param wildcardHostname = 'broch.example.com'
 // Generate with: openssl rand -base64 48
 param masterKey = '<openssl rand -base64 48>'
 
-// Identity provider — required at boot. Broch has no built-in local login, so
+// Identity provider — required before anyone can sign in. Broch has no built-in local login, so
 // no one can sign in (or finish first-run setup) until this is set. Your first
 // admin signs in holding a role named in adminRoles.
 // Guides: https://broch.io/docs/identity-providers/
-param authProvider = 'Auth0' // AzureAd | EntraExternalId | Auth0 | Okta | Oidc
+param authProvider = 'Auth0' // AzureAd | EntraExternalId | Auth0 | Okta | Oidc, or '' (with the other sign-in values blank) to set it up in the app
 param authClientId = '<oauth-client-id>'
 param authClientSecret = '<oauth-client-secret>'
 // broch_admin is an example — replace with admin group(s)/role(s) from your
@@ -34,7 +34,8 @@ param adminRoles = 'broch_admin'
 // Set the value(s) your provider needs; leave the rest at their empty defaults:
 //   Auth0:            authDomain    = 'your-tenant.auth0.com'  +  authAudience = '<your-auth0-api-identifier>'
 //   Okta:             authDomain    = 'your-org.okta.com'
-//   AzureAd / Entra:  authTenantId  = '...'  +  authInstance = 'https://login.microsoftonline.com/'
+//   AzureAd:          authTenantId  = '...'  (authInstance defaults to your cloud's login endpoint)
+//   EntraExternalId:  authTenantId  = '...'  +  authInstance = 'https://<tenant>.ciamlogin.com/'
 //   Generic Oidc:     authAuthority = '<issuer URL serving /.well-known/openid-configuration>'
 // param authDomain = ''
 // param authTenantId = ''
@@ -53,7 +54,7 @@ param adminRoles = 'broch_admin'
 //                                        // managed Postgres) is the production shape.
 // param databaseConnectionString = ''    // required for Shared mode
 // param databasePassword = ''            // Embedded sidecar password — auto-generated when omitted
-// param containerImage = 'ghcr.io/broch-io/broch:1.26.0'  // defaults to a pinned version; set a newer tag to upgrade
+// param containerImage = 'ghcr.io/broch-io/broch:1.35.0'  // defaults to a pinned version; set a newer tag to upgrade
 // param centralServerUrl = 'https://api.broch.io'
 
 // Custom domain + wildcard TLS (see README — Azure managed certs don't issue

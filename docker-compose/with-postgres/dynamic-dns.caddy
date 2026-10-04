@@ -37,6 +37,7 @@
 #       # <zone> then the labels to keep pointed here. For broch.example.com in
 #       # zone example.com:  example.com broch *.broch
 #       # If the wildcard host IS your zone apex, use:  example.com @ *
+#       # Route 53 needs the zone with a trailing dot:  example.com. broch *.broch
 #       domains {
 #           example.com broch *.broch
 #       }

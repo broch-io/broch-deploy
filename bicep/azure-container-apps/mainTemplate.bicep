@@ -7,12 +7,13 @@
 //   state (re-enter IdP config, re-activate the license). Azure Files can't
 //   host postgres (SMB has no chmod, initdb requires it), and that's fine for
 //   this mode's purpose: click, deploy, evaluate.
+// - Managed mode:  provisions a private Azure Database for PostgreSQL flexible
+//   server in a dedicated VNet — a production shape.
 // - Shared mode:   bring-your-own PostgreSQL connection string (e.g. Flexible
-//   Server) — the production shape.
+//   Server) — a production shape.
 //
-// This is the same template Broch, LLC runs for its own dev and production
-// deployments — what you deploy here is what we run. See README.md for the
-// architecture, custom-domain / wildcard-TLS steps, and tradeoffs.
+// See README.md for the architecture, custom-domain / wildcard-TLS steps, and
+// tradeoffs.
 
 targetScope = 'resourceGroup'
 
@@ -28,10 +29,14 @@ param siteName string = 'broch-${uniqueString(resourceGroup().id)}'
 
 @description('At-rest encryption root used to derive the DataProtection keyring wrap key (HKDF-SHA256). Customer-owned; rotating it invalidates anything DP-wrapped in the database. Required.')
 @secure()
+@minLength(32)
 param masterKey string
+// @minLength counts spaces; Broch also refuses a key that is only whitespace. Checked at preflight,
+// and the container's master-key secret reads the key through it.
+var checkedMasterKey = empty(trim(masterKey)) ? fail('masterKey must not be only spaces.') : masterKey
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.34.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.35.0'
 
 // ============================================================================
 // Database Parameters
@@ -67,13 +72,16 @@ param centralServerUrl string = 'https://api.broch.io'
 @minLength(1)
 param wildcardHostname string
 
+// Broch refuses a hostname of only spaces at startup; refuse it at preflight instead.
+var checkedWildcardHostname = empty(trim(wildcardHostname)) ? fail('wildcardHostname must not be only spaces.') : wildcardHostname
+
 // ============================================================================
 // Authentication & Authorization Parameters
 // ============================================================================
 
-@description('Authentication provider type')
-@allowed(['AzureAd', 'EntraExternalId', 'Auth0', 'Okta', 'Oidc'])
-param authProvider string = 'AzureAd'
+@description('Authentication provider type. Leave empty (with the other sign-in values) to set up sign-in in the app.')
+@allowed(['', 'AzureAd', 'EntraExternalId', 'Auth0', 'Okta', 'Oidc'])
+param authProvider string = ''
 
 @description('Identity provider tenant ID (e.g., contoso.onmicrosoft.com or a GUID). Required for AzureAd and EntraExternalId providers. Auth0 uses authDomain instead.')
 param authTenantId string = ''
@@ -81,7 +89,7 @@ param authTenantId string = ''
 @description('OAuth2 client/application ID registered in the identity provider')
 param authClientId string = ''
 
-@description('Identity provider instance URL. Leave empty for AzureAd/EntraExternalId to use the login authority of the cloud this deploys into (public, Government, or China — resolved automatically). Set only to override. Auth0/Okta derive their authority from authDomain.')
+@description('Identity provider instance URL. Leave empty for AzureAd to use the login authority of the cloud this deploys into (public, Government, or China — resolved automatically). Required for EntraExternalId (https://<tenant>.ciamlogin.com/) unless authAuthority is set. Auth0/Okta derive their authority from authDomain.')
 param authInstance string = ''
 
 @description('Auth0/Okta domain (e.g., contoso.auth0.com or contoso.okta.com). Only used when authProvider is Auth0 or Okta.')
@@ -91,7 +99,45 @@ param authDomain string = ''
 param authAuthority string = ''
 
 @description('Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to. Ignored by other providers.')
+@maxLength(500)
 param authAudience string = ''
+
+// Broch refuses to start as Auth0 without an audience, and only after the app is built and the
+// database migrated. This variable depends only on parameters, so ARM evaluates it at preflight
+// validation and the fail() stops the deployment before any resource exists. The container reads
+// the audience through it (not authAudience directly), which keeps the check wired in. With no
+// sign-in value set (authConfigured below) the IdP is configured in the app instead (no
+// AUTHENTICATION__* env is sent), and the app's own settings check applies, so the guard stands down.
+var checkedAuthAudience = authConfigured && toLower(trim(authProvider)) == 'auth0' && empty(trim(authAudience))
+  ? fail('authAudience is required when authProvider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to.')
+  : authAudience
+
+// The rest of Broch's sign-in startup checks, the same way: each fail()s at preflight, and the
+// container reads the provider through this variable. An authAuthority waives the domain,
+// tenant and instance checks, as it does in the server. AzureAd's instance defaults below, so
+// only EntraExternalId (whose instance is tenant-specific) must supply one. Sign-in counts as
+// configured when any sign-in parameter is set (provider, client id, client secret, tenant, domain,
+// instance, authority, audience, scopes): then all of it is sent and checked; otherwise none of it is
+// sent and the admin sets up sign-in in the app. (Gating on authClientId alone silently dropped a provider,
+// secret or tenant entered without a client id.)
+var authProviderKey = toLower(trim(authProvider))
+var authAuthoritySet = !empty(trim(authAuthority))
+var authConfigured = !empty(authProvider) || !empty(authClientId) || !empty(authClientSecret) || !empty(authTenantId) || !empty(authDomain) || !empty(authInstance) || !empty(authAuthority) || !empty(authAudience) || !empty(authScopes)
+var checkedAuthProvider = authConfigured && empty(authProviderKey)
+  ? fail('authProvider is required when another sign-in value (authClientId, authClientSecret, authTenantId, authDomain, authInstance, authAuthority, authAudience or authScopes) is set: Broch refuses to start without it.')
+  : authConfigured && empty(authClientId)
+  ? fail('authClientId is required when authProvider is set: Broch refuses to start without it.')
+  : authConfigured && empty(authClientSecret)
+  ? fail('authClientSecret is required when authProvider is set: Broch refuses to start without it.')
+  : authConfigured && authProviderKey == 'oidc' && !authAuthoritySet
+      ? fail('authAuthority is required when authProvider is Oidc: set it to your IdP\'s issuer URL.')
+      : authConfigured && contains(['auth0', 'okta'], authProviderKey) && !authAuthoritySet && empty(trim(authDomain))
+          ? fail('authDomain is required when authProvider is Auth0 or Okta (e.g. your-tenant.auth0.com).')
+          : authConfigured && contains(['azuread', 'entraexternalid'], authProviderKey) && !authAuthoritySet && empty(trim(authTenantId))
+              ? fail('authTenantId is required when authProvider is AzureAd or EntraExternalId.')
+              : authConfigured && authProviderKey == 'entraexternalid' && !authAuthoritySet && empty(trim(authInstance))
+                  ? fail('authInstance is required when authProvider is EntraExternalId: set it to https://<tenant>.ciamlogin.com/.')
+                  : authProvider
 
 @description('Comma-separated OAuth2 scopes (e.g., openid,profile,email). When empty, provider-specific defaults are used.')
 param authScopes string = ''
@@ -196,7 +242,7 @@ param environmentName string = ''
 @description('Minimum number of replicas')
 param minReplicas int = 0
 
-@description('Maximum number of replicas. Broch is single-replica: WebSocket tunnels pin to a replica, so scaling past 1 breaks tunnel routing. Leave at 1 unless sticky-session routing is in place.')
+@description('Maximum number of replicas. Leave at 1: Broch runs as one instance and doesn\'t cluster, and WebSocket tunnels pin to a replica, so scaling past 1 breaks tunnel routing. Embedded mode always runs one replica.')
 param maxReplicas int = 1
 
 @description('Revision suffix for tracking deployments (e.g., commit SHA). Leave empty for auto-generated.')
@@ -291,6 +337,16 @@ var resolvedConnectionString = databaseMode == 'Shared'
       // azure-vm sibling (pg.bicep) and the Terraform ACA module.
       ? 'Host=${managedPgFqdn};Port=5432;Database=brochdb;Username=brochadmin;Password=${managedPgPasswordQuoted};SSL Mode=VerifyFull'
       : 'Host=localhost;Database=brochdb;Username=broch;Password=${embeddedPgPasswordQuoted}'
+
+// Broch refuses to start without a connection string, or with an access domain equal to the
+// wildcard hostname (their routes would collide). Like checkedAuthProvider, these fail() at
+// preflight and the container reads the values through them.
+var checkedConnectionString = databaseMode == 'Shared' && empty(trim(databaseConnectionString))
+  ? fail('databaseConnectionString is required when databaseMode is Shared.')
+  : resolvedConnectionString
+var checkedAccessDomainName = !empty(trim(accessDomainName)) && toLower(trim(accessDomainName)) == toLower(trim(wildcardHostname))
+  ? fail('accessDomainName must differ from wildcardHostname: Broch refuses to start when they match.')
+  : accessDomainName
 
 // Resolve resource names
 var resolvedContainerAppName = !empty(containerAppName) ? containerAppName : siteName
@@ -509,7 +565,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
         [
           {
             name: 'master-key'
-            value: masterKey
+            value: checkedMasterKey
           }
         ],
         // [ACCESS] Terminator cert — only present when provided, so terminate degrades to
@@ -541,7 +597,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
         [
           {
             name: 'db-connection'
-            value: resolvedConnectionString
+            value: checkedConnectionString
           }
         ],
         databaseMode == 'Embedded' ? [
@@ -592,12 +648,12 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                 value: adminRoles
               }
             ],
-            // Auth provider env vars (all gated on authClientId — local IdP config)
-            !empty(authClientId) ? concat(
+            // Auth provider env vars (all gated on authConfigured — local IdP config)
+            authConfigured ? concat(
               [
                 {
                   name: 'AUTHENTICATION__PROVIDER'
-                  value: authProvider
+                  value: checkedAuthProvider
                 }
                 {
                   name: 'AUTHENTICATION__CLIENTID'
@@ -611,10 +667,12 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                 }
               ] : [],
               // AUTHENTICATION__INSTANCE is required by the server for AzureAd/EntraExternalId.
-              // Default to the login authority of the cloud this deployment runs in
+              // AzureAd defaults to the login authority of the cloud this deployment runs in
               // (environment() resolves public, Government, and China correctly); an explicit
-              // authInstance still wins. For other providers it is only emitted when supplied.
-              (authProvider == 'AzureAd' || authProvider == 'EntraExternalId') ? [
+              // authInstance still wins. EntraExternalId's instance is tenant-specific
+              // (ciamlogin.com), so it has no default: checkedAuthProvider requires it. For other
+              // providers it is only emitted when supplied.
+              authProviderKey == 'azuread' ? [
                 {
                   name: 'AUTHENTICATION__INSTANCE'
                   value: empty(authInstance) ? environment().authentication.loginEndpoint : authInstance
@@ -639,10 +697,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
                   value: authAuthority
                 }
               ],
-              !empty(authAudience) ? [
+              !empty(checkedAuthAudience) ? [
                 {
                   name: 'AUTHENTICATION__AUDIENCE'
-                  value: authAudience
+                  value: checkedAuthAudience
                 }
               ] : [],
               !empty(authScopes) ? [
@@ -667,7 +725,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             [
               {
                 name: 'API__WILDCARDHOSTNAME'
-                value: wildcardHostname
+                value: checkedWildcardHostname
               }
             ],
             // [ACCESS] Access domain (always set; empty disables terminate) + terminator cert
@@ -675,7 +733,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             [
               {
                 name: 'API__ACCESSDOMAINNAME'
-                value: accessDomainName
+                value: checkedAccessDomainName
               }
             ],
             (!empty(accessCert)) ? [

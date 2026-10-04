@@ -37,15 +37,23 @@ resource "azurerm_log_analytics_workspace" "broch" {
 
 # ─── Key Vault for secrets ───────────────────────────────────────────────────
 
+# The app reads secrets over the public endpoint with its managed identity (RBAC-scoped); a
+# deny-by-default network ACL would need a private endpoint this template doesn't create.
+# trivy:ignore:AZU-0013
 resource "azurerm_key_vault" "broch" {
-  # Vault names must be globally unique and 3-24 chars.
-  name                       = substr("${var.name_prefix}-kv-${local.suffix}", 0, 24)
+  # Vault names must be globally unique and 3-24 chars. Truncate the prefix, never the random
+  # suffix (14 + "-kv-" + 6 = 24): with purge protection a destroyed vault keeps its name for the
+  # retention period, so a re-apply must always get a fresh one.
+  name                       = "${trimsuffix(substr(var.name_prefix, 0, 14), "-")}-kv-${local.suffix}"
   resource_group_name        = azurerm_resource_group.broch.name
   location                   = azurerm_resource_group.broch.location
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   soft_delete_retention_days = 7
-  purge_protection_enabled   = false # set true in production
+  # On: this vault holds the generated master key, whose only other copy is Terraform state.
+  # The name carries a random suffix, so a re-apply never needs to purge and reuse it.
+  # Irreversible once set; a destroyed vault stays recoverable for soft_delete_retention_days.
+  purge_protection_enabled = true
 
   rbac_authorization_enabled = true # use RBAC instead of access policies
 }

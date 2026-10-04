@@ -35,8 +35,13 @@ resource "aws_acm_certificate_validation" "broch" {
 
 # ─── ALB ─────────────────────────────────────────────────────────────────────
 
+# drop_invalid_header_fields stays off: it strips any header with an underscore, and tunnels carry
+# customers' own application headers.
+# trivy:ignore:AWS-0052
 resource "aws_lb" "broch" {
-  name               = "${var.name_prefix}-alb"
+  name = "${var.name_prefix}-alb"
+  # The internet-facing ALB is the service endpoint.
+  # trivy:ignore:AWS-0053
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -62,8 +67,8 @@ resource "aws_lb_target_group" "broch" {
     unhealthy_threshold = 3
   }
 
-  # Long deregistration delay would slow rolling deploys; 30s is plenty for
-  # this stateless front door (tunnel state lives in Postgres).
+  # A long deregistration delay would slow every deploy; 30s gives in-flight
+  # requests time to drain from the old task.
   deregistration_delay = 30
 }
 
@@ -180,6 +185,33 @@ resource "aws_ecs_cluster" "broch" {
   }
 }
 
+locals {
+  # The plain settings Broch reads (the secrets come from Secrets Manager on the task). One map so
+  # the configuration contract check (scripts/config-contract.py) can render exactly what this module
+  # sends and ask Broch whether it would start with it.
+  broch_environment = {
+    ASPNETCORE_ENVIRONMENT = "Production"
+    ASPNETCORE_URLS        = "http://0.0.0.0:8080"
+    API__WILDCARDHOSTNAME  = var.wildcard_hostname
+    # Trusted-proxy CIDRs so the ALB's X-Forwarded-For/-Proto are honored (broch trusts only
+    # loopback by default). The ALB fronts the task from this VPC's subnets, and the task's
+    # security group only admits the ALB on 8080. First boot only — the value in
+    # Admin -> Share Settings wins afterwards.
+    API__TRUSTEDPROXYCIDRS = var.vpc_cidr
+    DATABASE__PROVIDER     = "PostgreSQL"
+    # Identity provider — part of the boot floor (the client secret is injected separately via
+    # Secrets Manager). Unused provider-specific values stay blank and are ignored by the server.
+    AUTHENTICATION__PROVIDER   = var.auth_provider
+    AUTHENTICATION__CLIENTID   = var.auth_client_id
+    AUTHENTICATION__ADMINROLES = var.auth_admin_roles
+    AUTHENTICATION__DOMAIN     = var.auth_domain
+    AUTHENTICATION__TENANTID   = var.auth_tenant_id
+    AUTHENTICATION__INSTANCE   = var.auth_instance
+    AUTHENTICATION__AUTHORITY  = var.auth_authority
+    AUTHENTICATION__AUDIENCE   = var.auth_audience
+  }
+}
+
 resource "aws_ecs_task_definition" "broch" {
   family                   = "${var.name_prefix}-broch"
   network_mode             = "awsvpc"
@@ -187,6 +219,36 @@ resource "aws_ecs_task_definition" "broch" {
   cpu                      = var.task_cpu
   memory                   = var.task_memory
   execution_role_arn       = aws_iam_role.task_execution.arn
+
+  lifecycle {
+    # Broch refuses to start without each provider's required values, and only after the
+    # database is migrated. Fail the plan instead. These mirror the server's startup checks;
+    # an explicit auth_authority waives the domain/instance/tenant checks, as it does there.
+    # Provider match is case-insensitive, as Broch binds it.
+    precondition {
+      condition     = trimspace(var.auth_client_id) != "" && trimspace(var.auth_client_secret) != ""
+      error_message = "auth_client_id and auth_client_secret are required: Broch refuses to start with a provider but no client credentials."
+    }
+    precondition {
+      condition     = lower(trimspace(var.auth_provider)) != "auth0" || trimspace(var.auth_audience) != ""
+      error_message = "auth_audience is required when auth_provider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to."
+    }
+    precondition {
+      condition     = lower(trimspace(var.auth_provider)) != "oidc" || trimspace(var.auth_authority) != ""
+      error_message = "auth_authority is required when auth_provider is Oidc: set it to your IdP's issuer URL."
+    }
+    precondition {
+      condition = (!contains(["auth0", "okta"], lower(trimspace(var.auth_provider)))
+      || trimspace(var.auth_authority) != "" || trimspace(var.auth_domain) != "")
+      error_message = "auth_domain is required when auth_provider is Auth0 or Okta (e.g. your-tenant.auth0.com), unless you set auth_authority."
+    }
+    precondition {
+      condition = (!contains(["azuread", "entraexternalid"], lower(trimspace(var.auth_provider)))
+        || trimspace(var.auth_authority) != ""
+      || (trimspace(var.auth_instance) != "" && trimspace(var.auth_tenant_id) != ""))
+      error_message = "auth_instance and auth_tenant_id are required when auth_provider is AzureAd or EntraExternalId, unless you set auth_authority (AzureAd's instance is https://login.microsoftonline.com/, EntraExternalId's is https://<tenant>.ciamlogin.com/)."
+    }
+  }
 
   container_definitions = jsonencode([{
     name      = "broch"
@@ -198,28 +260,7 @@ resource "aws_ecs_task_definition" "broch" {
       protocol      = "tcp"
     }]
 
-    environment = [
-      { name = "ASPNETCORE_ENVIRONMENT", value = "Production" },
-      { name = "ASPNETCORE_URLS", value = "http://0.0.0.0:8080" },
-      { name = "API__WILDCARDHOSTNAME", value = var.wildcard_hostname },
-      # Trusted-proxy CIDRs so the ALB's X-Forwarded-For/-Proto are honored (broch trusts only
-      # loopback by default). The ALB fronts the task from this VPC's subnets, and the task's
-      # security group only admits the ALB on 8080. First boot only — the value in
-      # Admin -> Share Settings wins afterwards.
-      { name = "API__TRUSTEDPROXYCIDRS", value = var.vpc_cidr },
-      { name = "DATABASE__PROVIDER", value = "PostgreSQL" },
-      # Identity provider — part of the boot floor (the client secret is injected
-      # separately via Secrets Manager below). Unused provider-specific values
-      # stay blank and are ignored by the server.
-      { name = "AUTHENTICATION__PROVIDER", value = var.auth_provider },
-      { name = "AUTHENTICATION__CLIENTID", value = var.auth_client_id },
-      { name = "AUTHENTICATION__ADMINROLES", value = var.auth_admin_roles },
-      { name = "AUTHENTICATION__DOMAIN", value = var.auth_domain },
-      { name = "AUTHENTICATION__TENANTID", value = var.auth_tenant_id },
-      { name = "AUTHENTICATION__INSTANCE", value = var.auth_instance },
-      { name = "AUTHENTICATION__AUTHORITY", value = var.auth_authority },
-      { name = "AUTHENTICATION__AUDIENCE", value = var.auth_audience },
-    ]
+    environment = [for name, value in local.broch_environment : { name = name, value = value }]
 
     secrets = [
       {
@@ -284,9 +325,10 @@ resource "aws_ecs_service" "broch" {
   depends_on = [aws_lb_listener.https]
 
   lifecycle {
-    # The task definition gets re-rendered on every apply because of the
-    # `image` reference. Don't trigger a no-op deploy if only that changed
-    # without the underlying image actually moving.
+    # Terraform registers a new task-definition revision when its inputs change
+    # (image, CPU/memory, environment), but the service stays on the revision it
+    # runs. Deploy a new revision with `aws ecs update-service` (README, "Pulling
+    # a new broch image").
     ignore_changes = [task_definition]
   }
 }

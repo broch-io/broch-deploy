@@ -62,16 +62,19 @@ resource keyVault 'Microsoft.KeyVault/vaults@2025-05-01' existing = {
 // inside the VNet (same construction the parent used when this was composed there). Written on
 // every Managed deploy — the value derives from this module's resolved password, so overwriting is
 // always convergence, never clobbering.
-// The password is SINGLE-QUOTED with embedded quotes doubled — Npgsql's value-quoting rule. Azure
-// accepts ';' and '\'' in a flexible-server password, and interpolating those raw would silently
-// corrupt the pair syntax: every resource deploys, ARM reports success, and broch crash-loops at
-// boot on a malformed connection string with nothing pointing at the password.
+// The password is DOUBLE-QUOTED with embedded double quotes doubled — Npgsql's value-quoting rule.
+// Azure accepts ';' and quotes in a flexible-server password, and interpolating those raw would
+// silently corrupt the pair syntax: every resource deploys, ARM reports success, and broch
+// crash-loops at boot on a malformed connection string with nothing pointing at the password.
+// Double, not single, quotes: the VM writes this string single-quoted into /opt/broch/.env (docker
+// compose takes that literally), which can't carry a single quote; main.bicep refuses a password
+// with one at preflight.
 // SSL Mode=VerifyFull: encrypted AND the server authenticated — its certificate must chain to a CA in
 // the broch image's system trust store (Flexible Server certificates chain to DigiCert / Microsoft
 // public roots) AND name this Host (the real FQDN above, which the certificate covers). Require would
 // only encrypt, letting an on-path attacker pose as the server and take the admin credentials. No
 // Root Certificate: the system store is the trust anchor.
-var pgPasswordQuoted = '\'${replace(administratorLoginPassword, '\'', '\'\'')}\''
+var pgPasswordQuoted = '"${replace(administratorLoginPassword, '"', '""')}"'
 resource secDbConnManaged 'Microsoft.KeyVault/vaults/secrets@2025-05-01' = {
   parent: keyVault
   name: 'db-connection-string'
