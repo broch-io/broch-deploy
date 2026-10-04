@@ -1,6 +1,8 @@
 output "container_app_fqdn" {
   description = "Default *.azurecontainerapps.io hostname for the Container App. Useful for testing before the custom domain is bound."
-  value       = azurerm_container_app.broch.latest_revision_fqdn
+  # The app-level hostname, not latest_revision_fqdn: a revision's hostname stops serving
+  # once a later revision replaces it.
+  value = azurerm_container_app.broch.ingress[0].fqdn
 }
 
 output "container_app_verification_id" {
@@ -14,11 +16,11 @@ output "broch_url" {
 }
 
 output "postgres_fqdn" {
-  description = "Postgres Flexible Server FQDN. Reachable from Azure services (firewall rule); add your client IP to the server firewall if you need to connect from elsewhere."
+  description = "Postgres Flexible Server FQDN. It resolves and connects only from inside the module's private VNet (the server has no public endpoint); to administer it, use a VM or Cloud Shell attached to that VNet."
   value       = azurerm_postgresql_flexible_server.broch.fqdn
 }
 
 output "key_vault_name" {
-  description = "Key Vault name. Rotate secrets via `az keyvault secret set`; restart the Container App to pick up new values."
+  description = "Key Vault name. The app reads a pinned version of each secret, so rotate through Terraform: set the new value and run `terraform apply` twice (the first writes the new version, the second points the app at it), then restart the active revision. A direct `az keyvault secret set` is never picked up, and the next apply reverts it."
   value       = azurerm_key_vault.broch.name
 }

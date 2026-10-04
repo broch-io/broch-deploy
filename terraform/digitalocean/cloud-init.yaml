@@ -42,7 +42,7 @@ write_files:
               condition: service_healthy
           # No state volumes: Data Protection keys and the SSH host key persist in
           # PostgreSQL. Recovery-critical state is the Postgres data + BROCH_MASTER_KEY.
-          # No healthcheck -- aspnet image has no curl/wget/nc.
+          # No compose healthcheck on this path yet (the image does ship curl).
           # Restart policy handles crashes; Caddy retries upstream.
           logging:
             driver: "json-file"
@@ -173,17 +173,20 @@ write_files:
       # Bundled-Postgres password, generated on-box at first boot (kept OUT of droplet
       # user_data). compose interpolates $${POSTGRES_PASSWORD} from this file.
       POSTGRES_PASSWORD=__GENERATED_AT_RUNTIME__
-      CentralServer__ApiUrl=${central_server_url}
-      API__WILDCARDHOSTNAME=${wildcard_hostname}
-      AUTHENTICATION__PROVIDER=${auth_provider}
-      AUTHENTICATION__CLIENTID=${auth_client_id}
-      AUTHENTICATION__CLIENTSECRET=${auth_client_secret}
-      AUTHENTICATION__TENANTID=${auth_tenant_id}
-      AUTHENTICATION__INSTANCE=${auth_instance}
-      AUTHENTICATION__DOMAIN=${auth_domain}
-      AUTHENTICATION__AUDIENCE=${auth_audience}
-      AUTHENTICATION__AUTHORITY=${auth_authority}
-      AUTHENTICATION__ADMINROLES=${admin_roles}
+      # Operator values are single-quoted: docker compose takes them literally (an unquoted value is
+      # trimmed and has $VAR interpolated, so a client secret with a $ would reach Broch changed).
+      # variables.tf refuses the few values single quotes can't carry.
+      CentralServer__ApiUrl='${central_server_url}'
+      API__WILDCARDHOSTNAME='${wildcard_hostname}'
+      AUTHENTICATION__PROVIDER='${auth_provider}'
+      AUTHENTICATION__CLIENTID='${auth_client_id}'
+      AUTHENTICATION__CLIENTSECRET='${auth_client_secret}'
+      AUTHENTICATION__TENANTID='${auth_tenant_id}'
+      AUTHENTICATION__INSTANCE='${auth_instance}'
+      AUTHENTICATION__DOMAIN='${auth_domain}'
+      AUTHENTICATION__AUDIENCE='${auth_audience}'
+      AUTHENTICATION__AUTHORITY='${auth_authority}'
+      AUTHENTICATION__ADMINROLES='${admin_roles}'
 
   # Systemd service for auto-start on reboot
   - path: /etc/systemd/system/broch.service

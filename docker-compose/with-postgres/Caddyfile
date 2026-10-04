@@ -7,9 +7,9 @@
 #   - the wildcard   (*.broch.example.com)  used by every tunnel
 #
 # DNS-01 is required because HTTP-01 can't issue wildcard certs. If your
-# DNS isn't on Cloudflare, swap the `dns cloudflare ...` line for your
-# provider (Caddy supports route53, googleclouddns, gandi, etc. — each
-# needs its own module compiled into the Caddy binary; see Caddy.Dockerfile).
+# DNS isn't on Cloudflare, switch the `tls { dns ... }` block in tls.caddy
+# (imported below). The broch-caddy image already has the Azure DNS, Route 53,
+# Google Cloud DNS and DigitalOcean modules, so no rebuild is needed.
 
 {
 	email {env.CADDY_ACME_EMAIL}

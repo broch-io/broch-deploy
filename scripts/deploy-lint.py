@@ -43,7 +43,19 @@ loses state" incident class:
        AUTHENTICATION__* key set from its deployment inputs (every provider's
        fields, not just the ones the smoke tests happen to fill): a dropped
        TENANTID / INSTANCE / AUTHORITY line boots fine for Auth0 and fails broch's
-       required-field check at boot for every Entra or OIDC customer.
+       required-field check at boot for every Entra or OIDC customer. Both Bicep
+       templates also route the audience and provider through checkedAuthAudience
+       and checkedAuthProvider, fail() guards that refuse settings broch would
+       refuse at startup at preflight, before any resource.
+  DNSRG The azure-vm template hands Caddy the Azure DNS zone's resource group
+       through checkedDnsZoneResourceGroup, a fail() guard that refuses a blank one
+       at preflight when either Azure DNS provider is selected: Caddy can't issue
+       the certificate without it, so the deployment would succeed with a VM that
+       never serves TLS.
+  WIRE The Terraform targets give broch nothing outside the setting local the configuration
+       contract check (config-contract.py) renders except the master key, connection string
+       and client secret references, each wired from the generator that check sizes: a
+       stray setting, or a master key from another generator, would be judged by nothing.
   AMI  The aws-vm UbuntuAmi default pins a Canonical release serial, never the
        stable/current alias: CloudFormation re-resolves SSM parameters on every
        stack update, so the alias turned any update after a new Ubuntu image into
@@ -346,75 +358,198 @@ def camel(key: str) -> str:
     return "".join(part.title() for part in AUTH_INPUT[key].split("_"))
 
 
+def uncommented_lines(root: str, rel: str):
+    """The file's lines with comments blanked: `#` everywhere, plus `//` and `/* */` in
+    Terraform and Bicep (only there -- a shell glob like `lists/*` in cloud-init is not a
+    comment opener). Blanked, not dropped, so an index is still the file's line number - 1."""
+    lines = read_lines(root, rel)
+    if lines is None:
+        return None
+    if rel.endswith((".tf", ".bicep")):
+        text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group().count("\n"), "\n".join(lines), flags=re.S)
+        lines = ["" if line.lstrip().startswith("//") else line for line in text.split("\n")]
+    return ["" if line.lstrip().startswith("#") else line for line in lines]
+
+
 def rule_auth(root: str) -> None:
     """Every target wires every AUTHENTICATION__ key to broch from that key's own input."""
     why = "broch refuses to boot, or ignores what the customer entered, for the providers that need it"
 
     def live_lines(rel):
-        """Lines outside comments: `#` everywhere, plus `//` and `/* */` in Terraform and Bicep
-        (only there -- a shell glob like `lists/*` in cloud-init is not a comment opener)."""
-        lines = read_lines(root, rel)
-        if lines is None:
-            return None
-        if rel.endswith((".tf", ".bicep")):
-            lines = re.sub(r"/\*.*?\*/", "", "\n".join(lines), flags=re.S).splitlines()
-            lines = [line for line in lines if not line.lstrip().startswith("//")]
-        return [line for line in lines if not line.lstrip().startswith("#")]
+        return uncommented_lines(root, rel)
 
-    def require(rel, keys, source):
+    def line_of(live, hint):
+        """1-based line of the first live line mentioning the key, else 1 (the wiring is absent)."""
+        return next((i + 1 for i, line in enumerate(live) if re.search(hint, line)), 1)
+
+    def require(rel, keys, source, live=None, hint=lambda k: rf"AUTHENTICATION__{k}\b"):
         """source(key) is a regex that one line must match."""
-        live = live_lines(rel)
+        live = live_lines(rel) if live is None else live
         for key in keys if live is not None else ():
             if not any(re.search(source(key), line) for line in live):
-                violate("AUTH", rel, 1, f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
+                violate("AUTH", rel, line_of(live, hint(key)),
+                        f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
+
+    def require_sequence(rel, patterns, message, hint=None):
+        """Consecutive code lines (comments and blank lines skipped) matching the patterns in order."""
+        live = live_lines(rel)
+        if live is None:
+            return
+        code = [(i, line) for i, line in enumerate(live) if line.strip()]
+        n = len(patterns)
+        if not any(all(re.search(p, code[s + j][1]) for j, p in enumerate(patterns)) for s in range(len(code) - n + 1)):
+            violate("AUTH", rel, line_of(live, hint or patterns[0]), message)
 
     def require_block(rel, keys, name, source):
-        """Multi-line env entries: a line matching name(key) with source(key) on the next line."""
+        """Multi-line env entries: a line matching name(key) with source(key) on the next
+        non-blank line (comments are blanked, so a comment between the two doesn't break it)."""
         live = live_lines(rel)
+        code = [line for line in live if line.strip()] if live is not None else []
         for key in keys if live is not None else ():
-            if not any(re.search(name(key), a) and re.search(source(key), b) for a, b in zip(live, live[1:])):
-                violate("AUTH", rel, 1, f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
+            if not any(re.search(name(key), a) and re.search(source(key), b) for a, b in zip(code, code[1:])):
+                violate("AUTH", rel, line_of(live, name(key)),
+                        f"AUTHENTICATION__{key} is not wired from its own input -- {why}")
 
-    # compose: the broch service maps each key from the same-named environment/.env entry.
+    # compose: the broch service maps each key from the same-named environment/.env entry. Only
+    # the broch service counts -- the same line under caddy would never reach broch.
     base = os.path.join(root, "docker-compose")
     for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
         rel = os.path.join("docker-compose", entry, "docker-compose.yml")
-        if os.path.isfile(os.path.join(root, rel)):
-            require(rel, (*AUTH_KEYS, "CLIENTSECRET"),
-                    lambda k: rf"^\s+AUTHENTICATION__{k}:\s*\$\{{AUTHENTICATION__{k}:-\}}\s*$")
+        if not os.path.isfile(os.path.join(root, rel)):
+            continue
+        live = live_lines(rel)
+        if live is None:
+            continue
+        services = next((i for i, line in enumerate(live) if re.fullmatch(r"services:\s*(?:#.*)?", line)), None)
+        start = next((i for i in range(services + 1, len(live)) if re.fullmatch(r"  broch:\s*(?:#.*)?", live[i])),
+                     None) if services is not None else None
+        if start is None or any(re.match(r"\S", live[i]) for i in range(services + 1, start)):
+            violate("AUTH", rel, 1, "no `broch:` service found under `services:`")
+            continue
+        end = next((i for i in range(start + 1, len(live)) if re.match(r"(?:  )?\S", live[i])), len(live))
+        broch = ["" if not start <= i < end else line for i, line in enumerate(live)]
+        require(rel, (*AUTH_KEYS, "CLIENTSECRET"),
+                lambda k: rf"^\s+AUTHENTICATION__{k}:\s*\$\{{AUTHENTICATION__{k}:-\}}\s*$", live=broch)
     # VM appliances write the keys into /opt/broch/.env: a Terraform templatefile var, a Bicep
     # __TOKEN__ replace, a CloudFormation ${Param}. A literal, or another key's input, would boot
     # but ignore what the customer entered. The client secret is hydrated from the platform
     # secret store at boot on azure-vm and aws-vm, so it is not in those templates as a value.
     do_var = lambda k: "admin_roles" if k == "ADMINROLES" else f"auth_{AUTH_INPUT[k]}"
+    # DigitalOcean single-quotes them, so docker compose takes the value literally (unquoted, it
+    # would trim it and interpolate any $VAR in it).
     require("terraform/digitalocean/cloud-init.yaml", (*AUTH_KEYS, "CLIENTSECRET"),
-            lambda k: rf"^\s+AUTHENTICATION__{k}=\$\{{{do_var(k)}\}}\s*$")
+            lambda k: rf"^\s+AUTHENTICATION__{k}='\$\{{{do_var(k)}\}}'\s*$")
     require("bicep/azure-vm/cloud-init.yaml", AUTH_KEYS,
-            lambda k: rf"^\s+AUTHENTICATION__{k}=__AUTH_{AUTH_INPUT[k].upper()}__\s*$")
+            lambda k: rf"^\s+AUTHENTICATION__{k}='__AUTH_{AUTH_INPUT[k].upper()}__'\s*$")
+    # ...and main.bicep fills each token from the key's own parameter. The audience and provider go
+    # through checkedAuthAudience / checkedAuthProvider, the fail() guards that refuse settings
+    # Broch would refuse at startup, at preflight.
+    vm_input = lambda k: {"AUDIENCE": "checkedAuthAudience", "PROVIDER": "checkedAuthProvider"}.get(k, f"auth{camel(k)}")
+    require("bicep/azure-vm/main.bicep", AUTH_KEYS,
+            lambda k: rf"^\s+\['__AUTH_{AUTH_INPUT[k].upper()}__',\s*{vm_input(k)}\]",
+            hint=lambda k: rf"__AUTH_{AUTH_INPUT[k].upper()}__")
     for rel in aws_templates(root):
-        require(rel, AUTH_KEYS, lambda k: rf"^\s+AUTHENTICATION__{k}=\$\{{Auth{camel(k)}\}}\s*$")
+        require(rel, AUTH_KEYS, lambda k: rf"^\s+AUTHENTICATION__{k}='\$\{{Auth{camel(k)}\}}'\s*$")
         require(rel, ("CLIENTSECRET",),
-                lambda k: rf"""AUTHENTICATION__{k}='%s'.*\$\(get "broch-auth-client-secret"\)""")
-    # Container targets set env vars as name/value (or name/secret) entries.
+                lambda k: rf"^\s*put AUTHENTICATION__{k} broch-auth-client-secret$")
+    # Terraform targets keep the plain settings in one local (local.broch_environment on the
+    # container targets, local.user_data on DigitalOcean): what the configuration contract check
+    # (scripts/config-contract.py) renders. These pin the resource to use exactly that local, whole
+    # and unfiltered, so what the check judges is what Broch gets. The client secret is a separate
+    # secret reference on the container targets.
+    rendered = ("is not set from the local the configuration contract check renders, so the check would "
+                "judge settings broch never gets")
     ecs = "terraform/aws-ecs/compute.tf"
-    require(ecs, AUTH_KEYS,
-            lambda k: rf'\{{\s*name\s*=\s*"AUTHENTICATION__{k}",\s*value\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*\}}')
+    require(ecs, AUTH_KEYS, lambda k: rf"^\s+AUTHENTICATION__{k}\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*$")
+    require_sequence(ecs, [r"^\s+environment\s*=\s*\[for\s+(\w+),\s*(\w+)\s+in\s+local\.broch_environment\s*:"
+                           r"\s*\{\s*name\s*=\s*\1,\s*value\s*=\s*\2\s*\}\s*\]\s*$"],
+                     f"the task's environment {rendered}", hint=r"^\s+environment\s*=")
     require_block(ecs, ("CLIENTSECRET",), lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
                   lambda k: r"^\s+valueFrom\s*=\s*aws_secretsmanager_secret\.auth_client_secret\.arn\s*$")
     aca_tf = "terraform/azure-container-apps/containerapp.tf"
-    require_block(aca_tf, AUTH_KEYS, lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
-                  lambda k: rf"^\s+value\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*$")
+    require(aca_tf, AUTH_KEYS, lambda k: rf"^\s+AUTHENTICATION__{k}\s*=\s*var\.auth_{AUTH_INPUT[k]}\s*$")
+    require_sequence(aca_tf, [r'^\s+dynamic\s+"env"\s*\{\s*$', r"^\s+for_each\s*=\s*local\.broch_environment\s*$",
+                              r"^\s+content\s*\{\s*$", r"^\s+name\s*=\s*env\.key\s*$",
+                              r"^\s+value\s*=\s*env\.value\s*$", r"^\s+\}\s*$", r"^\s+\}\s*$"],
+                     f"the container's env {rendered}")
+    do_tf = "terraform/digitalocean/main.tf"
+    require_sequence(do_tf, [r'^\s+user_data\s*=\s*templatefile\("\$\{path\.module\}/cloud-init\.yaml",\s*\{\s*$'],
+                     "local.user_data must be the cloud-init.yaml templatefile")
+    require_sequence(do_tf, [r"^\s+user_data\s*=\s*local\.user_data\s*$"], f"the droplet's user_data {rendered}",
+                     hint=r"^\s+user_data\s*=\s*(?!templatefile)")
     require_block(aca_tf, ("CLIENTSECRET",), lambda k: rf'^\s+name\s*=\s*"AUTHENTICATION__{k}"',
                   lambda k: r'^\s+secret_name\s*=\s*"auth-client-secret"\s*$')
     # Bicep values may be expressions (INSTANCE defaults to the cloud's login endpoint), so the
     # value line must reference the key's own parameter rather than equal it -- as an expression,
-    # not inside a '...' string literal (no quote may precede it on the line).
+    # not inside a '...' string literal (no quote may precede it on the line). The audience and
+    # provider go through the fail() guards, as on azure-vm.
     aca_bicep = "bicep/azure-container-apps/mainTemplate.bicep"
-    bicep_param = lambda k: "adminRoles" if k == "ADMINROLES" else f"auth{camel(k)}"
+    bicep_input = lambda k: {"AUDIENCE": "checkedAuthAudience", "PROVIDER": "checkedAuthProvider",
+                             "ADMINROLES": "adminRoles"}.get(k, f"auth{camel(k)}")
     require_block(aca_bicep, AUTH_KEYS, lambda k: rf"^\s+name:\s*'AUTHENTICATION__{k}'",
-                  lambda k: rf"^\s+value:[^'\n]*\b{bicep_param(k)}\b")
+                  lambda k: rf"^\s+value:[^'\n]*\b{bicep_input(k)}\b")
     require_block(aca_bicep, ("CLIENTSECRET",), lambda k: rf"^\s+name:\s*'AUTHENTICATION__{k}'",
                   lambda k: r"^\s+secretRef:\s*'auth-client-secret'\s*$")
+    # The guard itself: a params-only variable whose Auth0 branch fail()s. ARM evaluates it at
+    # preflight, so an Auth0 deployment without an audience never creates a resource.
+    for rel in ("bicep/azure-vm/main.bicep", aca_bicep):
+        live = live_lines(rel)
+        if live is None:
+            continue
+        guard = next((i for i, line in enumerate(live) if line.startswith("var checkedAuthAudience =")), None)
+        # The declaration runs to its else line (`: authAudience`); inline // comments dropped.
+        end = next((i for i in range(guard, len(live)) if re.match(r"\s*:", live[i])), None) \
+            if guard is not None else None
+        body = [re.sub(r"\s*//.*", "", line) for line in live[guard:end + 1]] if end is not None else []
+        # No negation is allowed: a `!` could invert the audience test (e.g.
+        # `!(empty(trim(authAudience)))`). ACA's configure-in-app gate is the `authConfigured` flag.
+        cond = " ".join(body[:-1])
+        if not (body and "!" not in cond and re.search(r"==\s*'auth0'", cond)
+                and re.search(r"\bempty\(trim\(authAudience\)\)", cond)
+                and re.search(r"\?\s*fail\(", cond) and re.fullmatch(r"\s*:\s*authAudience\s*", body[-1])):
+            violate("AUTH", rel, guard + 1 if guard is not None else 1,
+                    "checkedAuthAudience must fail() for Auth0 with a blank authAudience and otherwise yield "
+                    "authAudience -- else broch refuses to boot only after the resources exist")
+
+
+def rule_dnsrg(root: str) -> None:
+    """azure-vm: the Azure DNS zone's resource group reaches cloud-init only through its preflight guard."""
+    rel = "bicep/azure-vm/main.bicep"
+    live = uncommented_lines(root, rel)
+    if live is None:
+        return
+    why = "a blank resource group deploys a VM whose Caddy can't issue the certificate"
+    # cloud-init reads the resource group through the guard, which keeps the guard wired in.
+    if not any(re.search(r"^\s+\['__AZURE_DNS_RESOURCE_GROUP__',\s*checkedDnsZoneResourceGroup\]", line)
+               for line in live):
+        token = next((i + 1 for i, line in enumerate(live) if "__AZURE_DNS_RESOURCE_GROUP__" in line), 1)
+        violate("DNSRG", rel, token,
+                f"__AZURE_DNS_RESOURCE_GROUP__ is not filled from checkedDnsZoneResourceGroup -- the preflight "
+                f"guard is bypassed and {why}")
+    # The guard: a params-only variable that fail()s when an Azure DNS provider is selected with a blank
+    # resource group. ARM evaluates it at preflight, before any resource exists. The declaration runs to
+    # its else line (`: dnsZoneResourceGroup`); inline // comments dropped. No negation is allowed: a `!`
+    # could invert the blank test.
+    guard = next((i for i, line in enumerate(live) if line.startswith("var checkedDnsZoneResourceGroup =")), None)
+    end = next((i for i in range(guard, len(live)) if re.match(r"\s*:", live[i])), None) \
+        if guard is not None else None
+    body = [re.sub(r"\s*//.*", "", line) for line in live[guard:end + 1]] if end is not None else []
+    cond = " ".join(body[:-1])
+    if not (body and "!" not in cond and re.search(r"\busesAzureDns\b", cond)
+            and re.search(r"\bempty\(trim\(dnsZoneResourceGroup\)\)", cond)
+            and re.search(r"\?\s*fail\(", cond) and re.fullmatch(r"\s*:\s*dnsZoneResourceGroup\s*", body[-1])):
+        violate("DNSRG", rel, guard + 1 if guard is not None else 1,
+                "checkedDnsZoneResourceGroup must fail() when usesAzureDns and dnsZoneResourceGroup is blank, "
+                f"and otherwise yield dnsZoneResourceGroup -- else {why}")
+    # ...and usesAzureDns must select exactly the Auto-mode Azure DNS providers. Pinned whole (whitespace
+    # aside): a flipped comparison or a negation would otherwise slip past and silently skip the guard.
+    expected = ("var usesAzureDns = certMode == 'Auto' && "
+                "(dnsProvider == 'AzureDns' || dnsProvider == 'AzureDnsServicePrincipal')")
+    uses = next((i for i, line in enumerate(live) if line.startswith("var usesAzureDns =")), None)
+    if uses is None or " ".join(re.sub(r"\s*//.*", "", live[uses]).split()) != expected:
+        violate("DNSRG", rel, uses + 1 if uses is not None else 1,
+                f"usesAzureDns must read `{expected[len('var usesAzureDns = '):]}` -- else the "
+                f"checkedDnsZoneResourceGroup guard skips an Azure DNS provider, and {why}")
 
 
 BROCH_IMAGE = re.compile(r"ghcr\.io/broch-io/broch:([A-Za-z0-9._-]+)")
@@ -538,6 +673,91 @@ def rule_ami(root: str) -> None:
                         "replaces the instance (and rolls back in Local mode); pin a release serial")
 
 
+def rule_wire(root: str) -> None:
+    """Terraform targets: the only settings broch gets outside the local the configuration contract
+    check renders are the secret references, each wired from the generator the check judges."""
+    def code(rel):
+        """(line number, line) for the file's non-blank, non-comment lines."""
+        lines = read_lines(root, rel)
+        return None if lines is None else [
+            (i + 1, line) for i, line in enumerate(lines)
+            if line.strip() and not line.lstrip().startswith(("#", "//"))]
+
+    def sequence(rel, patterns, message):
+        lines = code(rel)
+        if lines is None:
+            return
+        n = len(patterns)
+        if not any(all(re.search(p, lines[s + j][1]) for j, p in enumerate(patterns))
+                   for s in range(len(lines) - n + 1)):
+            violate("WIRE", rel, 1, message)
+
+    outside = "a setting outside local.broch_environment is invisible to the configuration contract check"
+    # azure-container-apps: each static env block is one of these secret references.
+    aca = "terraform/azure-container-apps/containerapp.tf"
+    aca_secrets = {"BROCH_MASTER_KEY": "master-key", "ConnectionStrings__BrochConnection": "postgres-connection-string",
+                   "AUTHENTICATION__CLIENTSECRET": "auth-client-secret"}
+    lines = code(aca) or []
+    dynamic = [number for number, line in lines if re.search(r'\bdynamic\s+"env"', line)]
+    if len(dynamic) != 1:
+        violate("WIRE", aca, dynamic[1] if dynamic else 1, f'expected one dynamic "env" block (local.broch_environment): {outside}')
+    for k, (number, line) in enumerate(lines):
+        if re.fullmatch(r"\s+env\s*\{\s*", line):
+            name = re.fullmatch(r'\s+name\s*=\s*"(\w+)"\s*', lines[k + 1][1]) if k + 1 < len(lines) else None
+            secret = aca_secrets.get(name.group(1)) if name else None
+            if secret is None or k + 2 >= len(lines) or \
+                    not re.fullmatch(rf'\s+secret_name\s*=\s*"{secret}"\s*', lines[k + 2][1]):
+                violate("WIRE", aca, number, f"env block is not one of the secret references {sorted(aca_secrets)}: {outside}")
+    for name, secret in aca_secrets.items():
+        sequence(aca, [r"^\s+env\s*\{\s*$", rf'^\s+name\s*=\s*"{name}"\s*$', rf'^\s+secret_name\s*=\s*"{secret}"\s*$'],
+                 f"{name} is not set from the {secret} secret")
+    for secret, resource in (("master-key", "master_key"), ("postgres-connection-string", "postgres_connection_string")):
+        sequence(aca, [r"^\s+secret\s*\{\s*$", rf'^\s+name\s*=\s*"{secret}"\s*$',
+                       rf"^\s+key_vault_secret_id\s*=\s*azurerm_key_vault_secret\.{resource}\.id\s*$"],
+                 f"the {secret} secret is not azurerm_key_vault_secret.{resource}")
+    sequence("terraform/azure-container-apps/main.tf",
+             [r'^resource\s+"azurerm_key_vault_secret"\s+"master_key"\s*\{', r'^\s+name\s*=\s*"master-key"\s*$',
+              r"^\s+value\s*=\s*random_password\.master_key\.result\s*$"],
+             "the master-key secret is not random_password.master_key (the generator the contract check sizes)")
+    # aws-ecs: one environment list (the rendered local); each secret is one of these references.
+    ecs = "terraform/aws-ecs/compute.tf"
+    ecs_secrets = {"BROCH_MASTER_KEY": "master_key", "ConnectionStrings__BrochConnection": "connection_string",
+                   "AUTHENTICATION__CLIENTSECRET": "auth_client_secret"}
+    lines = code(ecs) or []
+    environments = [number for number, line in lines if re.search(r"\benvironment\s*=", line)]
+    if len(environments) != 1:
+        violate("WIRE", ecs, environments[1] if environments else 1, f"expected one task environment list: {outside}")
+    for number, line in lines:
+        if re.search(r"\benvironmentFiles\b", line):
+            violate("WIRE", ecs, number, f"environmentFiles: {outside}")
+    for k, (number, line) in enumerate(lines):
+        if not re.search(r"\bvalueFrom\b", line):
+            continue
+        # The secret's name: on the same line (a one-line object) or the line before (the usual layout).
+        # Anything else is flagged rather than assumed.
+        own = re.search(r'\bname\s*=\s*"(\w+)"', line)
+        prev = re.fullmatch(r'\s+name\s*=\s*"(\w+)"\s*', lines[k - 1][1]) if k else None
+        name = (own or prev).group(1) if own or prev else None
+        resource = ecs_secrets.get(name)
+        if resource is None or not re.search(rf"\bvalueFrom\s*=\s*aws_secretsmanager_secret\.{resource}\.arn\b", line):
+            violate("WIRE", ecs, number, f"secret {name or '(unnamed)'} is not one of the references {sorted(ecs_secrets)}: {outside}")
+    for name, resource in ecs_secrets.items():
+        sequence(ecs, [rf'^\s+name\s*=\s*"{name}"\s*$', rf"^\s+valueFrom\s*=\s*aws_secretsmanager_secret\.{resource}\.arn\s*$"],
+                 f"{name} is not set from aws_secretsmanager_secret.{resource}")
+    sequence("terraform/aws-ecs/database.tf",
+             [r'^resource\s+"aws_secretsmanager_secret_version"\s+"master_key"\s*\{',
+              r"^\s+secret_id\s*=\s*aws_secretsmanager_secret\.master_key\.id\s*$",
+              r"^\s+secret_string\s*=\s*random_password\.master_key\.result\s*$"],
+             "the master key secret is not random_password.master_key (the generator the contract check sizes)")
+    # digitalocean: the .env placeholder is replaced by the key the runcmd generates (the contract
+    # check sizes it from that openssl command).
+    sequence("terraform/digitalocean/cloud-init.yaml", [r"""^\s+MASTER_KEY=\$\(openssl rand -base64 \d+ \| tr -d '\\n'\)\s*$"""],
+             "the master key is not generated by the openssl line the contract check sizes")
+    sequence("terraform/digitalocean/cloud-init.yaml",
+             [r"""^\s+sed -i "s\|\^BROCH_MASTER_KEY=__GENERATED_AT_RUNTIME__\|BROCH_MASTER_KEY=\$\$\{MASTER_KEY\}\|" /opt/broch/\.env\s*$"""],
+             "the .env BROCH_MASTER_KEY placeholder is not replaced by the generated key")
+
+
 def main() -> int:
     """Run every rule against --root and report violations (exit 1 on any)."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -554,6 +774,8 @@ def main() -> int:
     rule_email(root)
     rule_meta(root)
     rule_auth(root)
+    rule_dnsrg(root)
+    rule_wire(root)
     rule_pin(root)
     rule_zone(root)
     rule_ami(root)

@@ -69,7 +69,7 @@ Metadata:
       TlsCertificate: { default: "HTTPS certificate chain (base64)" }
       TlsCertificateKey: { default: "HTTPS private key (base64)" }
       DatabaseMode: { default: "Where should PostgreSQL run?" }
-      DbSubnetIds: { default: "Two RDS subnets in different Availability Zones" }
+      DbSubnetIds: { default: "RDS subnets in two or more Availability Zones" }
       DbInstanceClass: { default: "RDS instance size" }
       DbAllocatedStorage: { default: "RDS storage (GB)" }
       DatabaseConnectionString: { default: "Existing database connection string" }
@@ -115,6 +115,8 @@ Parameters:
       Required. Generate once with openssl rand -base64 48 and save the value securely.
       Reuse the same key whenever you redeploy with an existing Broch database; a new key
       cannot decrypt its data. This stack stores the key in Secrets Manager in your AWS account.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
 
   # ── Domain & TLS ────────────────────────────────────────────────────────────
   # The public hostname is COMPOSED from DnsZone + ShareSubdomain (Broch serves
@@ -182,12 +184,10 @@ Parameters:
     # otherwise unused -- the shared compose file refuses to start while it is blank. So a blank
     # value must fail stack creation here, not boot an unreachable instance. Do not scope this to
     # Auto with a Rules entry.
-    # These free-text values are templated into cloud-init via Fn::Sub, where a literal
-    # "${...}" would be misread as a CFn variable and fail the deploy. Forbid "$" outright
-    # (it's never valid in an email / OIDC identifier). Secret fields no longer go through
-    # Fn::Sub (they're fetched from Secrets Manager at boot), so they don't carry this guard.
-    AllowedPattern: '^[^$\s@]+@[^$\s@]+\.[^$\s@]+$'
-    ConstraintDescription: must be an email address (name@example.com) with no '$' character.
+    # Written single-quoted to /opt/broch/.env, so a single quote or a backslash is refused (Fn::Sub
+    # never re-reads a substituted value, so "$" itself would be harmless; it isn't valid here anyway).
+    AllowedPattern: "^[^$\\s@'\\\\]+@[^$\\s@'\\\\]+\\.[^$\\s@'\\\\]+$"
+    ConstraintDescription: must be an email address (name@example.com) with no '$', single quote or backslash.
   DnsProvider:
     Type: String
     AllowedValues: [Route53, Cloudflare, GoogleCloudDns, DigitalOcean]
@@ -203,17 +203,21 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: Only when DNS provider is Cloudflare. Create a token with Zone Read and DNS Edit access to your zone.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   DoAuthToken:
     Type: String
     NoEcho: true
     Default: ""
     Description: Only when DNS provider is DigitalOcean. Enter an API token that can edit DNS records for your domain.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   GcpProject:
     Type: String
     Default: ""
     Description: Only when DNS provider is Google Cloud DNS. Enter the project ID that contains your managed zone.
-    AllowedPattern: "^[^$]*$"
-    ConstraintDescription: must not contain a '$' character.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   GcpCredentialsJson:
     Type: String
     NoEcho: true
@@ -285,11 +289,22 @@ Parameters:
       Only for ExistingDatabase mode. Enter a complete Npgsql connection string
       for a ready Broch database. Use SSL Mode=VerifyFull to check the server
       certificate and hostname. For RDS or Aurora, add the bundled RDS CA at
-      /etc/broch/db-ca/rds-global-bundle.pem as Root Certificate. See the README for examples.
+      /etc/broch/db-ca/rds-global-bundle.pem as Root Certificate. No single quote anywhere in it:
+      quote a password with double quotes (Password="a;b"). See the README for examples.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   DbInstanceClass:
     Type: String
     Default: db.t4g.micro
-    Description: Only for NewServer mode. Choose the size of the new RDS PostgreSQL instance.
+    # A pattern, not a list: any RDS PostgreSQL class that supports gp3 works, and a closed list
+    # would fail the next update of a stack running on a class outside it.
+    AllowedPattern: "^db\\.[a-z0-9]+\\.[a-z0-9]+$"
+    ConstraintDescription: must be an RDS instance class, such as db.t4g.micro.
+    Description: >-
+      Only for NewServer mode. Enter the size of the new RDS PostgreSQL instance, such as
+      db.t4g.micro (the default), db.t4g.small, db.t4g.medium, db.t3.micro, db.t3.small or
+      db.m7g.large. If stack creation fails because RDS has no capacity for this size, delete the
+      failed stack and choose another size (or add subnets in more Availability Zones).
   DbAllocatedStorage:
     Type: Number
     Default: 20
@@ -303,16 +318,17 @@ Parameters:
     # CommaDelimitedList accepts an empty default and is only dereferenced under IsNewServer.
     Type: CommaDelimitedList
     Default: ""
-    Description: Required only for NewServer mode. Enter at least two subnet IDs in different Availability Zones, separated by commas. Choose subnets in the same VPC as the EC2 instance. Leave blank for other database modes.
+    Description: Required only for NewServer mode. Enter at least two subnet IDs in different Availability Zones, separated by commas (three or more Availability Zones make an RDS capacity shortage less likely). Choose subnets in the same VPC as the EC2 instance. Leave blank for other database modes.
   # ExistingServer mode: connect to a Postgres server you already run and carve a brochdb +
   # least-priv broch role onto it (at boot, via the admin creds below). Host/username are
-  # Fn::Sub'd into cloud-init, hence the "no $" guard; the admin password is a secret.
+  # Fn::Sub'd into render-secrets.sh's shell commands (double-quoted, so no "$"), and the host also
+  # into the single-quoted .env connection string, so it is a hostname; the admin password is a secret.
   DbServerHost:
     Type: String
     Default: ""
     Description: Only for ExistingServer mode. Enter the PostgreSQL server endpoint, such as mydb.abc123.us-east-1.rds.amazonaws.com. Use the hostname on its TLS certificate.
-    AllowedPattern: "^[^$]*$"
-    ConstraintDescription: must not contain a '$' character.
+    AllowedPattern: "^$|^[A-Za-z0-9.:-]+$"
+    ConstraintDescription: must be a hostname or IP address.
   DbServerPort:
     Type: Number
     Default: 5432
@@ -351,37 +367,43 @@ Parameters:
       verified mode works. See the template README for details.
 
   # ── Identity provider (boot floor) ──────────────────────────────────────────
-  # All the non-secret auth fields below carry the same "no $" guard AcmeEmail's pattern includes
-  # (templated into cloud-init via Fn::Sub). AuthClientSecret is exempt — it's a
-  # secret, fetched from Secrets Manager at boot, never substituted by Fn::Sub.
+  # The free-text auth fields below are templated into /opt/broch/.env via Fn::Sub, single-quoted,
+  # so docker compose takes them literally; their AllowedPattern refuses only what single quotes
+  # can't carry (a quote, a line break, a trailing backslash). AuthClientSecret is fetched from
+  # Secrets Manager at boot and written single-quoted too, so it carries the same pattern.
   AuthProvider:
     Type: String
     Default: ""
     Description: Published launch links fix this value. If you built your own template, choose the provider configured for your app. Broch has no local login.
+    # Exact spellings: the per-provider Rules below compare case-sensitively while Broch binds the
+    # provider case-insensitively, so "auth0" would boot as Auth0 having skipped the Auth0 Rules.
+    AllowedValues: ["", AzureAd, EntraExternalId, Auth0, Okta, Oidc]
     AllowedPattern: "^[^$]*$"
     ConstraintDescription: must not contain a '$' character.
   AuthClientId:
     Type: String
     Default: ""
     Description: Required. Copy the application or client ID from the identity provider app you created for Broch.
-    AllowedPattern: "^[^$]*$"
-    ConstraintDescription: must not contain a '$' character.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   AuthClientSecret:
     Type: String
     NoEcho: true
     Default: ""
     Description: Required. Create a confidential client in your identity provider and enter its client secret. Broch needs it for server-side sign-in. The stack stores it in your AWS Secrets Manager.
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
   AuthAdminRoles:
     Type: String
     Default: broch_admin
     Description: Comma-separated identity provider role names that can administer Broch. Default is broch_admin; assign that role to your first administrator.
-    AllowedPattern: "^[^$]*$"
-    ConstraintDescription: must not contain a '$' character.
-  AuthDomain: { Type: String, Default: "", Description: "Required for Auth0 or Okta. Enter your tenant domain, such as tenant.auth0.com; omit https://.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthTenantId: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Copy the Directory (tenant) ID from your app registration.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthInstance: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Usually https://login.microsoftonline.com/.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthAuthority: { Type: String, Default: "", Description: "Required for OpenID Connect. Enter the full HTTPS issuer URL published by your provider.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
-  AuthAudience: { Type: String, Default: "", Description: "Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to (Applications > APIs). Ignored by other providers.", AllowedPattern: "^[^$]*$", ConstraintDescription: must not contain a '$' character. }
+    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
+    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
+  AuthDomain: { Type: String, Default: "", Description: "Required for Auth0 or Okta. Enter your tenant domain, such as tenant.auth0.com; omit https://.", AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$", ConstraintDescription: "must not contain a single quote or a line break, or end with a backslash." }
+  AuthTenantId: { Type: String, Default: "", Description: "Required for Microsoft Entra ID. Copy the Directory (tenant) ID from your app registration.", AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$", ConstraintDescription: "must not contain a single quote or a line break, or end with a backslash." }
+  AuthInstance: { Type: String, Default: "", Description: "Required for Microsoft Entra ID: https://login.microsoftonline.com/ for AzureAd, https://<tenant>.ciamlogin.com/ for EntraExternalId.", AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$", ConstraintDescription: "must not contain a single quote or a line break, or end with a backslash." }
+  AuthAuthority: { Type: String, Default: "", Description: "Required for OpenID Connect. Enter the full HTTPS issuer URL published by your provider.", AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$", ConstraintDescription: "must not contain a single quote or a line break, or end with a backslash." }
+  AuthAudience: { Type: String, Default: "", Description: "Required for Auth0: the Identifier of the Auth0 API your Broch application has user access to (Applications > APIs). Ignored by other providers.", MaxLength: 500, AllowedPattern: "^[^'\\s\\\\]*$", ConstraintDescription: "must not contain whitespace, a single quote or a backslash, and must be at most 500 characters." }
 
   # ── Compute & network ───────────────────────────────────────────────────────
   VpcId:
@@ -438,7 +460,7 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.34.0"
+    Default: "1.35.0"
     # A Docker tag: spliced into a sed replacement in set-version.sh, so no | or spaces.
     AllowedPattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
     ConstraintDescription: must be a Docker image tag (letters, digits, _ . -), e.g. 1.31.0 or latest.
@@ -508,6 +530,8 @@ Conditions:
 Rules:
   AuthRequiresClientCredentials:
     Assertions:
+      - Assert: !Not [!Equals [!Ref AuthProvider, ""]]
+        AssertDescription: AuthProvider is required - Broch has no local login.
       - Assert: !Not [!Equals [!Ref AuthClientId, ""]]
         AssertDescription: AuthClientId is required for every identity provider.
       - Assert: !Not [!Equals [!Ref AuthClientSecret, ""]]
@@ -526,7 +550,7 @@ Rules:
     RuleCondition: !Equals [!Ref AuthProvider, Auth0]
     Assertions:
       - Assert: !Not [!Equals [!Ref AuthAudience, ""]]
-        AssertDescription: AuthAudience is required for Auth0 - the Identifier of the Auth0 API your Broch application has user access to. Without it Auth0 refuses sign-in or issues no roles.
+        AssertDescription: AuthAudience is required for Auth0 - the Identifier of the Auth0 API your Broch application has user access to. Broch refuses to start as Auth0 without it.
   AuthOidcRequiresAuthority:
     RuleCondition: !Equals [!Ref AuthProvider, Oidc]
     Assertions:
@@ -662,7 +686,7 @@ Resources:
   # On-box Postgres password (DatabaseMode=Local). Generated (stable within the stack) unless the
   # operator supplied LocalDbAdminPassword. render-secrets.sh reads it at boot and writes it as
   # POSTGRES_PASSWORD in .env; the with-postgres compose feeds it to both the postgres service and
-  # broch's connection string. ExcludePunctuation so it is safe unquoted through the compose/.env.
+  # broch's connection string. ExcludePunctuation so it is safe inside that connection string.
   #
   # UpdateReplacePolicy Retain: Name is immutable, so a template-version upgrade that renames this
   # secret REPLACES it — and a replaced GenerateSecretString secret mints a brand-new value, while
@@ -721,9 +745,10 @@ Resources:
   # into UserData via Fn::Sub is still recoverable by anyone with
   # ec2:DescribeInstanceAttribute or anything that can reach the IMDS user-data
   # endpoint. So each provided secret is stashed here and fetched at boot by the
-  # instance role (render-secrets.sh). SecretString is the RAW parameter value —
-  # no JSON wrapper — so a value containing quotes/backslashes/newlines can't
-  # corrupt anything (and isn't re-scanned by Fn::Sub for ${...} either).
+  # instance role (render-secrets.sh). SecretString is the RAW parameter value (no JSON
+  # wrapper, never re-scanned by Fn::Sub). render-secrets.sh writes each one single-quoted to
+  # .env, so the parameters' AllowedPattern refuses a single quote, a line break or a trailing
+  # backslash, and the script itself refuses one edited into the secret later.
   CloudflareTokenSecret:
     Type: AWS::SecretsManager::Secret
     Condition: HasCloudflareToken
@@ -873,6 +898,12 @@ Resources:
       DBSubnetGroupDescription: !Sub "${AWS::StackName} Broch RDS"
       SubnetIds: !Ref DbSubnetIds
 
+  # Accepted trivy findings (the ignore lines must sit directly above the resource):
+  #   AWS-0176 Broch authenticates with the password from Secrets Manager; IAM auth is not used.
+  #   AWS-0177 DeletionPolicy and UpdateReplacePolicy Snapshot keep the data if the stack
+  #            deletes or replaces the database.
+  # trivy:ignore:AWS-0176
+  # trivy:ignore:AWS-0177
   BrochDB:
     Type: AWS::RDS::DBInstance
     Condition: IsNewServer
@@ -1190,6 +1221,8 @@ Resources:
       ResourceRecords: [!If [CreateElasticIp, !Ref ElasticIp, !Ref ElasticIpAddress]]
 
   # ── The instance ────────────────────────────────────────────────────────────
+  # False positive: MetadataOptions below requires IMDSv2 (HttpTokens: required); trivy doesn't read it here.
+  # trivy:ignore:AWS-0028
   Instance:
     Type: AWS::EC2::Instance
     # cfn-init writes the large boot assets (compose + the CertMode-selected Caddyfile +
@@ -1537,15 +1570,25 @@ Resources:
                     # secret Names use, so the fetch prefix can never drift from the created names.
                     get() { aws --region "${AWS::Region}" secretsmanager get-secret-value --secret-id "${AWS::StackName}-${StackSalt}/$1" --query SecretString --output text; }
 
-                    # Values are written single-quoted: docker compose's dotenv parser treats a
-                    # single-quoted value as a literal, so a '#', space, ';' or '$' inside a
-                    # secret (e.g. a connection-string password) is preserved verbatim instead
-                    # of being read as an inline comment / interpolation.
-                    printf "BROCH_MASTER_KEY='%s'\n" "$(get "broch-master-key")" >> "$env_file"
-
                     # fatal: log the reason AND record it in /opt/broch/boot-fatal, which the runcmd health
                     # wait checks so the stack signals FAILURE at once instead of timing out ~10 minutes later.
                     fatal() { echo "FATAL: $*" >&2; printf '%s\n' "$*" >> /opt/broch/boot-fatal; exit 1; }
+
+                    # put KEY SECRET: append a secret to .env single-quoted, which docker compose takes literally
+                    # (a '#', space, ';' or '$' in a password survives). A single quote, a line break or a trailing
+                    # backslash can't be written that way: the parameters refuse them, and this refuses one edited
+                    # into the secret afterwards rather than write a broken .env. The fetch keeps a trailing
+                    # newline ($(...) would strip it, and a secret edited to end in one would be written
+                    # truncated): the CLI's text output ends in exactly one, so any more is the secret's.
+                    put() {
+                      raw="$(get "$2" && printf x)" || fatal "could not read secret $2"
+                      [ "$(printf '%s' "$raw" | wc -l)" -eq 1 ] || fatal "secret $2 contains a line break, which /opt/broch/.env can't carry"
+                      v="$(printf '%s' "$raw" | head -n 1)"
+                      case "$v" in *"'"*|*\\|*"$(printf '\r')"*) fatal "secret $2 contains a single quote or a carriage return, or ends with a backslash, which /opt/broch/.env can't carry" ;; esac
+                      printf "%s='%s'\n" "$1" "$v" >> "$env_file"
+                    }
+
+                    put BROCH_MASTER_KEY broch-master-key
 
                     # Database TLS: VerifyFull = encrypted AND the server authenticated (certificate chains
                     # to the Amazon RDS CA bundle cfn-init wrote, and its name matches Host). Require would
@@ -1570,7 +1613,7 @@ Resources:
                         printf "BROCH_DB_CONNECTION_STRING='Host=${DbEndpoint};Port=5432;Database=brochdb;Username=broch;Password=%s;SSL Mode=VerifyFull;Root Certificate=%s'\n" "$db_pass" "$ctr_ca" >> "$env_file"
                         ;;
                       ExistingDatabase)
-                        printf "BROCH_DB_CONNECTION_STRING='%s'\n" "$(get "broch-conn-string")" >> "$env_file"
+                        put BROCH_DB_CONNECTION_STRING broch-conn-string
                         ;;
                       ExistingServer)
                         # Carve a brochdb + least-priv broch role onto the customer's existing server,
@@ -1629,15 +1672,15 @@ Resources:
                         # (Host=postgres) from POSTGRES_PASSWORD, so we write only that here -- no
                         # BROCH_DB_CONNECTION_STRING. The compose defaults POSTGRES_DB=brochdb and
                         # POSTGRES_USER=broch. Postgres keeps this password from first data-dir init.
-                        printf "POSTGRES_PASSWORD='%s'\n" "$(get "broch-local-db-password")" >> "$env_file"
+                        put POSTGRES_PASSWORD broch-local-db-password
                         ;;
                     esac
 
                     if [ "${HasCfToken}" = "true" ]; then
-                      printf "CLOUDFLARE_API_TOKEN='%s'\n" "$(get "broch-cloudflare-token")" >> "$env_file"
+                      put CLOUDFLARE_API_TOKEN broch-cloudflare-token
                     fi
                     if [ "${HasAuthSecret}" = "true" ]; then
-                      printf "AUTHENTICATION__CLIENTSECRET='%s'\n" "$(get "broch-auth-client-secret")" >> "$env_file"
+                      put AUTHENTICATION__CLIENTSECRET broch-auth-client-secret
                     fi
                     if [ "${IsByo}" = "true" ]; then
                       # base64 PEM -> files. The Byo Caddyfile reads these; the private key is 0600.
@@ -1647,7 +1690,7 @@ Resources:
                       chmod 0600 /opt/broch/certs/privkey.pem
                     fi
                     if [ "${DoTokenSet}" = "true" ]; then
-                      printf "DO_AUTH_TOKEN='%s'\n" "$(get "broch-do-token")" >> "$env_file"
+                      put DO_AUTH_TOKEN broch-do-token
                     fi
                     if [ "${GcpCredsSet}" = "true" ]; then
                       # SA JSON read by Caddy via GOOGLE_APPLICATION_CREDENTIALS (set in .env).
@@ -1733,26 +1776,27 @@ Resources:
                 - path: /opt/broch/.env
                   permissions: "0600"
                   content: |
+                    # Single-quoted: compose takes these literally (AllowedPattern refuses what can't be).
                     # BROCH_VERSION is added by /opt/broch/set-version.sh (cfn-init metadata), so a
                     # BrochVersion change is a metadata-only stack update applied in place by cfn-hup.
                     BROCH_IMAGE=${BrochImage}
-                    BROCH_WILDCARD_HOSTNAME=${WildcardHostname}
+                    BROCH_WILDCARD_HOSTNAME='${WildcardHostname}'
                     # Seed for broch's public-IP setting (compose maps it to API__PUBLICIP): this stack's
                     # Elastic IP, known here, so broch serves it to caddy-dynamicdns for the apex+wildcard
                     # A records (auto-DNS points at the IP we KNOW, not one caddy discovers), and an admin
                     # can override it at runtime in broch. Non-secret (it's published in DNS anyway).
-                    BROCH_PUBLIC_IP=${PublicIpAddr}
-                    CADDY_ACME_EMAIL=${AcmeEmail}
-                    GCP_PROJECT=${GcpProject}
-                    GOOGLE_APPLICATION_CREDENTIALS=${GcpCredsPath}
-                    AUTHENTICATION__PROVIDER=${AuthProvider}
-                    AUTHENTICATION__CLIENTID=${AuthClientId}
-                    AUTHENTICATION__ADMINROLES=${AuthAdminRoles}
-                    AUTHENTICATION__DOMAIN=${AuthDomain}
-                    AUTHENTICATION__TENANTID=${AuthTenantId}
-                    AUTHENTICATION__INSTANCE=${AuthInstance}
-                    AUTHENTICATION__AUTHORITY=${AuthAuthority}
-                    AUTHENTICATION__AUDIENCE=${AuthAudience}
+                    BROCH_PUBLIC_IP='${PublicIpAddr}'
+                    CADDY_ACME_EMAIL='${AcmeEmail}'
+                    GCP_PROJECT='${GcpProject}'
+                    GOOGLE_APPLICATION_CREDENTIALS='${GcpCredsPath}'
+                    AUTHENTICATION__PROVIDER='${AuthProvider}'
+                    AUTHENTICATION__CLIENTID='${AuthClientId}'
+                    AUTHENTICATION__ADMINROLES='${AuthAdminRoles}'
+                    AUTHENTICATION__DOMAIN='${AuthDomain}'
+                    AUTHENTICATION__TENANTID='${AuthTenantId}'
+                    AUTHENTICATION__INSTANCE='${AuthInstance}'
+                    AUTHENTICATION__AUTHORITY='${AuthAuthority}'
+                    AUTHENTICATION__AUDIENCE='${AuthAudience}'
                 - path: /etc/systemd/system/broch.service
                   permissions: "0644"
                   content: |

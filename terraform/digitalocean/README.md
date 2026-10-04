@@ -30,7 +30,7 @@ internet  ─── HTTPS:443  ─────▶     │ DigitalOcean Droplet  
                                     Reserved IP (stable DNS target)
 ```
 
-The Droplet is firewalled: only SSH (22) and HTTPS (443) inbound from the public internet. Caddy redirects HTTP→HTTPS internally.
+The Droplet is firewalled: only HTTPS (443) inbound from the public internet. SSH (22) is closed unless you set `ssh_allowed_cidrs` (empty by default). Port 80 is closed too, so there is no HTTP→HTTPS redirect: use `https://` URLs (an `http://` request times out).
 
 The smallest footprint of the three Terraform modules. Tradeoff is the obvious one: single VM, no managed services, no failover.
 
@@ -38,10 +38,10 @@ The smallest footprint of the three Terraform modules. Tradeoff is the obvious o
 
 - Terraform 1.6+ and the [DigitalOcean provider](https://registry.terraform.io/providers/digitalocean/digitalocean/latest/docs) (auto-installed by `terraform init`)
 - A DigitalOcean account with an [API token](https://cloud.digitalocean.com/account/api/tokens)
-- An SSH key [registered in DigitalOcean](https://cloud.digitalocean.com/account/security) — note the fingerprint
+- An SSH key [registered in DigitalOcean](https://cloud.digitalocean.com/account/security) — note the fingerprint (`ssh_key_fingerprint` is required even though SSH starts closed)
 - A registered domain on a [Caddy-compatible DNS provider](https://github.com/caddy-dns) — DigitalOcean, Cloudflare (default), and GoDaddy are supported here (single-token DNS-01); DigitalOcean is the natural pick if your DNS zone is on DigitalOcean too. Route 53 needs an AWS key pair rather than a single token, so use the [aws-vm](../../cloudformation/aws-vm/) or [azure-vm](../../bicep/azure-vm/) appliance for a Route 53 domain
 - A DNS provider API token with permission to edit the zone hosting your wildcard hostname
-- An identity provider app registration (Azure Entra ID, Auth0, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot
+- An identity provider app registration (Azure Entra ID, Auth0, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/). Auth0 also needs an **API** (its Identifier is `auth_audience`), with the Broch application authorized for **User Access** on the API's **Application Access** tab — an API that requires that grant rejects every sign-in without it
 - A Broch license — activated in-app after first sign-in (Admin → License)
 
 ## Setup
@@ -57,11 +57,15 @@ terraform apply
 
 # 3. After apply, point DNS at the reserved IP
 echo "Reserved IP: $(terraform output -raw droplet_ip)"
-# Add an A record: *.broch.example.com → <reserved IP>
+# Add two A records (a wildcard doesn't cover the bare name):
+#   broch.example.com    → <reserved IP>
+#   *.broch.example.com  → <reserved IP>
 
 # 4. Wait for Caddy to issue certs (~30-60s after DNS propagates), then verify
 curl -fsS "$(terraform output -raw broch_url)/healthz"
 ```
+
+`terraform plan` refuses sign-in settings Broch would refuse at startup: an unknown `auth_provider`, a missing client ID or secret, or a value your provider needs (Auth0 and Okta need `auth_domain`, AzureAd and EntraExternalId need `auth_instance` and `auth_tenant_id`, each unless you set `auth_authority` instead; Oidc needs `auth_authority`; Auth0 also needs `auth_audience`). On this module `auth_instance` defaults to `https://login.microsoftonline.com/` for AzureAd only; EntraExternalId needs its tenant's `https://<tenant>.ciamlogin.com/`.
 
 ## State storage
 
@@ -99,11 +103,13 @@ This **recreates the Droplet** (cloud-init re-runs with the new image tag). Post
 
 Expect ~3-4 min of downtime.
 
-> **Upgrading a volume created by an older module version** (one that took `postgres_password` as a Terraform variable): before recreating the droplet, SSH in and write that password to the block volume so the new droplet can open the existing database — `printf '%s' '<your-postgres-password>' > /mnt/broch-data/postgres-password && chmod 0600 /mnt/broch-data/postgres-password`. Boot **fails loudly** (see `/var/log/cloud-init-output.log`) if an initialised database is found without this file, rather than minting a fresh password that cannot open it. The master key needs no action: older versions rolled it on every recreate anyway (users re-authenticate and the license re-activates once), and from this version on it persists across recreates.
+> **Upgrading from a module version that used a separate reserved-IP assignment resource:** the first apply on this version moves the reserved IP's assignment onto the reserved IP itself. The IP address stays the same, so DNS needs no change, but it is unassigned and then reassigned to the new Droplet, so the HTTPS endpoint is unreachable for that part of the apply (within the downtime above).
 
-For zero-downtime upgrades, move to the AWS or Azure Terraform modules — both use rolling deploys via their respective container schedulers.
+> **Upgrading a volume created by an older module version** (one that took `postgres_password` as a Terraform variable): before recreating the droplet, SSH in and write that password to the block volume so the new droplet can open the existing database — `printf '%s' '<your-postgres-password>' > /mnt/broch-data/postgres-password && chmod 0600 /mnt/broch-data/postgres-password`. If SSH is closed, open it by hand first: add a port-22 rule for your IP to the Droplet's firewall in the control panel (Networking → Firewalls) or with `doctl compute firewall add-rules <firewall-id> --inbound-rules "protocol:tcp,ports:22,address:<your-ip>/32"` (`doctl compute firewall list --format ID,Name` shows the ID). Don't open it with `terraform apply` from the newer checkout: that also changes the Droplet's user_data, so it recreates the Droplet before you get in, and `-target` on the firewall doesn't avoid that (it pulls in the Droplet the firewall attaches to). The next full apply sets the firewall back to `ssh_allowed_cidrs`. Boot **fails loudly** (see `/var/log/cloud-init-output.log`) if an initialised database is found without this file, rather than minting a fresh password that cannot open it. The master key needs no action: older versions rolled it on every recreate anyway (users re-authenticate and the license re-activates once), and from this version on it persists across recreates.
 
 ## SSH access
+
+SSH is closed by default. To open it, set `ssh_allowed_cidrs = ["<your-ip>/32"]` in `terraform.tfvars` and run `terraform apply`; on the checkout you deployed from, only the firewall changes.
 
 ```sh
 $(terraform output -raw ssh_command)
@@ -112,9 +118,11 @@ $(terraform output -raw ssh_command)
 
 The Droplet runs Docker Compose at `/opt/broch/`. `docker compose ps` shows the running services; `docker compose logs broch-server` tails server output.
 
-> With the default `ssh_allowed_cidrs` (open to the internet), automated scanners constantly probe port 22 and can trip sshd's `MaxStartups` throttle — a legit `ssh` then fails with `kex_exchange_identification: Connection closed`. Retry, or set `ssh_allowed_cidrs` to your own CIDR to stop the noise.
+> If `ssh_allowed_cidrs` opens port 22 to a wide range (such as `0.0.0.0/0`), automated scanners constantly probe it and can trip sshd's `MaxStartups` throttle — a legit `ssh` then fails with `kex_exchange_identification: Connection closed`. Retry, or narrow `ssh_allowed_cidrs` to your own CIDR to stop the noise.
 
 ## Backup
+
+These commands use SSH, so open it first (see [SSH access](#ssh-access)).
 
 ```sh
 # Snapshot the Postgres DB to your local machine
@@ -122,9 +130,13 @@ ssh root@$(terraform output -raw droplet_ip) \
   "cd /opt/broch && docker compose exec -T postgres pg_dump -U broch brochdb" \
   > broch-$(date +%Y%m%d).sql
 
-# Restore
-cat broch-20260525.sql | ssh root@$(terraform output -raw droplet_ip) \
-  "cd /opt/broch && docker compose exec -T postgres psql -U broch brochdb"
+# Restore: stop broch, recreate the database, load the dump, then start broch only if the load succeeded
+BACKUP=broch-YYYYMMDD.sql   # the dump file you are restoring
+test -s "$BACKUP" && ssh root@$(terraform output -raw droplet_ip) \
+  "cd /opt/broch && docker compose stop broch-server && docker compose exec -T postgres dropdb -U broch brochdb && docker compose exec -T postgres createdb -U broch -O broch brochdb"
+ssh root@$(terraform output -raw droplet_ip) \
+  "cd /opt/broch && docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U broch -d brochdb" < "$BACKUP" \
+  && ssh root@$(terraform output -raw droplet_ip) "cd /opt/broch && docker compose up -d"
 ```
 
 Block storage volume snapshots via the DigitalOcean console are also fine and cover everything.
@@ -133,11 +145,11 @@ Block storage volume snapshots via the DigitalOcean console are also fine and co
 
 | Decision                       | Why                                                                                | When to change                                              |
 | ------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Single Droplet                 | Cheapest cloud Broch                                                               | When you need HA or scale beyond a single VM                |
-| Embedded Postgres              | One less service to operate                                                        | When you need encryption-at-rest, PITR, or multi-replica    |
+| Single Droplet                 | Cheapest cloud Broch; Broch runs as one instance and doesn't cluster               | Scale up with `droplet_size`                                |
+| Embedded Postgres              | One less service to operate                                                        | When you need PITR                                          |
 | `s-1vcpu-1gb` default          | $6/mo baseline for evaluation; a 2 GB swapfile is added so the one-time Caddy build fits | More users, more tunnels, more idle headroom           |
-| Single AZ                      | DO Droplets are AZ-bound; HA needs a load balancer + multi-droplet setup           | When you need cross-AZ failover                             |
-| SSH closed by default          | Default `ssh_allowed_cidrs = []` adds no port-22 rule (use the DO console / a bastion) | Set `ssh_allowed_cidrs` to your bastion / VPN CIDRs for break-glass SSH    |
+| Single AZ                      | Droplets are AZ-bound and Broch runs as one instance, so there is no failover      | Keep it; recover from a volume snapshot ([Backup](#backup)) |
+| SSH closed by default          | Default `ssh_allowed_cidrs = []` adds no port-22 rule, so SSH and the Droplet Console can't connect (the Recovery Console can) | Set `ssh_allowed_cidrs` to your bastion / VPN CIDRs for break-glass SSH    |
 | No automated DB backups        | You configure your own via cron + DO Spaces or external storage                    | The minute the data matters                                 |
 | Reserved IP without IPv6       | DO reserved IPs are v4-only                                                        | If you need v6, attach a floating v6 to the Droplet itself  |
 
@@ -158,8 +170,9 @@ This module is **not** yet at the azure-vm secret-handling baseline. Two classes
 
 ## Teardown
 
+The block storage volume that holds Postgres carries `prevent_destroy`, so a destroy (or any change that would replace the volume, such as a new `region`) stops at plan until you delete that line from `main.tf`. If you want to keep the data, take a snapshot or export the database first:
+
 ```sh
+$EDITOR main.tf                # delete `prevent_destroy = true` on digitalocean_volume.broch_data
 terraform destroy
 ```
-
-The block storage volume is destroyed along with the rest — if you want to keep the Postgres data, take a snapshot or export the database before running destroy.

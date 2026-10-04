@@ -1,9 +1,5 @@
-# Azure Database for PostgreSQL Flexible Server.
-#
-# Public-access mode with the Container Apps environment's outbound IP
-# whitelisted is simpler than the VNet-integration path, especially for a
-# starting example. For a private setup, add `delegated_subnet_id` +
-# `private_dns_zone_id` and remove the firewall rule.
+# Azure Database for PostgreSQL Flexible Server, private: injected into the delegated subnet in
+# network.tf with no public endpoint, so only the Container App (in the same VNet) can reach it.
 
 resource "random_password" "postgres" {
   length  = 32
@@ -19,11 +15,20 @@ resource "random_password" "master_key" {
   special = false
 }
 
+# Accepted trivy findings (the ignore lines must sit directly above the resource):
+#   AZU-0026 TLS: Flexible Server enforces TLS 1.2+ by default and Broch connects with
+#            SSL Mode=VerifyFull; trivy's Flexible Server check doesn't read those settings.
+#   AZU-0019 / AZU-0024 logging: left at Flexible Server defaults; tune them per install.
+#   AZU-0021 connection_throttling exists only on Single Server, not Flexible Server.
+# trivy:ignore:AZU-0026
+# trivy:ignore:AZU-0019
+# trivy:ignore:AZU-0024
+# trivy:ignore:AZU-0021
 resource "azurerm_postgresql_flexible_server" "broch" {
   name                = "${var.name_prefix}-postgres-${local.suffix}"
   resource_group_name = azurerm_resource_group.broch.name
   location            = azurerm_resource_group.broch.location
-  version             = "16" # Azure's Flexible Server doesn't support 17 yet (as of provider 4.10)
+  version             = "16" # Pinned: moving to 17 is a major-version upgrade of an existing server
 
   administrator_login    = var.postgres_user
   administrator_password = random_password.postgres.result
@@ -33,13 +38,26 @@ resource "azurerm_postgresql_flexible_server" "broch" {
 
   backup_retention_days = 7
 
+  # Private access only. A server's network mode is fixed at creation, so changing these
+  # replaces the server.
+  delegated_subnet_id           = azurerm_subnet.postgres.id
+  private_dns_zone_id           = azurerm_private_dns_zone.postgres.id
+  public_network_access_enabled = false
+
   # No zone redundancy / no high availability — cheapest tier.
   # For production, set `high_availability { mode = "ZoneRedundant" }`.
 
   lifecycle {
     # Avoid recreating on every apply if Azure picks a different zone.
     ignore_changes = [zone]
+    # Guard against data loss: a destroy, or a change that replaces the server (such as the
+    # network settings above), stops at plan instead of deleting the database. Before an
+    # intentional destroy, delete this line (or set it to false) and run the command again.
+    prevent_destroy = true
   }
+
+  # The DNS zone must be linked to the VNet before the server is injected.
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.postgres]
 }
 
 resource "azurerm_postgresql_flexible_server_database" "broch" {
@@ -47,16 +65,6 @@ resource "azurerm_postgresql_flexible_server_database" "broch" {
   server_id = azurerm_postgresql_flexible_server.broch.id
   charset   = "UTF8"
   collation = "en_US.utf8"
-}
-
-# Allow any Azure-hosted resource to reach the DB. Container Apps egress IPs
-# can change, so the narrow "just our app's outbound IP" approach is fragile.
-# This is the trade-off; the VNet path fixes it but adds setup cost.
-resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure" {
-  name             = "AllowAzureServices"
-  server_id        = azurerm_postgresql_flexible_server.broch.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
 }
 
 # SSL Mode=VerifyFull: encrypted AND the server authenticated (certificate chain to the container's

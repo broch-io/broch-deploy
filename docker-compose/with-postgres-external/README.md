@@ -4,7 +4,6 @@ Variant of [`../with-postgres/`](../with-postgres/) that uses an **external Post
 
 Use this when:
 - You need encryption-at-rest, point-in-time recovery, or automated backups — managed Postgres gives you all three out of the box.
-- You need horizontal scaling. Multi-replica Broch requires a shared external database — multiple Broch containers can't coordinate against an embedded sidecar.
 - Your compliance posture (SOC 2, HIPAA, GDPR) forbids running an unencrypted DB on local volumes.
 
 For the bundled-Postgres alternative (~all-in-one, simpler, less compliance-friendly), see [`../with-postgres/`](../with-postgres/).
@@ -47,8 +46,8 @@ cp .env.example .env
 $EDITOR .env   # Set BROCH_MASTER_KEY, BROCH_WILDCARD_HOSTNAME, AUTHENTICATION__*,
                # CADDY_ACME_EMAIL, CLOUDFLARE_API_TOKEN, and BROCH_DB_CONNECTION_STRING.
 
-# 2. Start
-docker compose up -d --build
+# 2. Pull the images (broch, broch-caddy) + start
+docker compose up -d
 
 # 3. Wait for Caddy to issue certs + broch to come up
 docker compose logs -f broch caddy
@@ -66,16 +65,9 @@ If broch fails to connect to the DB at startup, the most common causes:
 
 Broch logs the actual Npgsql error on startup — `docker compose logs broch | grep -i postgres` will surface it.
 
-## Horizontal scaling
+## Scaling
 
-This shape is what you need for multi-replica. To run two or more Broch containers:
-
-1. Scale up: `docker compose up -d --scale broch=2` (or duplicate the service block with a different name + port mapping)
-2. The Caddyfile's `reverse_proxy broch:8080` needs to be updated to load-balance across the replicas — `reverse_proxy broch-1:8080 broch-2:8080` with `lb_policy round_robin`
-3. Tunnel state lives in-memory per-replica, so the load balancer needs **sticky sessions** or **consistent-hash routing on tunnel hostname** to ensure a tunnel's owner replica always handles its traffic
-4. Caddy supports `lb_policy ip_hash` for sticky-by-IP, but for tunnel WebSockets you want sticky-by-hostname — see the Caddy `header` matcher docs
-
-If you go down this path, also consider moving Caddy to a separate node (or a managed LB like Cloudflare Spectrum / DO Load Balancer) so it isn't a single point of failure.
+Broch runs as a single instance and doesn't cluster: keep one `broch` replica, even against an external database. To grow, give the host more CPU and memory, or run independent stacks (for example one per region or team), each with its own database and license.
 
 ## Connection string examples
 
@@ -106,12 +98,15 @@ The [AWS VM appliance](../../cloudformation/aws-vm/) ships this bundle for you (
 ## Lifecycle
 
 ```sh
-docker compose up -d --build       # Start (rebuilds Caddy if Dockerfile changed)
+docker compose up -d               # Start
+docker compose pull caddy && docker compose up -d   # Refresh the broch-caddy image (it tracks :latest)
 docker compose logs -f broch caddy # Watch logs
 docker compose down                # Stop. DB is external; no data is lost.
 docker compose pull broch && docker compose up -d   # Roll forward to a new image
 ```
 
+**Upgrading with Auth0:** make sure `.env` sets `AUTHENTICATION__AUDIENCE` to the Identifier of your Auth0 API before you pull a new image. Broch 1.34.0 and later refuse to start as Auth0 without it, and they check only after migrating the database, so an upgrade without it leaves you with a migrated database and a server that won't start.
+
 ## When to graduate from this example
 
-When you want a fully cloud-managed control plane (no docker-compose, no Droplet/VM management) → [`../../terraform/aws-ecs/`](../../terraform/aws-ecs/) or [`../../terraform/azure-container-apps/`](../../terraform/azure-container-apps/). Both already provision their own external Postgres (RDS / Postgres Flexible Server) and a load balancer.
+When you'd rather run Broch on a managed container service than look after a VM and docker-compose → the Terraform modules [`../../terraform/aws-ecs/`](../../terraform/aws-ecs/) (ECS Fargate behind an Application Load Balancer) or [`../../terraform/azure-container-apps/`](../../terraform/azure-container-apps/) (Container Apps), both beta. Each provisions its own managed Postgres (RDS / Postgres Flexible Server) and keeps its secrets in Secrets Manager / Key Vault. Broch still runs as one replica there.

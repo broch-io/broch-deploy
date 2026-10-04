@@ -94,36 +94,40 @@ write_files:
       # Pin the compose project name so the container + named-volume names (broch-postgres-1,
       # broch_postgres_data) are STABLE -- Local-DB durability and the docs' docker exec names depend
       # on it not drifting with the working-directory basename.
+      # Values from deploy parameters are single-quoted: docker compose takes a single-quoted .env
+      # value literally (unquoted, it trims the value, cuts it at " #" and expands any $VAR in it).
+      # main.bicep refuses, at preflight, the few values single quotes can't carry. BROCH_VERSION and
+      # BROCH_IMAGE stay bare: the template sets them, and upgrade tooling reads them with sed.
       COMPOSE_PROJECT_NAME=broch
       BROCH_VERSION=__BROCH_VERSION__
       BROCH_IMAGE=__BROCH_IMAGE__
-      BROCH_WILDCARD_HOSTNAME=__WILDCARD_HOSTNAME__
+      BROCH_WILDCARD_HOSTNAME='__WILDCARD_HOSTNAME__'
       # Seed for broch's public-IP setting (compose maps it to API__PUBLICIP). This is the Static
       # public IP this template allocated -- broch serves it to caddy-dynamicdns for the apex+wildcard
       # A records (so auto-DNS points at the IP we KNOW, not one caddy discovers), and an admin can
       # override it at runtime in broch. Always the VM's IP; inert in Manual/Byo (the dynamic-dns.caddy
       # stub has no dynamic_dns block there, so nothing fetches it). Non-secret (it's published in DNS).
-      BROCH_PUBLIC_IP=__PUBLIC_IP__
-      CADDY_ACME_EMAIL=__CADDY_ACME_EMAIL__
+      BROCH_PUBLIC_IP='__PUBLIC_IP__'
+      CADDY_ACME_EMAIL='__CADDY_ACME_EMAIL__'
       # Azure DNS credentials for Caddy's ACME DNS-01 challenge (issuing the wildcard
       # TLS cert by writing TXT records in your DNS zone). These are NOT sign-in/identity
       # credentials -- those are the AUTHENTICATION__* keys below. Managed-identity mode
       # uses only subscription + resource group; service-principal mode adds tenant/client/secret
       # (the client SECRET is appended at boot from Key Vault, see the kv-fetch step below).
-      AZURE_DNS_SUBSCRIPTION_ID=__AZURE_SUBSCRIPTION_ID__
-      AZURE_DNS_RESOURCE_GROUP=__AZURE_DNS_RESOURCE_GROUP__
-      AZURE_DNS_TENANT_ID=__AZURE_TENANT_ID__
-      AZURE_DNS_CLIENT_ID=__AZURE_CLIENT_ID__
-      GCP_PROJECT=__GCP_PROJECT__
-      GOOGLE_APPLICATION_CREDENTIALS=__GOOGLE_APP_CREDS_PATH__
-      AUTHENTICATION__PROVIDER=__AUTH_PROVIDER__
-      AUTHENTICATION__CLIENTID=__AUTH_CLIENT_ID__
-      AUTHENTICATION__ADMINROLES=__AUTH_ADMIN_ROLES__
-      AUTHENTICATION__DOMAIN=__AUTH_DOMAIN__
-      AUTHENTICATION__TENANTID=__AUTH_TENANT_ID__
-      AUTHENTICATION__INSTANCE=__AUTH_INSTANCE__
-      AUTHENTICATION__AUTHORITY=__AUTH_AUTHORITY__
-      AUTHENTICATION__AUDIENCE=__AUTH_AUDIENCE__
+      AZURE_DNS_SUBSCRIPTION_ID='__AZURE_SUBSCRIPTION_ID__'
+      AZURE_DNS_RESOURCE_GROUP='__AZURE_DNS_RESOURCE_GROUP__'
+      AZURE_DNS_TENANT_ID='__AZURE_TENANT_ID__'
+      AZURE_DNS_CLIENT_ID='__AZURE_CLIENT_ID__'
+      GCP_PROJECT='__GCP_PROJECT__'
+      GOOGLE_APPLICATION_CREDENTIALS='__GOOGLE_APP_CREDS_PATH__'
+      AUTHENTICATION__PROVIDER='__AUTH_PROVIDER__'
+      AUTHENTICATION__CLIENTID='__AUTH_CLIENT_ID__'
+      AUTHENTICATION__ADMINROLES='__AUTH_ADMIN_ROLES__'
+      AUTHENTICATION__DOMAIN='__AUTH_DOMAIN__'
+      AUTHENTICATION__TENANTID='__AUTH_TENANT_ID__'
+      AUTHENTICATION__INSTANCE='__AUTH_INSTANCE__'
+      AUTHENTICATION__AUTHORITY='__AUTH_AUTHORITY__'
+      AUTHENTICATION__AUDIENCE='__AUTH_AUDIENCE__'
       # Secrets are NOT written here at deploy time. BROCH_MASTER_KEY, the DB credential
       # (BROCH_DB_CONNECTION_STRING or POSTGRES_PASSWORD), AUTHENTICATION__CLIENTSECRET, and the DNS-01
       # tokens (CLOUDFLARE_API_TOKEN / AZURE_DNS_CLIENT_SECRET / AWS_* / DO_AUTH_TOKEN) are fetched from
@@ -276,8 +280,9 @@ runcmd:
     # (4/8, or an unexpected code -- e.g. a reattached disk not ready despite settle, conflicting
     # signatures) ABORT rather than `mkfs -F`, which would WIPE a disk that may hold the surviving data.
     # (An abort leaves the disk unformatted + unmounted; the drop-in above keeps broch from starting
-    # blank. runcmd is first-boot-only, so there is NO auto-retry -- recover by redeploying once the
-    # disk is healthy.) A blind `|| mkfs` reformats on 2, 4 AND 8 alike, so we branch on the exact code.
+    # blank. runcmd is first-boot-only, so there is NO auto-retry -- once the disk is healthy, recover by
+    # deleting the VM and redeploying; the disk detaches and survives.) A blind `|| mkfs` reformats on
+    # 2, 4 AND 8 alike, so we branch on the exact code.
     blkid_rc=0
     blkid "$DISK" >/dev/null 2>&1 || blkid_rc=$?
     if [ "$blkid_rc" -eq 2 ]; then mkfs.ext4 -F "$DISK"; elif [ "$blkid_rc" -ne 0 ]; then echo "FATAL: blkid rc $blkid_rc on $DISK -- not a clean blank(2)/formatted(0) result; refusing to format a possibly-populated disk" >&2; exit 1; fi
@@ -290,8 +295,8 @@ runcmd:
     udevadm settle --timeout=30 2>/dev/null || true
     # Poll for the UUID rather than read once: on a busy first boot the new-filesystem uevent can land
     # AFTER settle's timeout, so a single blkid returns empty and the fatal below would abort a disk that
-    # was in fact formatted correctly (runcmd is first-boot-only -- that fatal needs a manual redeploy to
-    # recover). Retry a few times, settling between attempts, before giving up.
+    # was in fact formatted correctly (runcmd is first-boot-only -- recovering from that fatal means deleting
+    # the VM and redeploying). Retry a few times, settling between attempts, before giving up.
     UUID=""
     for i in $(seq 1 10); do UUID=$(blkid -s UUID -o value "$DISK"); [ -n "$UUID" ] && break; udevadm settle --timeout=30 2>/dev/null || true; sleep 2; done
     if [ -z "$UUID" ]; then echo "FATAL: blkid returned no UUID for the data disk $DISK after retries" >&2; exit 1; fi
@@ -357,9 +362,9 @@ runcmd:
     if not KVSFX.startswith("."):
         fatal("Key Vault DNS suffix %r was not substituted correctly (expected a leading dot)" % KVSFX)
 
-    # Clear any stale completion marker up front so a failed re-run (e.g. `cloud-init single` recovery on the
-    # same boot, /run being tmpfs that survives within a boot) can never leave a previous run's sentinel to
-    # bless a fetch that has since started failing.
+    # Clear any stale completion marker up front so a failed manual re-run on the same boot (/run is tmpfs,
+    # so a marker survives within a boot) can never leave a previous run's sentinel to bless a fetch that has
+    # since started failing. The supported recovery deletes the VM and redeploys, which boots fresh.
     try:
         os.remove(SENTINEL)
     except FileNotFoundError:
@@ -434,11 +439,17 @@ runcmd:
         # FILE, not appended here.
         if "\n" in val or "\r" in val:
             fatal("secret %s contains a CR/LF; /opt/broch/.env holds single-line values only" % secn)
+        # Written single-quoted (below), which docker compose takes literally; a quote or a trailing
+        # backslash can't be carried that way. The deployment refuses such values at preflight, so this
+        # fires only for a secret edited in Key Vault afterwards.
+        if "'" in val or val.endswith("\\"):
+            fatal("secret %s contains a single quote or ends with a backslash, which /opt/broch/.env can't carry" % secn)
         values[envk] = val
 
     # Rewrite .env: drop any prior assignment for each fetched key, then append KEY=value. Idempotent, so a
-    # redeploy after a first boot that needed retries REPLACES rather than duplicates (a duplicate would leave
-    # a stale value ahead of the new one, which first-match readers pick up). Preserve the 0600 mode.
+    # manual re-run on the same VM REPLACES rather than duplicates (a duplicate would leave a stale value
+    # ahead of the new one, which first-match readers pick up). A redeploy over the live VM doesn't re-run
+    # this, and a recreated VM (deleted, then redeployed) starts from a fresh .env. Preserve the 0600 mode.
     try:
         with open(ENVFILE) as f:
             lines = f.readlines()
@@ -450,7 +461,7 @@ runcmd:
     kept = [ln for ln in lines if ln.lstrip().startswith("#") or ln.split("=", 1)[0] not in keys]
     if kept and not kept[-1].endswith("\n"):
         kept[-1] += "\n"
-    kept += ["%s=%s\n" % (k, v) for k, v in values.items()]
+    kept += ["%s='%s'\n" % (k, v) for k, v in values.items()]
     try:
         with open(ENVFILE, "w") as f:
             f.write("".join(kept))
@@ -489,6 +500,6 @@ runcmd:
     # only bites if the map derivation ever regresses to param-driven, where the missing entry would let
     # broch start and silently fail every DB connection.
     if [ "__LOCAL_DB__" != "true" ]; then
-      grep -q "^BROCH_DB_CONNECTION_STRING=." /opt/broch/.env || { echo "FATAL: databaseMode=Existing/Managed but no database connection string was provided (set databaseConnectionString) -- refusing to start broch" >&2; exit 1; }
+      grep -q "^BROCH_DB_CONNECTION_STRING='[^']" /opt/broch/.env || { echo "FATAL: databaseMode=Existing/Managed but no database connection string was provided (set databaseConnectionString) -- refusing to start broch" >&2; exit 1; }
     fi
     systemctl enable --now broch.service

@@ -4,7 +4,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.10"
+      version = "~> 5.7"
     }
     random = {
       source  = "hashicorp/random"
@@ -14,6 +14,22 @@ terraform {
 }
 
 provider "azurerm" {
+  # Register what this module deploys (Microsoft.Resources and Microsoft.Authorization
+  # are registered in every subscription by default). azurerm 5 registers nothing on its
+  # own, so this list must name every provider the module needs; a missing one fails a
+  # fresh subscription with MissingSubscriptionRegistration. Microsoft.ContainerService is
+  # required for a Container Apps environment in a custom VNet. Only unregistered providers
+  # are registered.
+  resource_providers_to_register = [
+    "Microsoft.App",
+    "Microsoft.ContainerService",
+    "Microsoft.DBforPostgreSQL",
+    "Microsoft.KeyVault",
+    "Microsoft.ManagedIdentity",
+    "Microsoft.Network",
+    "Microsoft.OperationalInsights",
+  ]
+
   features {
     resource_group {
       prevent_deletion_if_contains_resources = false

@@ -63,6 +63,15 @@ SITES = [
      rf"(?m)^  default     = \"ghcr\.io/broch-io/broch:({SEMVER})\"$"),
     ("terraform/azure-container-apps/terraform.tfvars.example",
      rf"(?m)^# broch_image\s+= \"ghcr\.io/broch-io/broch:({SEMVER})\""),
+    # bicep example param files: commented documentation of the default -- a stale value
+    # there would DOWNGRADE (across a migration) whoever uncomments it
+    ("bicep/azure-vm/main.example.bicepparam",
+     rf"(?m)^// param brochVersion = '({SEMVER})'"),
+    ("bicep/azure-container-apps/parameters.example.bicepparam",
+     rf"(?m)^// param containerImage = 'ghcr\.io/broch-io/broch:({SEMVER})'"),
+    # the root README's pull example
+    ("README.md",
+     rf"(?m)^docker pull ghcr\.io/broch-io/broch:({SEMVER})$"),
     # cloudformation parameter default (anchored to the BrochVersion block so other
     # String parameters with semver-looking defaults can never be caught)
     ("cloudformation/aws-vm/template.yaml",

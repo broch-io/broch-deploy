@@ -10,7 +10,8 @@ using 'main.bicep'
 // required. Uncomment ONLY if you specifically want key-based SSH (then also set a CIDR):
 // param adminSshPublicKey = 'ssh-ed25519 AAAA...your-public-key... you@example'
 // param sshAllowedCidr    = '203.0.113.0/24'
-// Optional: AAD object ID to grant Key Vault Secrets User (read the generated secrets):
+// Optional, no-SSH-key mode only: AAD object ID granted read on the generated break-glass VM
+// password (not the app secrets):
 // param adminObjectId = '<your-user-or-group-object-id>'
 
 // Master key — REQUIRED (>=32 chars). The at-rest encryption root; generate with
@@ -33,9 +34,8 @@ param databaseConnectionString = 'Host=mydb.postgres.database.azure.com;Database
 // Reader on the subscription). Set an explicit one for any deployment where the VM identity could be
 // compromised, and re-supply the SAME value on every redeploy (Postgres keeps its first password):
 // param localDbAdminPassword = '<strong-password>'  // prefer --parameters
-// NOTE: always redeploy a Local-mode VM with --mode Incremental (the default). A `--mode Complete`
-// deploy of this resource group with databaseMode != 'Local' would DELETE the <vmName>-data disk (it
-// is absent from the template for non-Local modes), destroying the database.
+// NOTE: re-pass databaseMode = 'Local' on every redeploy. The <vmName>-data disk stays attached in
+// every mode, but a VM deployed in another mode ignores the database on it.
 
 // --- Domain + TLS (bring your own domain) ---
 // The public hostname is composed from the zone + share subdomain: this serves
@@ -47,7 +47,9 @@ param acmeEmail = 'ops@example.com'
 // DNS-01 provider (certMode=Auto). Pick one and set its credentials:
 param dnsProvider = 'Cloudflare'
 param cloudflareApiToken = '<cloudflare-zone-dns-token>' // Zone:Read + DNS:Edit; prefer --parameters
-// Azure DNS — managed identity (template auto-grants DNS Zone Contributor; needs Owner/UAA):
+// Azure DNS (zone in this subscription; dnsZoneResourceGroup is required) — managed identity. The
+// template grants it DNS Zone Contributor, which needs Owner/UAA; with only Contributor, use the
+// service principal below:
 // param dnsProvider          = 'AzureDns'
 // param dnsZoneResourceGroup = '<dns-zone-resource-group>'
 // Azure DNS — service principal (Contributor is enough; pre-grant the SP on the zone):
@@ -78,15 +80,18 @@ param authClientSecret = '<client-secret>' // prefer --parameters over committin
 param authAdminRoles = 'broch_admin'
 param authDomain = 'your-tenant.auth0.com'
 param authAudience = '<your-auth0-api-identifier>' // Auth0: required — the API your app has user access to
-// AzureAd/Entra: set authTenantId + authInstance instead of authDomain + authAudience.
+// AzureAd: set authTenantId + authInstance (https://login.microsoftonline.com/) instead of authDomain + authAudience.
+// EntraExternalId: the same, with authInstance = https://<tenant>.ciamlogin.com/.
 // Generic OIDC: set authAuthority.
 
 // Telemetry, logging, and the license are configured IN-APP (Admin UI) after first
 // sign-in — not here. The central server URL defaults to https://api.broch.io in code.
 
 // --- Optional ---
-// param vmSize = 'Standard_B2ps_v2'  // ARM64; check family quota/availability in your region
-// param brochVersion = '1.26.0'      // defaults to a concrete pinned version; set a newer tag to upgrade
+// param vmSize   = 'Standard_B2ps_v2' // ARM64; check family quota/availability in your region
+// param imageSku = 'server-arm64'     // required with an ARM64 vmSize
+// param brochVersion = '1.35.0'      // defaults to a concrete pinned version; used when the VM is created or
+//                                    // recreated. Upgrade a running VM in place (README "Pulling a new Broch image").
 // Private pre-release/beta image — server/username default to GHCR, so set only the token:
 // param brochImage = 'ghcr.io/broch-io/broch-beta'
 // param registryPassword = '<registry-token>'  // prefer --parameters

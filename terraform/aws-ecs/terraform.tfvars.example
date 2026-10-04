@@ -5,9 +5,9 @@
 wildcard_hostname = "broch.example.com"
 route53_zone_id   = "Z0123456789ABCDEFGHIJ"     # Route 53 hosted zone ID
 
-# Identity provider — required at boot. Broch has no built-in local login, so
-# no one can sign in (or finish first-run setup) until this is set. Your first
-# admin signs in holding a role named in auth_admin_roles.
+# Identity provider — required at boot. Broch has no built-in local login, so the
+# IdP is part of the boot floor; the plan refuses a combination Broch would refuse
+# at startup. Your first admin signs in holding a role named in auth_admin_roles.
 # Guides: https://broch.io/docs/identity-providers/
 auth_provider      = "Auth0"          # Auth0 | AzureAd | EntraExternalId | Okta | Oidc
 auth_client_id     = "<oauth-client-id>"
@@ -17,7 +17,8 @@ auth_admin_roles   = "broch_admin"
 # Set the value(s) your provider needs; leave the rest unset:
 #   Auth0:            auth_domain    = "your-tenant.auth0.com"  +  auth_audience = "<your-auth0-api-identifier>"
 #   Okta:             auth_domain    = "your-org.okta.com"
-#   AzureAd / Entra:  auth_tenant_id = "..."  +  auth_instance = "https://login.microsoftonline.com/"
+#   AzureAd:          auth_tenant_id = "..."  +  auth_instance = "https://login.microsoftonline.com/"
+#   EntraExternalId:  auth_tenant_id = "..."  +  auth_instance = "https://<tenant>.ciamlogin.com/"
 #   Oidc (generic):   auth_authority = "https://issuer.example.com"
 # auth_domain    = ""
 # auth_tenant_id = ""
@@ -30,7 +31,7 @@ auth_admin_roles   = "broch_admin"
 # A Broch license is activated in-app on first sign-in (Admin → License) — there
 # is no license env var. Buy a license at https://broch.io/pricing.
 
-# broch_image        = "ghcr.io/broch-io/broch:1.34.0"   # defaults to a pinned version; set a newer tag to upgrade
+# broch_image        = "ghcr.io/broch-io/broch:1.35.0"   # defaults to a pinned version; to upgrade, set a newer tag, then apply and run `aws ecs update-service --task-definition broch-broch` (see README)
 # aws_region         = "us-east-1"
 # vpc_cidr           = "10.42.0.0/16"
 # task_cpu           = 512

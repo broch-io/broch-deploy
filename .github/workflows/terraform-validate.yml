@@ -4,15 +4,18 @@
 # drift before a PR gets merged. Does NOT talk to any cloud provider — no
 # AWS/Azure credentials needed, no resources created, no billable activity.
 #
-# Why no `terraform plan` or `apply`: this repo is public and we don't want
-# workflow logs leaking account state, resource ARNs, or IPs. Real apply
+# Why no real `terraform plan` or `apply`: this repo is public and we don't want
+# workflow logs leaking account state, resource ARNs, or IPs. (The `terraform test`
+# step plans against mock providers, which touch no account.) Real apply
 # testing happens out-of-CI via scripts/test-terraform.sh, run manually
 # before tagging a release.
 #
-# COVERAGE NOTE: these jobs are VALIDATE-ONLY -- they check formatting (fmt) and configuration
-# validity (validate) but do NOT stand the modules up, so they assert no runtime health.
+# COVERAGE NOTE: these jobs are VALIDATE-ONLY -- they check formatting (fmt), configuration
+# validity (validate) and input preconditions (`terraform test` against mock providers) but do
+# NOT stand the modules up, so they assert no runtime health.
 
-name: Terraform Validate
+name: "Verify / Terraform validate"
+run-name: "Verify Terraform validate / ${{ github.event_name == 'pull_request' && format('PR to {0}', github.base_ref) || github.ref_name }}"
 
 # No paths filter on pull_request: validate (aws-ecs) and
 # validate (azure-container-apps) are required checks in the main ruleset,
@@ -48,10 +51,12 @@ jobs:
         working-directory: terraform/${{ matrix.module }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Pinned Terraform version so the checks are reproducible.
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
@@ -67,6 +72,17 @@ jobs:
       - name: terraform validate
         run: terraform validate
 
+      # ci-tests/*.tftest.hcl plan against MOCK providers only (no credentials, no cloud calls):
+      # they pin the input preconditions, e.g. Auth0 without an audience is refused at plan.
+      # Not in the default tests/ dir: `terraform init` parses that, and mock_provider needs
+      # Terraform 1.7+, so it would break init for customers on the supported 1.6 floor.
+      # Fail on "0 passed" so a moved or emptied test dir can't pass silently.
+      - name: terraform test
+        run: |
+          out=$(terraform test -test-directory=ci-tests -no-color) || { echo "$out"; exit 1; }
+          echo "$out"
+          if echo "$out" | grep -q "Success! 0 passed"; then echo "::error::no terraform tests ran"; exit 1; fi
+
   # cloud-init delivers its config as droplet user_data, and cloud-init's YAML
   # loader rejects multi-byte UTF-8 there: a stray em-dash surfaces as
   # 'unacceptable character #x0080' and the ENTIRE cloud-config is silently
@@ -77,7 +93,9 @@ jobs:
     name: cloud-init ASCII guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Reject non-ASCII bytes in cloud-init files
         run: |
           # Scan the WHOLE repo, not just terraform/: the Azure VM appliance ships its cloud-init from
@@ -103,12 +121,16 @@ jobs:
     name: cfn-lint (cloudformation)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      # Pinned so a new cfn-lint release cannot turn this gate red on an unrelated PR; it
+      # matches the pinned local tooling, so a local run agrees with CI. Bump deliberately.
       - name: Install cfn-lint
-        run: python3 -m pip install --quiet cfn-lint
+        run: python3 -m pip install --quiet cfn-lint==1.51.5
       - name: Build published variants
         run: ./cloudformation/aws-vm/build.sh
       - name: Check variant generator invariants
@@ -132,13 +154,15 @@ jobs:
     name: strict-parse rendered aws-vm template
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Render the deployable template (build.sh)
         run: ./cloudformation/aws-vm/build.sh
       # Don't rely on the runner image's ambient PyYAML — install explicitly, matching the
       # boot-test caddy-dns-sync job and the cfn-lint job above.
       - name: Install PyYAML
-        run: python3 -m pip install --user --quiet pyyaml
+        run: python3 -m pip install --user --quiet pyyaml==6.0.2
       - name: Strict-parse every published template (PyYAML = AWS parser strictness)
         run: |
           python3 - <<'PY'
@@ -183,6 +207,8 @@ jobs:
     name: broch image pin sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Verify every pin site matches BROCH_VERSION
         run: python3 scripts/bump-broch-version.py --check

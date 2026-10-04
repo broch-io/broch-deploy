@@ -13,6 +13,8 @@ locals {
   azs = slice(data.aws_availability_zones.available.names, 0, 2)
 }
 
+# VPC flow logs are a per-install cost and retention choice.
+# trivy:ignore:AWS-0178
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
@@ -29,9 +31,11 @@ resource "aws_internet_gateway" "main" {
 resource "aws_subnet" "public" {
   count = 2
 
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
-  availability_zone       = local.azs[count.index]
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = local.azs[count.index]
+  # Public subnets hold only the ALB and NAT; tasks run in the private subnets without public IPs.
+  # trivy:ignore:AWS-0164
   map_public_ip_on_launch = true
 
   tags = { Name = "${var.name_prefix}-public-${local.azs[count.index]}" }
@@ -117,6 +121,8 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Open outbound on the ALB; it only needs the task on 8080 and could be narrowed to the task security group.
+  # trivy:ignore:AWS-0104
   egress {
     description = "All outbound"
     from_port   = 0
@@ -139,6 +145,8 @@ resource "aws_security_group" "ecs_task" {
     security_groups = [aws_security_group.alb.id]
   }
 
+  # Outbound is open: image pulls, ACME, the license server and the IdP have no fixed addresses.
+  # trivy:ignore:AWS-0104
   egress {
     description = "All outbound (NAT for image pulls + ACME + DB)"
     from_port   = 0
