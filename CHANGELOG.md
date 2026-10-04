@@ -24,7 +24,7 @@ deployment or use are deliberately omitted.
 ### Fixed
 
 - **Share's public link appears only when it works.** The `broch share` CLI used to print the Public link slightly before the server could serve it, so a request in that gap could get a 502. The link now appears once the tunnel is ready. A newer CLI against an older server connects as before, and older CLIs are unaffected.
-- **Auth0 and other providers boot when settings are saved in the app.** Startup now checks your effective sign-in configuration, meaning environment values plus anything saved in the admin UI. A deployment whose Auth0 audience was saved in the app but left blank in the environment no longer refuses to start. Blank values saved in the app no longer override a valid environment value.
+- **Startup accepts sign-in settings saved in the admin UI.** Startup now checks your effective sign-in configuration: environment values plus anything saved in the admin UI. A deployment whose Auth0 audience was saved in the app but left blank in the environment no longer refuses to start, and a blank value saved in the app no longer overrides a valid environment value.
 - **License state no longer carries over between keys.** Clearing or replacing the license key now also clears the cached license state, so one license's billing options can't show up under the next.
 
 ### Deploy impact
@@ -34,9 +34,9 @@ deployment or use are deliberately omitted.
   - an unknown `AUTHENTICATION__PROVIDER`, or a numeric or comma-separated value for any setting that takes a fixed set of names
   - a non-boolean `LICENSE__AIRGAPPED`
   - an unparseable `SHARE__PROXYACTIVITYTIMEOUT`
-  - invalid values for `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS`, `BROCHTOKEN__LIFETIMEMINUTES`, `BROCHTOKEN__SIGNINGKEY`, `BROCHTELEMETRY__PROVIDER` (including a value saved in the app), and the tunnel limit settings (`API__MAXTUNNELS`, `BROCH__MAXTUNNELS`)
+  - invalid values for `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS`, the sign-in token settings, `BROCHTELEMETRY__PROVIDER` (including a value saved in the app), and the tunnel limit settings (`API__MAXTUNNELS`, `BROCH__MAXTUNNELS`)
 
-  Previously, a bad `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` or `BROCHTOKEN__LIFETIMEMINUTES` only failed later, at license refresh or first sign-in. Only the first error is reported at startup, in the same order `--check-config` lists them.
+  Previously, a bad `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` or sign-in token setting only failed later, at license refresh or first sign-in. Only the first error is reported at startup, in the same order `--check-config` lists them.
 
   Startup also checks sign-in, logging and telemetry settings saved in the admin UI, which `--check-config` can't see. Before upgrading, open Configuration and confirm the saved sign-in settings are complete for your provider (for example, an OAuth client secret where your provider needs one). A saved value that 1.34.0 tolerated can stop 1.35.0 from starting.
 - **Billing portal errors changed.** For a license that isn't billed through Stripe, the billing portal request now returns a 409 "not billed through Stripe" instead of a generic 502 "temporarily unavailable". Update any scripts that depend on the old response. The system info response also now reports whether billing and seat changes are available.
