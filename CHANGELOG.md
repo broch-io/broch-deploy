@@ -37,10 +37,9 @@ deployment or use are deliberately omitted.
 - Apps behind Access in TLS terminate mode now receive their own hostname with its port as `Host` (for example `app.internal:8080`), with `Origin` and `Referer` to match. An app that checks `Host` against a list of names without ports may need its port added.
 - On Access, `X-Forwarded-For` is always Broch's own address; a value the user sends is no longer passed to the app.
 - Broch now routes on the request's own Host header and ignores X-Forwarded-Host and X-Original-Host. If a proxy in front of Broch, such as Azure Front Door or Application Gateway, rewrites the Host header, configure it to forward the original Host.
-- Share tunnels now reconnect when their sign-in token expires (hourly by default), so a role removed in your identity provider ends that user's shares within one token lifetime. CLIs older than 1.21.0 stop instead of reconnecting: upgrade them.
+- Credential expiry closes the current Share tunnel (hourly by default), and reconnection evaluates the grants supplied by the identity provider. A removed role prevents reconnection only when the provider withdraws that grant from refreshed tokens; retained upstream SSO grants can permit reconnection, so immediate role withdrawal is not guaranteed. CLIs older than 1.21.0 stop instead of reconnecting: upgrade them.
 - The SharePolicyEvictionFailed audit event's details now carry a PolicyIds list, with the resource set to the changed item. Update any parser that reads the old shape.
 - Deploy the updated server and renew sign-in or refresh credentials to receive additional grants split across the two tokens. No configuration or policy migration is required.
-- Credential expiry closes the current Share tunnel, and reconnection evaluates the grants supplied by the identity provider. The earlier token-lifetime wording above is conditional on the provider actually withdrawing the grant from refreshed tokens; retained upstream SSO grants can permit reconnection. Immediate upstream role withdrawal is not guaranteed.
 
 ## 1.35.0
 
