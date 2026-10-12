@@ -135,3 +135,5 @@ terraform destroy -var rds_deletion_protection=false
 ```
 
 Note: `skip_final_snapshot = true` means the Postgres data is deleted permanently. If you want to keep it, set that to `false` first and re-apply before destroying.
+
+For `AzureAd`, an explicit `auth_authority` must use an HTTPS DNS hostname with the default HTTPS port and end in `/v2.0`. Port overrides, bracketed IPv6 literals and userinfo are not supported by the module. Leave the authority empty to derive it from the instance and tenant. Broch 1.36 requires v2.0 for signed refresh identity.

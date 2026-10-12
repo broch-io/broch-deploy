@@ -6,7 +6,9 @@ loses state" incident class:
 
   R1a  CloudFormation Secrets Manager names are salted with the stack incarnation
        UUID (AWS::StackId), so a delete+redeploy or rollback-retry never collides
-       with the 30-day soft-deleted ghost of a previous incarnation.
+       with a secret a previous incarnation left behind: the retained ones (master
+       key, Local password) stay live, and a name that a recovery window still
+       holds would collide the same way.
   R1b  The azure-vm template keeps the region-salted Key Vault name derivation and
        the explicit soft-delete recover pre-pass (kv-recover.bicep), so recreating
        a resource group of the same name+region recovers its vault ghosts.
@@ -18,9 +20,19 @@ loses state" incident class:
   R3b  Every docker-compose stack maps Caddy's /data to a NAMED volume, so issued
        certificates survive container recreation instead of re-requesting against
        Let's Encrypt's duplicate-certificate rate limit.
-  R4   The master key is required everywhere: no template gives the master-key
-       parameter a default, so a redeploy can never silently proceed with a key
-       that does not match the database it reuses.
+  R4   The master key is never a template default: the Bicep master-key parameters
+       have no default, so a redeploy can never silently proceed with a key that
+       does not match the database it reuses. The aws-vm BrochMasterKey defaults to
+       empty only, which GENERATES the key into its Secrets Manager secret: the
+       secret stores the parameter when set and otherwise runs the one pinned
+       generator (a changed generator could re-mint the key of every generated-key
+       stack on its next update), keeps its Name (a rename replaces it), is
+       retained on replacement and on stack delete (the final snapshots a delete
+       leaves are unreadable without it), and the
+       SnapshotRestoreRequiresMasterKey Rule requires the key for the deploy known to
+       reuse a database (a Local snapshot restore). LocalDbPasswordSecret keeps its
+       Name and is retained on replacement and on stack delete too: that restore also
+       needs the Local database password.
   EMAIL The Let's Encrypt email is required everywhere: the azure-vm acmeEmail has
        no default and a @minLength, the aws-vm AcmeEmail has no Default and an
        AllowedPattern that rejects '', and every compose file whose Caddyfile uses
@@ -147,7 +159,9 @@ def rule_r1a(root: str) -> None:
                     violate("R1a", rel, start + 1,
                             "SecretsManager secret has an explicit Name without the "
                             "AWS::StackId incarnation salt — a delete+redeploy or "
-                            "rollback-retry will collide with the 30-day soft-deleted ghost")
+                            "rollback-retry will collide with a secret the previous "
+                            "incarnation left behind (a retained one, or one still in its "
+                            "recovery window)")
 
 
 def rule_r1b(root: str) -> None:
@@ -248,25 +262,74 @@ def rule_r4(root: str) -> None:
                             "that does not match the reused database")
         if not found:
             violate("R4", rel, 1, "no master-key param found (brochMasterKey/masterKey)")
-    # cloudformation: the BrochMasterKey parameter block must not carry Default.
+    # cloudformation: BrochMasterKey defaults to "" (generate), never to a value, and the
+    # generate-or-store secret around it keeps its shape.
     for rel in aws_templates(root):
         lines = read_lines(root, rel)
         if lines is None:
             continue
-        for i, line in enumerate(lines):
-            if re.match(r"  BrochMasterKey:\s*$", line):
-                # Scan the whole parameter block — bounded by the next entry at the
-                # same 2-space indent, not a fixed window (Description text in this
-                # repo regularly runs longer than a dozen lines).
-                for j in range(i + 1, len(lines)):
-                    if re.match(r"  \S", lines[j]):  # next parameter block
-                        break
-                    if re.match(r"\s+Default:", lines[j]):
-                        violate("R4", rel, j + 1,
-                                "BrochMasterKey has a Default — it must be required")
-                break
-        else:
+
+        def block(name: str):
+            """(first line index, lines) of the 2-space-indented entry `name:` — bounded by the
+            next entry at the same indent, not a fixed window (Description text in this repo
+            regularly runs longer than a dozen lines) — or (None, [])."""
+            for i, line in enumerate(lines):
+                if re.match(rf"  {name}:\s*$", line):
+                    end = next((j for j in range(i + 1, len(lines)) if re.match(r"  \S", lines[j])), len(lines))
+                    return i, lines[i + 1:end]
+            return None, []
+
+        start, param = block("BrochMasterKey")
+        if start is None:
             violate("R4", rel, 1, "no BrochMasterKey parameter found")
+            continue
+        for j, line in enumerate(param, start + 2):
+            if re.match(r"\s+Default:", line) and not re.fullmatch(r'\s+Default: ""\s*', line):
+                violate("R4", rel, j, "BrochMasterKey defaults to a value — it may only default to "
+                                      'empty ("", which generates the key)')
+        start, secret = block("MasterKeySecret")
+        required = (
+            ("    UpdateReplacePolicy: Retain", "is not retained on replacement (a replaced "
+             "secret generates a new key)"),
+            ("    DeletionPolicy: Retain", "is not retained on stack delete (the final RDS/EBS "
+             "snapshots a delete leaves can't be decrypted without the key)"),
+            ('        - "${AWS::StackName}-${Salt}/broch-master-key"', "changed its Name (Name is "
+             "immutable: a rename replaces the secret, and a replacement generates a new key)"),
+            ('      SecretString: !If [HasMasterKey, !Ref BrochMasterKey, !Ref "AWS::NoValue"]',
+             "does not store BrochMasterKey when it is set"),
+            ("        - { PasswordLength: 64, ExcludePunctuation: true }",
+             "does not generate with the pinned generator — changing it can re-mint the key of "
+             "every generated-key stack on its next update"),
+        )
+        if start is None:
+            violate("R4", rel, 1, "no MasterKeySecret resource found")
+        else:
+            for text, why in required:
+                if text not in secret:
+                    violate("R4", rel, start + 1, f"MasterKeySecret {why}")
+        text = "\n".join(lines)
+        if 'HasMasterKey: !Not [!Equals [!Ref BrochMasterKey, ""]]' not in text:
+            violate("R4", rel, 1, "the HasMasterKey condition no longer tests BrochMasterKey for empty")
+        # The Local database password: a snapshot restore needs it as much as the master key.
+        start, local_pw = block("LocalDbPasswordSecret")
+        if start is None:
+            violate("R4", rel, 1, "no LocalDbPasswordSecret resource found")
+        else:
+            for text, why in (
+                ("    DeletionPolicy: Retain", "is not retained on stack delete (restoring the Local data "
+                 "volume's final snapshot needs that password)"),
+                ("    UpdateReplacePolicy: Retain", "is not retained on replacement (a replaced secret "
+                 "generates a new password, which the data directory was never initialised with)"),
+                ('        - "${AWS::StackName}-${Salt}/broch-local-db-password"', "changed its Name (a rename "
+                 "replaces the secret, and the replacement generates a new password)"),
+            ):
+                if text not in local_pw:
+                    violate("R4", rel, start + 1, f"LocalDbPasswordSecret {why}")
+        start, rule = block("SnapshotRestoreRequiresMasterKey")
+        if start is None or not any("DataVolumeSnapshotId" in l for l in rule) \
+                or not any('Assert: !Not [!Equals [!Ref BrochMasterKey, ""]]' in l for l in rule):
+            violate("R4", rel, (start or 0) + 1, "the SnapshotRestoreRequiresMasterKey Rule no longer "
+                                                 "requires BrochMasterKey for a DataVolumeSnapshotId restore")
 
 
 def rule_email(root: str) -> None:

@@ -234,6 +234,12 @@ resource "aws_ecs_task_definition" "broch" {
       error_message = "auth_audience is required when auth_provider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to."
     }
     precondition {
+      condition = (lower(trimspace(var.auth_provider)) != "azuread" || var.auth_authority == ""
+        || (startswith(lower(var.auth_authority), "https://") && can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?/+[^/?#]+/+v2[.]0/*$", lower(var.auth_authority)))
+      && can(regex("/v2[.]0/*$", var.auth_authority))))
+      error_message = "auth_authority for AzureAd must be an HTTPS Entra v2.0 authority ending in /v2.0, using a DNS hostname and the default HTTPS port, without a query or fragment. Leave it blank to derive it from auth_instance and auth_tenant_id."
+    }
+    precondition {
       condition     = lower(trimspace(var.auth_provider)) != "oidc" || trimspace(var.auth_authority) != ""
       error_message = "auth_authority is required when auth_provider is Oidc: set it to your IdP's issuer URL."
     }

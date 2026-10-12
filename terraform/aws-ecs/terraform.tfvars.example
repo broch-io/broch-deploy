@@ -31,7 +31,7 @@ auth_admin_roles   = "broch_admin"
 # A Broch license is activated in-app on first sign-in (Admin → License) — there
 # is no license env var. Buy a license at https://broch.io/pricing.
 
-# broch_image        = "ghcr.io/broch-io/broch:1.35.0"   # defaults to a pinned version; to upgrade, set a newer tag, then apply and run `aws ecs update-service --task-definition broch-broch` (see README)
+# broch_image        = "ghcr.io/broch-io/broch:1.36.0"   # defaults to a pinned version; to upgrade, set a newer tag, then apply and run `aws ecs update-service --task-definition broch-broch` (see README)
 # aws_region         = "us-east-1"
 # vpc_cidr           = "10.42.0.0/16"
 # task_cpu           = 512

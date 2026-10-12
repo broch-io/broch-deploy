@@ -48,6 +48,15 @@ locals {
   # map so the configuration contract check (scripts/config-contract.py) can render exactly what this
   # module sends and ask Broch whether it would start with it.
   broch_environment = {
+    # Trusted-proxy CIDRs for X-Forwarded-For/-Proto: broch trusts only loopback by default
+    # (fail-closed), but the Container Apps ingress forwards to it from Azure's managed internal
+    # range (100.100.x.x, VNet-integrated environments included), so without this seed audit logs
+    # attribute every request to the ingress, Share Policy network rules fail closed and the
+    # checkout return URL falls back to http. 100.100.0.0/17 is the range Admin → Share Settings
+    # suggests for this ingress. Seeded into Share Settings at each start while its trusted-proxy
+    # list is empty; an admin-saved list takes precedence (an existing install with a saved list
+    # must add this range itself). See the README.
+    API__TRUSTEDPROXYCIDRS     = "100.100.0.0/17"
     ASPNETCORE_ENVIRONMENT     = "Production"
     ASPNETCORE_URLS            = "http://0.0.0.0:8080"
     API__WILDCARDHOSTNAME      = var.wildcard_hostname
@@ -85,6 +94,12 @@ resource "azurerm_container_app" "broch" {
     precondition {
       condition     = lower(trimspace(var.auth_provider)) != "auth0" || trimspace(var.auth_audience) != ""
       error_message = "auth_audience is required when auth_provider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to."
+    }
+    precondition {
+      condition = (lower(trimspace(var.auth_provider)) != "azuread" || var.auth_authority == ""
+        || (startswith(lower(var.auth_authority), "https://") && can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?/+[^/?#]+/+v2[.]0/*$", lower(var.auth_authority)))
+      && can(regex("/v2[.]0/*$", var.auth_authority))))
+      error_message = "auth_authority for AzureAd must be an HTTPS Entra v2.0 authority ending in /v2.0, using a DNS hostname and the default HTTPS port, without a query or fragment. Leave it blank to derive it from auth_instance and auth_tenant_id."
     }
     precondition {
       condition     = lower(trimspace(var.auth_provider)) != "oidc" || trimspace(var.auth_authority) != ""

@@ -104,7 +104,7 @@ az containerapp hostname bind \
 
 **Wildcard cert is a separate problem.** Azure Container Apps' built-in managed certs **don't issue wildcards**. For tunnel subdomains (`*.broch.example.com`), you have three options:
 
-1. **Front Door / Application Gateway** in front of Container Apps, serving a wildcard cert you provide (from Key Vault); neither issues a managed wildcard for you. Adds ~$35/mo for Front Door but is the cleanest production answer.
+1. **Front Door / Application Gateway** in front of Container Apps, serving a wildcard cert you provide (from Key Vault); neither issues a managed wildcard for you. Adds ~$35/mo for Front Door but is the cleanest production answer. Configure it to forward the original `Host` header: Broch routes on the request's own host and ignores `X-Forwarded-Host`.
 2. **Provision a wildcard cert separately** (Let's Encrypt via certbot+DNS, or commercial CA) and upload it via `az containerapp env certificate upload` + `az containerapp hostname bind`.
 3. **Skip wildcards** entirely if your deployment doesn't use tunnel subdomains.
 
@@ -128,6 +128,16 @@ az containerapp revision restart -n broch-app -g broch-rg \
 
 Terraform state holds every secret in plaintext; keep it access-controlled (e.g. an encrypted remote backend).
 
+## Client IP behind the ingress
+
+The Container Apps ingress forwards every request to Broch from Azure's internal `100.100.x.x` range. The template sets `API__TRUSTEDPROXYCIDRS=100.100.0.0/17` so Broch trusts that range's `X-Forwarded-For` and `X-Forwarded-Proto`. Without it, audit events record the ingress's address instead of the client's, Share Policy network rules fail closed, and the checkout return URL comes out as http. Loopback is always trusted on top.
+
+The value is seeded into Admin → Share Settings at each start while its trusted-proxy list is empty; an admin-saved list takes precedence, and the env value is then ignored.
+
+- **Redeploying an existing install** with this template picks the range up at its next start only if that list is empty. If an admin has saved a list, add `100.100.0.0/17` to it yourself.
+- **Share Settings changes take effect after a restart**: the list is applied only at startup. Clearing the list restores the template's value at the next start.
+- **Format:** comma-separated CIDRs; whitespace is trimmed, empty entries are ignored, and a bare IP means that one address. An invalid value is skipped with a warning at startup (not a crash); with an empty stored list, Broch then trusts only loopback.
+
 ## Tradeoffs / what's deliberately not here
 
 | Decision                                | Why                                            | When to change                                                                                |
@@ -138,6 +148,8 @@ Terraform state holds every secret in plaintext; keep it access-controlled (e.g.
 | No Front Door                           | Wildcard cert problem documented; FD adds cost | When you're past the proof-of-concept phase                                                   |
 | Postgres reachable only inside the VNet | No public database endpoint                    | To administer it, use a VM or Cloud Shell attached to the VNet, or peer a network you control |
 | `prevent_destroy` on the Postgres server | A destroy or replacing change can't delete the database | Delete the line in `database.tf` only for an intentional destroy (see Teardown)          |
+
+**`SkuNotAvailable` from Azure.** Some subscriptions and regions refuse the default burstable `B_Standard_B1ms` during apply ("Specified SKU is not supported in this region"). `az postgres flexible-server list-skus -l <region>` lists the region's catalog but not subscription-level restrictions, so only an apply confirms a SKU. Set `postgres_sku` to another size (for example `GP_Standard_D2ds_v5`, general purpose, at a higher cost) or choose another region, then apply again. If the apply then reports that the server already exists, delete the failed server in the portal first.
 
 ## Pulling a new broch image
 
@@ -162,3 +174,5 @@ terraform destroy
 Key Vault soft-delete with purge protection keeps the destroyed vault, and the master key in it, recoverable for 7 days (`az keyvault recover --name <vault-name>`); it cannot be purged early. A re-apply is unaffected: the vault name carries a random suffix, so it never collides with the deleted one.
 
 Azure releases the subnets a few minutes after it deletes the Container Apps environment and the Postgres server. If `terraform destroy` stops on a subnet that is still in use, wait and run it again. Azure also deletes the environment's own `<resource-group>-aca-infra-<suffix>` group by itself.
+
+For `AzureAd`, an explicit `auth_authority` must use an HTTPS DNS hostname with the default HTTPS port and end in `/v2.0`. Port overrides, bracketed IPv6 literals and userinfo are not supported by the module. Leave the authority empty to derive it from the instance and tenant. Broch 1.36 requires v2.0 for signed refresh identity.

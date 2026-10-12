@@ -44,6 +44,20 @@ The smallest footprint of the three Terraform modules. Tradeoff is the obvious o
 - An identity provider app registration (Azure Entra ID, Auth0, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. See the [identity-provider guides](https://broch.io/docs/identity-providers/). Auth0 also needs an **API** (its Identifier is `auth_audience`), with the Broch application authorized for **User Access** on the API's **Application Access** tab — an API that requires that grant rejects every sign-in without it
 - A Broch license — activated in-app after first sign-in (Admin → License)
 
+## Private container images
+
+For a private image, set `registry_server` (for example `ghcr.io`),
+`registry_username` and `registry_password` together. Use a token that can only
+pull the required image. With all three empty, public images need no credential.
+The module writes root's Docker configuration before Compose starts; it is mode
+0600 and remains available to root's in-place upgrades and reboots.
+
+The credential is included in Terraform state and droplet user_data, like the
+IdP client secret and DNS token. Base64 is encoding, not encryption. Protect the
+state backend and DigitalOcean API access, and rotate the pull token when it is
+no longer needed. The metadata firewall described below blocks containers from
+reading user_data; it does not prevent an account-token holder from reading it.
+
 ## Setup
 
 ```sh
@@ -176,3 +190,5 @@ The block storage volume that holds Postgres carries `prevent_destroy`, so a des
 $EDITOR main.tf                # delete `prevent_destroy = true` on digitalocean_volume.broch_data
 terraform destroy
 ```
+
+For `AzureAd`, an explicit `auth_authority` must use an HTTPS DNS hostname with the default HTTPS port and end in `/v2.0`. Port overrides, bracketed IPv6 literals and userinfo are not supported by the module. Leave the authority empty to derive it from the instance and tenant. Broch 1.36 requires v2.0 for signed refresh identity.

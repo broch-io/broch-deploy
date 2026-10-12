@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Deploy Broch on an EC2 instance with identity provider sign-in. Start with your
-  domain and master key. The default options create Route 53 DNS records and an
+  domain; leave the master key blank to generate one, and save it after the deploy
+  (see the MasterKeySecretArn output). The default options create Route 53 DNS records and an
   Amazon RDS PostgreSQL database. To use other DNS or database options, change
   the choices below and complete their matching sections. CloudFormation shows
   every section even when it does not apply; leave unused sections at their
@@ -33,7 +34,7 @@ Metadata:
       - Label: { default: "Delegated DNS zone - advanced" }
         Parameters: [DnsZoneName]
       - Label: { default: "Your own HTTPS certificate - only for Byo mode" }
-        Parameters: [TlsCertificate, TlsCertificateKey]
+        Parameters: [TlsCertificate, TlsCertificateKey, TlsCertificateSecretArn, TlsCertificateKeySecretArn, TlsSecretsKmsKeyArn]
       - Label: { default: "Database - choose one mode" }
         Parameters: [DatabaseMode]
       - Label: { default: "New RDS database - only for NewServer mode" }
@@ -55,7 +56,7 @@ Metadata:
     ParameterLabels:
       DnsZone: { default: "Domain for Broch (example.com)" }
       ShareSubdomain: { default: "Broch subdomain (default: broch)" }
-      BrochMasterKey: { default: "Broch master key (required)" }
+      BrochMasterKey: { default: "Broch master key (new database: leave blank; reused database or update: enter or keep the existing key)" }
       DnsProvider: { default: "Who manages DNS for your domain?" }
       DnsAutoRecords: { default: "Create DNS records automatically?" }
       CertMode: { default: "How should Broch get its HTTPS certificate?" }
@@ -68,6 +69,9 @@ Metadata:
       GcpCredentialsJson: { default: "Google Cloud DNS service account key (base64)" }
       TlsCertificate: { default: "HTTPS certificate chain (base64)" }
       TlsCertificateKey: { default: "HTTPS private key (base64)" }
+      TlsCertificateSecretArn: { default: "Certificate chain secret ARN (instead of the chain above)" }
+      TlsCertificateKeySecretArn: { default: "Private key secret ARN (instead of the key above)" }
+      TlsSecretsKmsKeyArn: { default: "KMS key ARN of those secrets (only for a customer-managed key)" }
       DatabaseMode: { default: "Where should PostgreSQL run?" }
       DbSubnetIds: { default: "RDS subnets in two or more Availability Zones" }
       DbInstanceClass: { default: "RDS instance size" }
@@ -106,17 +110,27 @@ Metadata:
       RegistryPassword: { default: "Container registry token" }
 
 Parameters:
-  # ── Encryption (required) ────────────────────────────────────────────────────
+  # ── Encryption ──────────────────────────────────────────────────────────────
+  # Empty (the default) => MasterKeySecret GENERATES the key; set => it stores this value. The length
+  # floor (32 characters, Broch's 32-byte minimum for an ASCII key) lives in the AllowedPattern, not in
+  # MinLength: CloudFormation checks MinLength against the empty default too.
   BrochMasterKey:
     Type: String
     NoEcho: true
-    MinLength: 32
+    Default: ""
     Description: >-
-      Required. Generate once with openssl rand -base64 48 and save the value securely.
-      Reuse the same key whenever you redeploy with an existing Broch database; a new key
-      cannot decrypt its data. This stack stores the key in Secrets Manager in your AWS account.
-    AllowedPattern: "^$|^[^'\\r\\n]*[^'\\r\\n\\\\]$"
-    ConstraintDescription: must not contain a single quote or a line break, or end with a backslash.
+      New installation with a new database: leave blank. The stack generates the key and stores it in
+      Secrets Manager (the MasterKeySecretArn output); save a copy of it after the deploy. A new stack
+      that reuses an existing Broch database (ExistingDatabase, ExistingServer, or recreating a deleted
+      stack): enter that database's saved key, at least 32 characters; blank generates a NEW key that
+      cannot decrypt the old data (a Local snapshot restore refuses a blank key). Updating a stack:
+      keep the existing value (console: Use existing value; update-stack and change sets:
+      UsePreviousValue=true). If you supplied the key, leaving it out or clearing it replaces it, and
+      the next rebuilt instance cannot decrypt the data.
+    AllowedPattern: "^$|^[^'\\r\\n]{31,}[^'\\r\\n\\\\]$"
+    ConstraintDescription: >-
+      must be empty (to generate a key) or at least 32 characters, with no single quote or line
+      break, and must not end with a backslash.
 
   # ── Domain & TLS ────────────────────────────────────────────────────────────
   # The public hostname is COMPOSED from DnsZone + ShareSubdomain (Broch serves
@@ -171,11 +185,57 @@ Parameters:
       Only for Byo certificate mode. Enter the base64-encoded PEM full chain, for example
       base64 -w0 fullchain.pem. The certificate must cover both your Broch hostname and its
       wildcard; a wildcard alone does not cover the hostname used by the admin console.
+      CloudFormation limits this field to 4,096 bytes, which an RSA chain usually exceeds;
+      use the certificate chain secret ARN below instead.
   TlsCertificateKey:
     Type: String
     NoEcho: true
     Default: ""
-    Description: Only for Byo certificate mode. Enter the base64-encoded PEM private key, for example base64 -w0 privkey.pem.
+    Description: >-
+      Only for Byo certificate mode. Enter the base64-encoded PEM private key, for example
+      base64 -w0 privkey.pem. If it is over 4,096 bytes (an RSA 4096-bit key), use the private
+      key secret ARN below instead.
+  # Byo from a Secrets Manager secret the customer creates and owns: no 4,096-byte parameter limit,
+  # and renewal is a put-secret-value on that secret (the instance's hourly broch-tls-refresh timer
+  # installs it), never a stack update. Each one replaces its inline parameter above (a Rule refuses
+  # both). The instance role gets GetSecretValue on exactly these ARNs, so the FULL ARN (with the
+  # 6-character suffix Secrets Manager appends) is required: IAM matches the complete ARN. The ARN
+  # is Fn::Sub'd into tls-refresh.sh single-quoted; the pattern admits no quote or "$".
+  TlsCertificateSecretArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Only for Byo certificate mode, instead of the certificate chain above. The full ARN of a
+      Secrets Manager secret in this AWS account that holds the PEM full chain (for example
+      created with --secret-string file://fullchain.pem). To renew, put the new chain into the same
+      secret; the instance installs it within an hour.
+    AllowedPattern: "^$|^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]+:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$"
+    ConstraintDescription: must be empty or the full ARN of a Secrets Manager secret, including the 6-character suffix after the name.
+  TlsCertificateKeySecretArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Only for Byo certificate mode, instead of the private key above. The full ARN of a Secrets
+      Manager secret in this AWS account that holds the PEM private key (for example created with
+      --secret-string file://privkey.pem).
+    AllowedPattern: "^$|^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]+:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$"
+    ConstraintDescription: must be empty or the full ARN of a Secrets Manager secret, including the 6-character suffix after the name.
+  # A customer-managed KMS key on those secrets: the instance role is created by this stack, so the
+  # customer can't name it in a grant before the deploy. Set here, the role gets kms:Decrypt on exactly
+  # this key, and only through Secrets Manager (kms:ViaService). A key ARN, never an alias or a
+  # wildcard: IAM matches a key's ARN, and an alias ARN would grant nothing.
+  TlsSecretsKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Applies only to Byo mode with the certificate secret ARNs above; ignored otherwise. Set it only
+      when those secrets are encrypted with a customer-managed KMS key (leave blank for the default
+      aws/secretsmanager key). One key covers both secrets: if both use a customer-managed key, it must
+      be this same key, so both secrets are in its region. Enter the key's full ARN
+      (arn:aws:kms:region:account:key/key-id), not an alias. The stack lets the instance use this key to
+      decrypt the secrets through Secrets Manager only.
+    AllowedPattern: "^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]+:key/[A-Za-z0-9-]+$"
+    ConstraintDescription: must be empty or the full ARN of a KMS key (arn:aws:kms:region:account:key/key-id), not an alias.
   AcmeEmail:
     Type: String
     Description: Required in every certificate mode. Contact email for the Let's Encrypt account that issues and renews your certificates (unused when you bring your own certificate).
@@ -460,7 +520,7 @@ Parameters:
   # ── Image (advanced) ────────────────────────────────────────────────────────
   BrochVersion:
     Type: String
-    Default: "1.35.0"
+    Default: "1.36.0"
     # A Docker tag: spliced into a sed replacement in set-version.sh, so no | or spaces.
     AllowedPattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
     ConstraintDescription: must be a Docker image tag (letters, digits, _ . -), e.g. 1.31.0 or latest.
@@ -492,7 +552,17 @@ Conditions:
   HasLocalDbPassword: !Not [!Equals [!Ref LocalDbAdminPassword, ""]]
   HasDataVolumeSnapshot: !Not [!Equals [!Ref DataVolumeSnapshotId, ""]]
   CreateElasticIp: !Equals [!Ref ElasticIpAllocationId, ""]
+  # Empty BrochMasterKey => MasterKeySecret generates the key; set => it stores the supplied value.
+  HasMasterKey: !Not [!Equals [!Ref BrochMasterKey, ""]]
   IsByoCert: !Equals [!Ref CertMode, Byo]
+  # Byo: each half of the certificate pair comes from the stack's own secret (the inline base64
+  # parameter) or from a customer secret named by ARN. The ByoCert* Rules allow exactly one per half.
+  ReadTlsCertificateSecretArn: !And [!Condition IsByoCert, !Not [!Equals [!Ref TlsCertificateSecretArn, ""]]]
+  ReadTlsCertificateKeySecretArn: !And [!Condition IsByoCert, !Not [!Equals [!Ref TlsCertificateKeySecretArn, ""]]]
+  CreateTlsCertSecret: !And [!Condition IsByoCert, !Not [!Condition ReadTlsCertificateSecretArn]]
+  CreateTlsKeySecret: !And [!Condition IsByoCert, !Not [!Condition ReadTlsCertificateKeySecretArn]]
+  ReadCustomerTlsSecret: !Or [!Condition ReadTlsCertificateSecretArn, !Condition ReadTlsCertificateKeySecretArn]
+  DecryptCustomerTlsSecret: !And [!Condition ReadCustomerTlsSecret, !Not [!Equals [!Ref TlsSecretsKmsKeyArn, ""]]]
   # The public host is <ShareSubdomain>.<DnsZone>, or the zone apex when ShareSubdomain is empty.
   HasShareSubdomain: !Not [!Equals [!Ref ShareSubdomain, ""]]
   # Route 53 is the only provider the STACK manages DNS resources for (native apex/wildcard
@@ -536,6 +606,13 @@ Rules:
         AssertDescription: AuthClientId is required for every identity provider.
       - Assert: !Not [!Equals [!Ref AuthClientSecret, ""]]
         AssertDescription: AuthClientSecret is required for Broch's server-side sign-in.
+  # CloudFormation Rules cannot conditionally match a URL pattern. Entra uses the
+  # tenant/instance inputs; an authority override is offered only for generic OIDC.
+  AuthAzureAdUsesDerivedAuthority:
+    RuleCondition: !Equals [!Ref AuthProvider, AzureAd]
+    Assertions:
+      - Assert: !Equals [!Ref AuthAuthority, ""]
+        AssertDescription: Leave AuthAuthority blank for AzureAd. Broch derives the required v2.0 authority from AuthInstance and AuthTenantId; v1 does not support signed refresh identity.
   AuthAzureAdRequiresTenant:
     RuleCondition: !Or [!Equals [!Ref AuthProvider, AzureAd], !Equals [!Ref AuthProvider, EntraExternalId]]
     Assertions:
@@ -583,11 +660,19 @@ Rules:
                 - !Ref DbSubnetIds
                 - ""
         AssertDescription: DbSubnetIds (two or more subnets in different AZs) is required when DatabaseMode=NewServer.
+  # Byo needs the chain and the key, each from exactly one source: the inline base64 parameter or a
+  # Secrets Manager secret ARN. Both set would leave a stack secret nobody reads beside the one used.
   ByoCertRequiresCertAndKey:
     RuleCondition: !Equals [!Ref CertMode, Byo]
     Assertions:
-      - Assert: !And [!Not [!Equals [!Ref TlsCertificate, ""]], !Not [!Equals [!Ref TlsCertificateKey, ""]]]
-        AssertDescription: TlsCertificate and TlsCertificateKey (base64 PEM) are both required when CertMode=Byo.
+      - Assert: !Or [!Not [!Equals [!Ref TlsCertificate, ""]], !Not [!Equals [!Ref TlsCertificateSecretArn, ""]]]
+        AssertDescription: CertMode=Byo needs the certificate chain - set TlsCertificate (base64 PEM) or TlsCertificateSecretArn (a Secrets Manager secret holding it).
+      - Assert: !Or [!Not [!Equals [!Ref TlsCertificateKey, ""]], !Not [!Equals [!Ref TlsCertificateKeySecretArn, ""]]]
+        AssertDescription: CertMode=Byo needs the private key - set TlsCertificateKey (base64 PEM) or TlsCertificateKeySecretArn (a Secrets Manager secret holding it).
+      - Assert: !Or [!Equals [!Ref TlsCertificate, ""], !Equals [!Ref TlsCertificateSecretArn, ""]]
+        AssertDescription: Set TlsCertificate or TlsCertificateSecretArn, not both.
+      - Assert: !Or [!Equals [!Ref TlsCertificateKey, ""], !Equals [!Ref TlsCertificateKeySecretArn, ""]]
+        AssertDescription: Set TlsCertificateKey or TlsCertificateKeySecretArn, not both.
   DigitalOceanRequiresToken:
     RuleCondition: !And
       - !Equals [!Ref DnsProvider, DigitalOcean]
@@ -642,32 +727,70 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LocalDbAdminPassword, ""]]
         AssertDescription: DataVolumeSnapshotId needs LocalDbAdminPassword set to the password the restored data was initialised with.
+  SnapshotRestoreRequiresMasterKey:
+    # The one deploy the stack KNOWS reuses a Broch database: a freshly generated key could not decrypt
+    # what that database holds (sign-ins, the license and usage data would all reset).
+    RuleCondition: !And
+      - !Equals [!Ref DatabaseMode, Local]
+      - !Not [!Equals [!Ref DataVolumeSnapshotId, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref BrochMasterKey, ""]]
+        AssertDescription: DataVolumeSnapshotId restores an existing Broch database - set BrochMasterKey to that database's key (the value you saved from the old stack's MasterKeySecretArn secret).
 
 Resources:
   # ── Secrets (born in the customer account; never transit Broch) ──────────────
-  # The master key is CUSTOMER-SUPPLIED (BrochMasterKey), never generated — stored here only so
-  # the instance can read it at boot via the instance role (keeping it out of UserData). Storing
-  # the same customer value every deploy is idempotent; a generated key would change on redeploy
-  # and could no longer decrypt an existing database's keyring.
   #
   # Every secret Name is SALTED with this stack incarnation's UUID (the third segment of
-  # AWS::StackId). Secrets Manager delete is a 30-day soft delete with no in-template override
-  # (no RecoveryWindowInDays property in CloudFormation), so a delete+redeploy under the same
-  # stack name — or a retry after a rolled-back first deploy — would otherwise collide with the
-  # soft-deleted ghost ("You can't create this secret because a secret with this name is already
-  # scheduled for deletion"). A new stack incarnation mints a new UUID → fresh names → no
-  # collision, ever. The UUID is stable across in-place UPDATEs of the same stack, so updates
+  # AWS::StackId). The master key and Local password secrets are retained (DeletionPolicy Retain,
+  # and kept when a first deploy rolls back after creating them), so a delete+redeploy under the
+  # same stack name — or a retry after a rolled-back first deploy — would otherwise collide with a
+  # retained secret of the same name, live or one the customer deleted with a recovery window.
+  # (CloudFormation deletes the other secrets at once, without a recovery window, so they leave
+  # nothing behind.) A new stack incarnation mints a new UUID → fresh names → no collision, ever. The UUID is stable across in-place UPDATEs of the same stack, so updates
   # never rename (and thus never replace) the secrets. Consumers reference by !Ref/ARN or fetch
   # by the SAME salted name (render-secrets builds it from the identical Sub variables) — nothing
   # depends on an unsalted name.
+  # BROCH_MASTER_KEY, Broch's at-rest encryption root, read by the instance at first boot (put
+  # BROCH_MASTER_KEY in render-secrets.sh) so it never rides in UserData. GENERATED here unless the
+  # customer supplied BrochMasterKey (the LocalDbPasswordSecret pattern below):
+  #  - generated: 64 letters and digits (~380 bits). Broch needs at least 32 bytes; alphanumerics
+  #    also carry through the single-quoted .env line unchanged (no quote, backslash or line break).
+  #  - a stack UPDATE keeps it: the properties are unchanged, so CloudFormation does not regenerate.
+  #    NEVER edit GenerateSecretString in a template release: a changed generator can re-mint the
+  #    value on every generated-key stack's next update, and the next instance it boots (a rebuild)
+  #    could not decrypt the database. (deploy-lint R4 pins it.)
+  #  - an instance replacement reads the same secret, so a surviving RDS/external database keeps
+  #    working.
+  #  - a stack delete + create is a new stack incarnation: a new salted name and a new key. A new
+  #    stack that reuses the old database takes the saved key as BrochMasterKey (the
+  #    SnapshotRestoreRequiresMasterKey Rule enforces it for a Local snapshot restore).
+  # UpdateReplacePolicy Retain: Name is immutable, so a future rename would REPLACE the secret and a
+  # replacement generates a new value; Retain keeps the old secret, and the key in it, readable.
+  # DeletionPolicy Retain: a stack delete leaves the RDS / EBS final snapshot behind, and that data
+  # is unreadable without this key; a generated key the customer never saved would otherwise be
+  # deleted with the stack, at once (CloudFormation deletes a secret without a recovery window).
+  # The secret stays (live, under its salted name, which no redeploy can collide with) until the
+  # customer deletes it; the README's Teardown gives the command, and the CI smoke teardown and
+  # reaper delete their own.
+  # Supplying BrochMasterKey on an UPDATE of a generated-key stack (or clearing a supplied one)
+  # changes the stored key; the parameter description says to keep the existing value. Secrets
+  # Manager keeps the value it replaced as the AWSPREVIOUS version, which the README points to.
+  # Do not change any MasterKeySecret property without a live test: a replacement or regeneration
+  # strands the encrypted data. (deploy-lint R4 pins Name, the generator and both policies.)
   MasterKeySecret:
     Type: AWS::SecretsManager::Secret
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
     Properties:
       Name: !Sub
         - "${AWS::StackName}-${Salt}/broch-master-key"
         - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
-      Description: Broch at-rest encryption root (BROCH_MASTER_KEY). Customer-supplied; the same value must be supplied on every redeploy that reuses the DB.
-      SecretString: !Ref BrochMasterKey
+      Description: Broch at-rest encryption root (BROCH_MASTER_KEY). Save a copy; a new stack that reuses this database needs the same value.
+      SecretString: !If [HasMasterKey, !Ref BrochMasterKey, !Ref "AWS::NoValue"]
+      GenerateSecretString: !If
+        - HasMasterKey
+        - !Ref "AWS::NoValue"
+        - { PasswordLength: 64, ExcludePunctuation: true }
 
   DbPasswordSecret:
     Type: AWS::SecretsManager::Secret
@@ -692,17 +815,20 @@ Resources:
   # secret REPLACES it — and a replaced GenerateSecretString secret mints a brand-new value, while
   # the on-box Postgres data dir keeps the password it was initialised with. Retaining the old
   # secret on replacement keeps that original password readable (live, under the old name) so an
-  # operator can recover it and pass it as LocalDbAdminPassword. Deliberately NOT set on the other
-  # generated secrets: the RDS master password re-syncs from the new secret via its dynamic
+  # operator can recover it and pass it as LocalDbAdminPassword (MasterKeySecret above does the same
+  # for the master key). Deliberately NOT set on the database password secrets below: the RDS master
+  # password re-syncs from the new secret via its dynamic
   # reference, and the ExistingServer carve re-ALTERs the broch role on the next boot.
-  # DeletionPolicy stays Delete (explicit for the W3011 pairing): on stack DELETION the secret
-  # soft-deletes normally — the salted names make that ghost harmless to any future deploy, and
-  # retaining on delete would leak a live secret per deleted stack. Only REPLACEMENT retains.
+  # DeletionPolicy Retain, as for MasterKeySecret: a stack delete leaves the data volume's final EBS
+  # snapshot, and restoring it (DataVolumeSnapshotId) needs the password its data directory was
+  # initialised with. A generated one would otherwise be deleted with the stack, at once. The secret
+  # stays live under its salted name (no redeploy can collide with it) until the customer deletes
+  # it; the README's Teardown gives the command, and the CI smoke teardown and reaper delete their own.
   LocalDbPasswordSecret:
     Type: AWS::SecretsManager::Secret
     Condition: IsLocal
     UpdateReplacePolicy: Retain
-    DeletionPolicy: Delete
+    DeletionPolicy: Retain
     Properties:
       Name: !Sub
         - "${AWS::StackName}-${Salt}/broch-local-db-password"
@@ -786,10 +912,12 @@ Resources:
       SecretString: !Ref AuthClientSecret
 
   # BYO-cert: the supplied wildcard cert + key (base64 PEM), fetched at boot and
-  # decoded into /opt/broch/certs/. The private key especially must not ride in UserData.
+  # decoded into /opt/broch/certs/ by tls-refresh.sh. The private key especially must not ride in
+  # UserData. Each is created only for the inline parameter: with TlsCertificateSecretArn /
+  # TlsCertificateKeySecretArn the instance reads the customer's own secret instead.
   TlsCertSecret:
     Type: AWS::SecretsManager::Secret
-    Condition: IsByoCert
+    Condition: CreateTlsCertSecret
     Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
       Name: !Sub
@@ -798,7 +926,7 @@ Resources:
       SecretString: !Ref TlsCertificate
   TlsKeySecret:
     Type: AWS::SecretsManager::Secret
-    Condition: IsByoCert
+    Condition: CreateTlsKeySecret
     Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
       Name: !Sub
@@ -972,6 +1100,11 @@ Resources:
           - Effect: Allow
             Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
+      # A stable handle for a customer KMS key policy written BEFORE the deploy (README, BYO
+      # certificate secrets): it matches aws:PrincipalTag/broch-stack, because the role's generated
+      # name shortens the stack name past a length. Tags update in place (no role replacement).
+      Tags:
+        - { Key: broch-stack, Value: !Ref AWS::StackName }
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
@@ -1011,11 +1144,40 @@ Resources:
                 # "<stack>-<uuid>/broch-*-AbCdEf" — covering the master key, DB
                 # password, and any of the conditional user-secrets without having to
                 # enumerate (and !If) each one that may or may not exist. The salt also
-                # means this role can NOT read a previous incarnation's (soft-deleted)
+                # means this role can NOT read a previous incarnation's retained
                 # secrets of the same stack name.
                 Resource: !Sub
                   - "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}-${Salt}/broch-*"
                   - Salt: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
+        # Byo from the customer's own Secrets Manager secrets (TlsCertificateSecretArn /
+        # TlsCertificateKeySecretArn): read exactly those ARNs, nothing else of theirs. The default
+        # aws/secretsmanager key needs no grant. A customer-managed key (TlsSecretsKmsKeyArn) gets
+        # kms:Decrypt on exactly that key, and only when Secrets Manager calls it on the role's behalf.
+        # ViaService names the KEY's region (field 4 of its ARN): a KMS key is regional, so a secret
+        # encrypted with it lives there, which is not always the stack's region.
+        - !If
+          - ReadCustomerTlsSecret
+          - PolicyName: read-byo-certificate-secrets
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource:
+                    - !If [ReadTlsCertificateSecretArn, !Ref TlsCertificateSecretArn, !Ref AWS::NoValue]
+                    - !If [ReadTlsCertificateKeySecretArn, !Ref TlsCertificateKeySecretArn, !Ref AWS::NoValue]
+                - !If
+                  - DecryptCustomerTlsSecret
+                  - Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: !Ref TlsSecretsKmsKeyArn
+                    Condition:
+                      StringEquals:
+                        kms:ViaService: !Sub
+                          - "secretsmanager.${KeyRegion}.${AWS::URLSuffix}"
+                          - KeyRegion: !Select [3, !Split [":", !Ref TlsSecretsKmsKeyArn]]
+                  - !Ref AWS::NoValue
+          - !Ref AWS::NoValue
         - PolicyName: cfn-helpers
           PolicyDocument:
             Version: "2012-10-17"
@@ -1466,6 +1628,138 @@ Resources:
                 RestartSec=30
                 [Install]
                 WantedBy=multi-user.target
+            # CertMode=Byo: installs the certificate pair into /opt/broch/certs (the Byo Caddyfile's tls
+            # line reads it) and reloads Caddy when it is running. render-secrets.sh runs it at first
+            # boot, where a failure stops the boot, and then starts broch-tls-refresh.timer, which reruns
+            # it hourly, so a renewal reaches Caddy with no stack or instance change: a new value put into
+            # the customer's secret, or a TlsCertificate/TlsCertificateKey stack update (which rewrites
+            # the stack's own secrets in place). It never installs a key that doesn't match the chain's first
+            # certificate, so the two secrets can be updated one after the other: until they match, the
+            # installed pair keeps serving. Unchanged content: no reload. Installing writes
+            # /opt/broch/.tls-reload-pending first; every run that finds it (after fetching, checking and
+            # installing a newer pair, or on its way out of a failure, there only if the installed pair
+            # still matches) reloads, so a failed reload is
+            # retried hourly without ever blocking a newer certificate. A successful reload (or Caddy not
+            # running, which reads the files when it starts) clears it. Each source is a secret ARN, whose
+            # fourth field is its region. Logs go to the journal as broch-tls: the unit sets
+            # BROCH_TLS_UNIT=1 and SyslogIdentifier, and every other caller (cloud-init at first boot, a
+            # manual run) gets logger. INVOCATION_ID can't tell them apart: cloud-init's own unit sets it
+            # too. Shell vars are unbraced (Fn::Sub).
+            /opt/broch/tls-refresh.sh:
+              mode: "000700"
+              owner: root
+              group: root
+              content: !Sub
+                - |
+                  #!/bin/bash
+                  set -euo pipefail
+                  cert_id='${CertId}'
+                  key_id='${KeyId}'
+                  certs=/opt/broch/certs
+                  pending=/opt/broch/.tls-reload-pending
+                  log() { echo "broch-tls: $*" >&2; [ "$(printenv BROCH_TLS_UNIT)" = 1 ] || logger -t broch-tls -- "$*" 2>/dev/null || true; }
+                  if [ -z "$cert_id" ] || [ -z "$key_id" ]; then log "CertMode is not Byo; nothing to install"; exit 0; fi
+                  # Caddy reads the files when it starts, so with Caddy not running there is nothing to reload.
+                  # --force: the Caddyfile is unchanged, and without it Caddy keeps the old certificate.
+                  reload() {
+                    if [ -z "$(cd /opt/broch && docker compose ps -q caddy 2>/dev/null)" ]; then rm -f "$pending"; return 0; fi
+                    log "reloading Caddy"
+                    if (cd /opt/broch && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force); then
+                      rm -f "$pending"
+                      log "Caddy reloaded with the installed certificate"
+                      return 0
+                    fi
+                    log "Caddy did not reload; it serves the old certificate until a later run (hourly) reloads it or Caddy restarts"
+                    return 1
+                  }
+                  # pubkeys_match CHAIN KEY: the key belongs to the chain's first certificate. -passin pass:
+                  # (an empty passphrase): an encrypted key fails instead of prompting.
+                  pubkeys_match() {
+                    local cert_pub key_pub
+                    cert_pub=$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null) || return 1
+                    key_pub=$(openssl pkey -in "$2" -passin pass: -pubout 2>/dev/null) || return 1
+                    [ "$cert_pub" = "$key_pub" ]
+                  }
+                  # fail MESSAGE: stop, but first retry a reload a previous run still owes, so a secret that
+                  # can't be read right now doesn't also hold that back. Only when the INSTALLED pair still
+                  # matches: a run interrupted between its two mv calls leaves a new key beside the old chain,
+                  # which Caddy must not load (the next run that can fetch the pair reinstalls both).
+                  fail() {
+                    log "$1"
+                    if [ -e "$pending" ]; then
+                      if pubkeys_match "$certs/fullchain.pem" "$certs/privkey.pem"; then
+                        reload || true
+                      else
+                        log "the installed key does not match the installed chain (an interrupted install); not reloading Caddy until a run installs a matching pair"
+                      fi
+                    fi
+                    exit 1
+                  }
+                  # fetch ARN FILE: the secret's text value. `--output text` prints None for a secret with no
+                  # SecretString (a binary secret), which no PEM or base64 PEM can be.
+                  fetch() {
+                    /usr/local/bin/aws --region "$(printf '%s' "$1" | cut -d: -f4)" secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text > "$2" || fail "could not read the secret $1"
+                    if [ "$(tr -d '\r\n' < "$2")" = None ]; then fail "the secret $1 has no text value (a binary secret); store the PEM as a text secret, for example --secret-string file://fullchain.pem"; fi
+                  }
+                  # PEM text as stored in a secret you create, or base64 PEM (the inline parameters' form).
+                  pem() { if grep -q -e '-----BEGIN' "$1"; then cat "$1"; else base64 -d "$1"; fi; }
+                  umask 077
+                  mkdir -p "$certs"
+                  # Staged beside certs/ (same filesystem, so mv is a rename) and outside the directory Caddy mounts.
+                  new=$(mktemp -d /opt/broch/.tls-new.XXXXXX)
+                  trap 'rm -rf "$new"' EXIT
+                  fetch "$cert_id" "$new/chain.raw"
+                  fetch "$key_id" "$new/key.raw"
+                  pem "$new/chain.raw" > "$new/fullchain.pem" || fail "the certificate chain secret is neither PEM nor base64 PEM"
+                  pem "$new/key.raw" > "$new/privkey.pem" || fail "the private key secret is neither PEM nor base64 PEM"
+                  openssl x509 -in "$new/fullchain.pem" -noout 2>/dev/null || fail "the certificate chain does not start with a PEM certificate"
+                  openssl pkey -in "$new/privkey.pem" -passin pass: -noout 2>/dev/null || fail "the private key is not an unencrypted PEM private key (remove its passphrase first)"
+                  pubkeys_match "$new/fullchain.pem" "$new/privkey.pem" || fail "the private key does not match the chain's first certificate; keeping the installed pair (when renewing, update both secrets)"
+                  if cmp -s "$new/fullchain.pem" "$certs/fullchain.pem" && cmp -s "$new/privkey.pem" "$certs/privkey.pem"; then
+                    if [ -e "$pending" ]; then log "a previous run installed this certificate but Caddy has not loaded it; retrying the reload"; fi
+                  else
+                    chmod 0644 "$new/fullchain.pem"
+                    chmod 0600 "$new/privkey.pem"
+                    # Mark the reload as owed BEFORE the new files land, so no failure path can lose it.
+                    : > "$pending"
+                    mv -f "$new/privkey.pem" "$certs/privkey.pem"
+                    mv -f "$new/fullchain.pem" "$certs/fullchain.pem"
+                    log "installed the certificate ($(openssl x509 -in "$certs/fullchain.pem" -noout -subject -enddate | tr '\n' ' '))"
+                  fi
+                  if [ -e "$pending" ]; then reload || exit 1; fi
+                - CertId: !If [ReadTlsCertificateSecretArn, !Ref TlsCertificateSecretArn, !If [CreateTlsCertSecret, !Ref TlsCertSecret, ""]]
+                  KeyId: !If [ReadTlsCertificateKeySecretArn, !Ref TlsCertificateKeySecretArn, !If [CreateTlsKeySecret, !Ref TlsKeySecret, ""]]
+            /etc/systemd/system/broch-tls-refresh.service:
+              mode: "000644"
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=Install a renewed bring-your-own certificate from Secrets Manager (CertMode=Byo)
+                After=broch.service
+                [Service]
+                Type=oneshot
+                # A oneshot has no start timeout by default: a hung AWS CLI or docker call would otherwise
+                # block every later run of the timer.
+                TimeoutStartSec=10min
+                SyslogIdentifier=broch-tls
+                # Tells tls-refresh.sh its stderr already reaches the journal as broch-tls (no logger copy).
+                Environment=BROCH_TLS_UNIT=1
+                ExecStart=/bin/bash /opt/broch/tls-refresh.sh
+            # Enabled by render-secrets.sh for CertMode=Byo only.
+            /etc/systemd/system/broch-tls-refresh.timer:
+              mode: "000644"
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=Check hourly for a renewed bring-your-own certificate (CertMode=Byo)
+                [Timer]
+                OnBootSec=10min
+                OnUnitActiveSec=1h
+                RandomizedDelaySec=5min
+                [Install]
+                WantedBy=timers.target
             # Boot-time secret hydration script. Relocated here from UserData's write_files:
             # its ~170 lines pushed base64-encoded UserData past EC2's 25,600-byte hard cap
             # (metadata has no such cap). Runcmd invokes it AFTER cfn-init writes it -- same
@@ -1683,11 +1977,14 @@ Resources:
                       put AUTHENTICATION__CLIENTSECRET broch-auth-client-secret
                     fi
                     if [ "${IsByo}" = "true" ]; then
-                      # base64 PEM -> files. The Byo Caddyfile reads these; the private key is 0600.
-                      get "broch-tls-cert" | base64 -d > /opt/broch/certs/fullchain.pem
-                      get "broch-tls-key" | base64 -d > /opt/broch/certs/privkey.pem
-                      chmod 0644 /opt/broch/certs/fullchain.pem
-                      chmod 0600 /opt/broch/certs/privkey.pem
+                      # The certificate pair -> /opt/broch/certs (the Byo Caddyfile reads it; the private key
+                      # is 0600), from the stack's secrets or the customer's own (the *SecretArn parameters).
+                      # tls-refresh.sh refuses a key that doesn't match the chain; that stops the boot here.
+                      bash /opt/broch/tls-refresh.sh || fatal "could not install the bring-your-own certificate (the broch-tls line above says why)"
+                      # Then hourly, so a renewal needs no stack update. Started here, not from UserData, so
+                      # this feature added no UserData change (one would stop and start existing instances
+                      # on their next stack update). enable reloads unit files itself.
+                      systemctl enable --now broch-tls-refresh.timer || echo "WARN - broch-tls-refresh.timer did not start, so a renewed certificate is installed only when you run /opt/broch/tls-refresh.sh" >&2
                     fi
                     if [ "${DoTokenSet}" = "true" ]; then
                       put DO_AUTH_TOKEN broch-do-token
@@ -2012,8 +2309,11 @@ Outputs:
       - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${ShareSubdomain}.${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${ShareSubdomain}.${DnsZone}/healthz returns 200."
       - !Sub "First boot takes ~3-10 minutes: instance provisioning, container pulls, DNS propagation, and Let's Encrypt TLS issuance. https://${DnsZone} will not load until this finishes -- this is expected, not a failed deploy. The appliance is ready when https://${DnsZone}/healthz returns 200."
   MasterKeySecretArn:
-    Description: Where your supplied BROCH_MASTER_KEY is stored in your AWS account for the instance to read. Keep the original safe and supply the same value on every redeploy that reuses the database.
+    Description: The Secrets Manager secret holding BROCH_MASTER_KEY (generated by the stack unless you supplied one). Save a copy outside this stack (MasterKeyBackupCommand prints it); a new stack that reuses this database needs the same value as BrochMasterKey.
     Value: !Ref MasterKeySecret
+  MasterKeyBackupCommand:
+    Description: Prints the master key, to save in your own password manager or secret store. Run it once after the first deploy.
+    Value: !Sub "aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id ${MasterKeySecret} --query SecretString --output text"
   DatabaseEndpoint:
     Description: RDS endpoint (NewServer), the existing server host (ExistingServer), on-box note (Local), or external note (ExistingDatabase).
     Value: !If
@@ -2023,6 +2323,9 @@ Outputs:
         - IsExistingServer
         - !Ref DbServerHost
         - !If [IsLocal, "local (Postgres on this instance, on a dedicated EBS data volume)", "external (you supplied the connection string)"]
+  InstanceRoleArn:
+    Description: The instance's IAM role, for a resource policy or KMS key policy that must name it (the stack already grants it what it needs).
+    Value: !GetAtt InstanceRole.Arn
   SsmCommand:
     Description: Break-glass / log access (no SSH).
     Value: !Sub "aws ssm start-session --target ${Instance}"

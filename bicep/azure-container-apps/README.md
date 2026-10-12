@@ -106,6 +106,16 @@ This template keeps secrets **inline in the Container App configuration** (the `
 
 Rotate by re-running the deploy with the new value, or `az containerapp secret set` followed by a revision restart. If you want Key Vault-backed secrets, use the [Terraform module](../../terraform/azure-container-apps/) instead.
 
+## Client IP behind the ingress
+
+The Container Apps ingress forwards every request to Broch from Azure's internal `100.100.x.x` range. The template sets `API__TRUSTEDPROXYCIDRS=100.100.0.0/17` so Broch trusts that range's `X-Forwarded-For` and `X-Forwarded-Proto`. Without it, audit events record the ingress's address instead of the client's, Share Policy network rules fail closed, and the checkout return URL comes out as http. Loopback is always trusted on top.
+
+The value is seeded into Admin → Share Settings at each start while its trusted-proxy list is empty; an admin-saved list takes precedence, and the env value is then ignored.
+
+- **Redeploying an existing install** with this template picks the range up at its next start only if that list is empty. If an admin has saved a list, add `100.100.0.0/17` to it yourself.
+- **Share Settings changes take effect after a restart**: the list is applied only at startup. Clearing the list restores the template's value at the next start.
+- **Format:** comma-separated CIDRs; whitespace is trimmed, empty entries are ignored, and a bare IP means that one address. An invalid value is skipped with a warning at startup (not a crash); with an empty stored list, Broch then trusts only loopback.
+
 ## Tradeoffs / what's deliberately not here
 
 | Decision                          | Why                                                  | When to change                                      |
@@ -114,9 +124,11 @@ Rotate by re-running the deploy with the new value, or `az containerapp secret s
 | Single replica                    | Broch runs as one instance and doesn't cluster       | Keep `maxReplicas` at 1; tunnels pin to a replica   |
 | Secrets inline, no Key Vault      | One fewer resource + role assignment to manage       | Use the Terraform module for Key Vault-backed flow  |
 | Liveness probe only (`/healthz`)  | Restarts a container that's TCP-alive but HTTP-hung  | —                                                   |
-| Wildcard cert is BYO PFX          | Azure managed certs don't issue wildcards            | — (Front Door / App Gateway need your cert too)     |
+| Wildcard cert is BYO PFX          | Azure managed certs don't issue wildcards            | — (Front Door / App Gateway need your cert too, and must forward the original `Host` header) |
 
 Two of these deserve the long version. *Ephemeral:* Azure Files can't host the sidecar's data — SMB has no chmod and postgres `initdb` requires it — so Embedded data lives on a replica-scoped EmptyDir volume and is lost on revision restarts, image upgrades, and platform maintenance, returning the app to first-run state (re-enter IdP config, re-activate the license). *No readiness probe:* `/healthz/ready` is license-gated, and gating ingress on it deadlocks first-run activation — no traffic means no setup UI means no license.
+
+**`SkuNotAvailable` in Managed mode.** Some subscriptions and regions refuse the default burstable `Standard_B1ms` mid-deployment ("Specified SKU is not supported in this region"). `az postgres flexible-server list-skus -l <region>` lists the region's catalog but not subscription-level restrictions, so only a deployment confirms a SKU. Redeploy with another `postgresSkuName` (for example `Standard_D2ds_v5`, general purpose, at a higher cost) or in another region.
 
 ## Pulling a new Broch image
 

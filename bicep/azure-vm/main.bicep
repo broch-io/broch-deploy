@@ -19,7 +19,7 @@ param vmName string = 'broch'
 // must actually act on are grouped at the top instead of buried among thirty prefilled ones. Keep any
 // new secret param in this block. ---
 
-@description('REQUIRED — on every deploy AND every retry of a failed deployment (no default, so the portal Redeploy form and ARM validation both refuse an empty submission; that fail-fast is deliberate). The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). The server also rejects values under 32 bytes at boot.')
+@description('REQUIRED — on every deploy AND every retry of a failed deployment (no default, so the portal Redeploy form and ARM validation both refuse an empty submission; that fail-fast is deliberate). The at-rest encryption root (BROCH_MASTER_KEY) — customer-owned, Broch never sees it. Redeploying? Enter the key you saved: the one the Azure Marketplace form generated, or the one you generated yourself. Never generate a new one for an existing installation. For a first direct deploy, generate a strong value with `openssl rand -base64 48` and store it in your own secret store; the SAME value must be supplied on every (re)deploy. For an Existing database this MUST be the key that database was encrypted with — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). The server also rejects values under 32 bytes at boot.')
 @minLength(32)
 @secure()
 param brochMasterKey string
@@ -164,7 +164,7 @@ param azureClientId string = ''
 param gcpProject string = ''
 
 @description('Broch server image tag the VM is created with. Defaults to a concrete pinned version (NOT latest) so a recreated VM never silently rolls the database across an EF-migration boundary; new releases of this template bump this default. It takes effect only when the VM is created or recreated: it is part of the VM\'s boot configuration (customData), which Azure will not change on an existing VM, so a redeploy over a live VM that changes it is rejected (PropertyChangeNotAllowed). Upgrade a running VM in place instead (README, "Pulling a new Broch image"). Recreating an existing installation? Enter the version it currently runs, because a newer version migrates the database irreversibly. The Redeploy button on the prior deployment pre-fills the version that deployment used; if you have upgraded in place since, enter the version you upgraded to. 1.29.0+ is required for dnsAutoRecords=Auto (it serves /internal/public-ip, which caddy-dynamicdns polls to write the A records).')
-param brochVersion string = '1.35.0'
+param brochVersion string = '1.36.0'
 
 @description('Broch server image repository (no tag). Default is the public image. Override for a private mirror or a pre-release/beta image you have been granted access to — set the registry* params below for the pull credential.')
 param brochImage string = 'ghcr.io/broch-io/broch'
@@ -239,6 +239,8 @@ var checkedAuthAudience = toLower(trim(authProvider)) == 'auth0' && empty(trim(a
 // retry leaves it blank on purpose, and the boot-time fetch fails closed without one (above).
 var authProviderKey = toLower(trim(authProvider))
 var authAuthoritySet = !empty(trim(authAuthority))
+var entraAuthorityParts = parseUri(authProviderKey == 'azuread' && !empty(authAuthority) ? authAuthority : 'https://unset.invalid/v2.0')
+var authAuthorityV2 = toLower(entraAuthorityParts.scheme) == 'https' && !empty(entraAuthorityParts.host) && !contains(authAuthority, '?') && !contains(authAuthority, '#') && length(filter(split(entraAuthorityParts.path, '/'), part => !empty(part))) == 2 && last(concat([''], filter(split(entraAuthorityParts.path, '/'), part => !empty(part)))) == 'v2.0'
 var checkedAuthProvider = !empty(authProvider) && empty(authProviderKey)
   ? fail('authProvider must not be only spaces: leave it empty to set up sign-in in the app.')
   : !empty(authProviderKey) && !contains(['auth0', 'azuread', 'entraexternalid', 'okta', 'oidc'], authProviderKey)
@@ -253,6 +255,8 @@ var checkedAuthProvider = !empty(authProvider) && empty(authProviderKey)
   ? fail('authDomain is required when authProvider is Auth0 or Okta (e.g. your-tenant.auth0.com).')
   : contains(['azuread', 'entraexternalid'], authProviderKey) && !authAuthoritySet && (empty(trim(authInstance)) || empty(trim(authTenantId)))
   ? fail('authInstance and authTenantId are required when authProvider is AzureAd or EntraExternalId (authInstance is your cloud\'s Microsoft login endpoint for AzureAd, your tenant\'s ciamlogin endpoint for EntraExternalId).')
+  : authProviderKey == 'azuread' && !empty(authAuthority) && !authAuthorityV2
+  ? fail('authAuthority for AzureAd must be an HTTPS Entra v2.0 authority ending in /v2.0, without a query or fragment. Leave it blank to derive it from authInstance and authTenantId.')
   : authProvider
 
 // Every parameter whose value lands in /opt/broch/.env: the settings cloud-init writes, and the

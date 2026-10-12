@@ -71,12 +71,28 @@ resource "digitalocean_droplet" "broch" {
     # an explicit auth_authority waives the domain/instance/tenant checks, as it does there.
     # Provider match is case-insensitive, as Broch binds it.
     precondition {
+      condition = (var.registry_server == "" && var.registry_username == "" && var.registry_password == "") || (
+        trimspace(var.registry_server) != "" && trimspace(var.registry_username) != "" && trimspace(var.registry_password) != ""
+      )
+      error_message = "Private image pulls require registry_server, registry_username and registry_password together."
+    }
+    precondition {
+      condition     = var.registry_server == "" || local.registry_hostname == local.image_registry
+      error_message = "registry_server must match the registry hostname in image."
+    }
+    precondition {
       condition     = trimspace(var.auth_client_id) != "" && trimspace(var.auth_client_secret) != ""
       error_message = "auth_client_id and auth_client_secret are required: Broch refuses to start with a provider but no client credentials."
     }
     precondition {
       condition     = lower(trimspace(var.auth_provider)) != "auth0" || trimspace(var.auth_audience) != ""
       error_message = "auth_audience is required when auth_provider is Auth0: set it to the Identifier of the Auth0 API your Broch application has user access to."
+    }
+    precondition {
+      condition = (lower(trimspace(var.auth_provider)) != "azuread" || var.auth_authority == ""
+        || (startswith(lower(var.auth_authority), "https://") && can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?/+[^/?#]+/+v2[.]0/*$", lower(var.auth_authority)))
+      && can(regex("/v2[.]0/*$", var.auth_authority))))
+      error_message = "auth_authority for AzureAd must be an HTTPS Entra v2.0 authority ending in /v2.0, using a DNS hostname and the default HTTPS port, without a query or fragment. Leave it blank to derive it from auth_instance and auth_tenant_id."
     }
     precondition {
       condition     = lower(trimspace(var.auth_provider)) != "oidc" || trimspace(var.auth_authority) != ""
@@ -97,6 +113,16 @@ resource "digitalocean_droplet" "broch" {
 }
 
 locals {
+  # Match Docker's splitDockerDomain (distribution/reference/normalize.go):
+  # an uppercase first component cannot be a namespace, so it is a registry.
+  image_component = split("/", var.image)[0]
+  image_registry_raw = length(split("/", var.image)) > 1 && (
+    can(regex("[.:]", local.image_component)) || local.image_component == "localhost" ||
+    lower(local.image_component) != local.image_component
+  ) ? lower(local.image_component) : "docker.io"
+  image_registry    = local.image_registry_raw == "index.docker.io" ? "docker.io" : local.image_registry_raw
+  registry_hostname = lower(var.registry_server) == "index.docker.io" ? "docker.io" : lower(var.registry_server)
+
   # AzureAd's login instance is the same for every tenant, so it defaults; EntraExternalId's is
   # tenant-specific (ciamlogin.com), so it has none and the precondition requires it.
   auth_instance = (trimspace(var.auth_instance) != "" ? var.auth_instance
@@ -120,11 +146,22 @@ locals {
     image_tag          = var.image_tag
     dns_env_var        = local.dns_env_var
     # Into the compose file's environment list, which compose interpolates: $$ is a literal $.
-    dns_api_token  = replace(var.dns_api_token, "$", "$$")
-    tls_fragment   = local.tls_fragment
-    auth_audience  = var.auth_audience
-    auth_authority = var.auth_authority
+    dns_api_token   = replace(var.dns_api_token, "$", "$$")
+    tls_fragment    = local.tls_fragment
+    auth_audience   = var.auth_audience
+    auth_authority  = var.auth_authority
+    registry_config = local.registry_config
   })
+
+  # One encoded YAML scalar keeps credentials out of shell source and compose
+  # interpolation, including quotes, dollars, backticks and newlines.
+  registry_config = base64encode(jsonencode({
+    auths = var.registry_server == "" ? {} : {
+      (local.registry_hostname == "docker.io" ? "https://index.docker.io/v1/" : local.registry_hostname) = {
+        auth = base64encode("${var.registry_username}:${var.registry_password}")
+      }
+    }
+  }))
 
   # The Caddy DNS-01 `tls` block comes from the CANONICAL single source
   # docker-compose/caddy-tls/<provider>.caddy (propagation tuning baked in) -- the SAME fragments

@@ -131,6 +131,7 @@ class Rules:
         "required": set(), "minUtf8Bytes": {"minBytes"}, "base64MinBytes": {"minBytes"},
         "enum": {"type", "clrType", "allowedValues", "unsetValues"}, "positiveTimeSpan": set(),
         "binds": {"type", "clrType", "allowedValues", "unsetValues", "min", "max"}, "distinct": set(),
+        "entraV2Authority": set(),
     }
     OPS = {"anySet": {"op", "keys", "layer"}, "blank": {"op", "keys", "layer"}, "in": {"op", "keys", "layer", "values"}}
     VALUES = {"blank": {"absent", "empty", "whitespace"}, "layer": {"environment", "effective"},
@@ -203,6 +204,10 @@ class Rules:
 
     def valid_value(self, key: str) -> str:
         """A value every rule on the key accepts."""
+        # Older image contracts only require this override to be nonempty, but deployment
+        # preflight already validates Entra v2. A bare hostname is not a valid waiver fixture.
+        if key == "Authentication:Authority":
+            return "https://login.microsoftonline.com/tenant/v2.0"
         typed = self.typed_rule(key)
         if typed is not None:
             return {"enum": (typed.get("allowedValues") or [""])[0], "integer": "7", "number": "7.5",
@@ -210,6 +215,8 @@ class Rules:
                     "guid": "00000000-0000-0000-0000-00000000000b", "dateTime": "2026-01-01T00:00:00Z",
                     }.get(typed["type"]) or self._raise(f"{key}: no valid sample for type {typed['type']!r}")
         checks = {r["check"]: r for r in self.all if key in r["keys"]}
+        if "entraV2Authority" in checks:
+            return "https://login.microsoftonline.com/tenant/v2.0"
         if "base64MinBytes" in checks:
             return _b64(checks["base64MinBytes"]["minBytes"])
         if "positiveTimeSpan" in checks:
@@ -272,6 +279,24 @@ class Rules:
             n = rule["minBytes"]
             out += [("not base64", "not base64!", False), ("one byte short", _b64(n - 1), False),
                     ("at the minimum", _b64(n), True)]
+        elif check == "entraV2Authority":
+            out += [("spaces", "   ", False),
+                    ("missing host", "https:///tenant/v2.0", False),
+                    ("host spaces", "https://bad host/tenant/v2.0", False),
+                    ("non-numeric port", "https://login.microsoftonline.com:abc/tenant/v2.0", False),
+                    ("port overflow", "https://login.microsoftonline.com:99999/tenant/v2.0", False),
+                    ("malformed IP literal", "https://[oops]/tenant/v2.0", False),
+                    ("explicit valid port", "https://login.microsoftonline.com:443/tenant/v2.0", True),
+                    ("legacy v1", "https://login.microsoftonline.com/tenant", False),
+                    ("tenantless v2", "https://login.microsoftonline.com/v2.0", False),
+                    ("tenantless v2 trailing slash", "https://login.microsoftonline.com/v2.0/", False),
+                    ("extra path segment", "https://login.microsoftonline.com/tenant/extra/v2.0", False),
+                    ("OAuth endpoint path", "https://login.microsoftonline.com/tenant/oauth2/v2.0/", False),
+                    ("insecure v2", "http://login.microsoftonline.com/tenant/v2.0", False),
+                    ("v2", "https://login.microsoftonline.com/tenant/v2.0", True),
+                    ("v2 trailing slash", "https://login.microsoftonline.com/tenant/v2.0/", True),
+                    ("v2 query", "https://login.microsoftonline.com/tenant/v2.0?version=1", False),
+                    ("v2 fragment", "https://login.microsoftonline.com/tenant/v2.0#fragment", False)]
         elif check == "positiveTimeSpan":
             out += [("zero", "00:00:00", False), ("negative", "-00:00:01", False), ("positive", "00:00:01", True),
                     ("whole days", "2", True), ("not a duration", "fifteen minutes", False)]
@@ -740,7 +765,7 @@ class CfnTarget:
 
     def __init__(self, path: str, spec: dict, values: Config, rules: Rules) -> None:
         import cfnlint.decode  # the CloudFormation-aware YAML reader (pinned cfn-lint; see Requirements above)
-        self.path, self.spec = path, spec
+        self.path, self.spec, self.rules = path, spec, rules
         self.dir = os.path.join(ROOT, spec["dir"])
         with open(os.path.join(self.dir, spec["template"]), encoding="utf-8") as f:
             text = f.read()
@@ -1011,16 +1036,50 @@ class CfnTarget:
                     raise RuntimeError(f"{self.path}: render-secrets.sh reads a secret no resource creates: {secret_name}")
                 if "Condition" in resource and not self.condition(resource["Condition"], params):
                     raise RuntimeError(f"{self.path}: render-secrets.sh reads {secret_name}, whose resource this case doesn't create")
-                value = resource["Properties"].get("SecretString")
-                if not (isinstance(value, dict) and set(value) == {"Ref"} and value["Ref"] in self.parameters):
-                    raise RuntimeError(f"{self.path}: secret {secret_name} isn't a parameter's value; teach scripts/config-contract.py")
-                secret = self.evaluate(value, params)
+                secret = self.secret_value(secret_name, key, resource["Properties"], params)
                 if re.search(r"['\r\n]|\\$", secret):
                     raise BootRefused(f"render-secrets.sh stops: secret {secret_name} can't be written to .env single-quoted")
                 lines.append(f"{key}='{secret}'\n")
         if stack or heredoc:
             raise RuntimeError(f"{self.path}: render-secrets.sh's if/case blocks don't balance as read")
         return lines
+
+    # The GenerateSecretString settings a generated stand-in can speak for: an alphanumeric value of a
+    # literal length (no punctuation, so nothing the single-quoted .env line can't carry).
+    GENERATOR_FIELDS = {"PasswordLength", "ExcludePunctuation"}
+
+    def secret_value(self, secret_name: str, key: str, props: dict, params: dict[str, str]) -> str:
+        """The value a secret holds for these parameters: a parameter's (SecretString: !Ref P), or, for a
+        supplied-or-generated secret (SecretString: !If [C, !Ref P, NoValue] beside GenerateSecretString:
+        !If [C, NoValue, {...}]), the parameter's when C holds and otherwise a stand-in of the generated
+        value's length, judged by the rules a length-only stand-in can speak for."""
+        value = props.get("SecretString")
+        if isinstance(value, dict) and set(value) == {"Ref"} and value["Ref"] in self.parameters \
+                and "GenerateSecretString" not in props:
+            return self.evaluate(value, params)
+        no_value = {"Ref": "AWS::NoValue"}
+        generator = props.get("GenerateSecretString")
+        if isinstance(value, dict) and set(value) == {"Fn::If"} and isinstance(generator, dict) \
+                and set(generator) == {"Fn::If"}:
+            cond, supplied, unset = value["Fn::If"]
+            gen_cond, gen_supplied, how = generator["Fn::If"]
+            if cond == gen_cond and isinstance(supplied, dict) and set(supplied) == {"Ref"} \
+                    and supplied["Ref"] in self.parameters and unset == no_value and gen_supplied == no_value:
+                if self.condition(cond, params):
+                    return self.evaluate(supplied, params)
+                if not (isinstance(how, dict) and set(how) == self.GENERATOR_FIELDS
+                        and how["ExcludePunctuation"] is True and isinstance(how["PasswordLength"], int)):
+                    raise RuntimeError(f"{self.path}: secret {secret_name} generates with {how!r}, which a "
+                                       "length-only stand-in can't model; teach scripts/config-contract.py")
+                other = sorted(r["id"] for r in self.rules.all
+                               if any(env_name(k).lower() == key.lower() for k in r["keys"])
+                               and r["check"] not in ("required", "minUtf8Bytes"))
+                if other:
+                    raise RuntimeError(f"{self.path}: {key} has rules {other} a length-only stand-in can't satisfy; "
+                                       "teach scripts/config-contract.py")
+                return "k" * how["PasswordLength"]
+        raise RuntimeError(f"{self.path}: secret {secret_name} isn't a parameter's value or a supplied-or-generated "
+                           "one; teach scripts/config-contract.py")
 
     def environment(self, config: Config) -> Config | None:
         params = self.resolved(config)
@@ -1265,6 +1324,20 @@ class Arm:
             raise RuntimeError("ARM expression: equals() over a deploy-time value")
         return a == b
 
+    def fn_greaterOrEquals(self, a, b):
+        if self._unresolved(a, b):
+            raise RuntimeError("ARM expression: greaterOrEquals() over a deploy-time value")
+        if type(a) is not int or type(b) is not int:
+            raise RuntimeError("ARM expression: greaterOrEquals() only models integer operands")
+        return a >= b
+
+    def fn_length(self, value):
+        if self._unresolved(value):
+            raise RuntimeError("ARM expression: length() over a deploy-time value")
+        if not isinstance(value, list):
+            raise RuntimeError("ARM expression: length() only models arrays")
+        return len(value)
+
     def fn_contains(self, container, item):
         if self._unresolved(container, item):
             raise RuntimeError("ARM expression: contains() over a deploy-time value")
@@ -1310,6 +1383,25 @@ class Arm:
 
     def fn_split(self, s, sep):
         return str(s).split(sep)
+
+    def fn_parseUri(self, value):
+        from urllib.parse import urlsplit
+        if is_deploy_time(value):
+            raise RuntimeError("ARM expression: parseUri() of a deploy-time value")
+        try:
+            uri = urlsplit(value)
+            if not uri.scheme or not uri.hostname or any(c.isspace() for c in uri.netloc):
+                raise ValueError("absolute URI with a host required")
+            port = uri.port
+        except ValueError as exc:
+            raise TemplateFail(f"parseUri: invalid authority URI: {exc}") from exc
+        return {"scheme": uri.scheme, "host": uri.hostname, "port": port,
+                "path": uri.path, "query": "?" + uri.query if uri.query else ""}
+
+    def fn_last(self, v):
+        if is_deploy_time(v):
+            raise RuntimeError("ARM expression: last() of a deploy-time value")
+        return v[-1]
 
     def fn_take(self, v, n):
         return v[:n]

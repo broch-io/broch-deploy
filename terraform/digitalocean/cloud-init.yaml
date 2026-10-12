@@ -11,6 +11,14 @@ packages:
   - gnupg
 
 write_files:
+  # Root runs Compose at boot and during upgrades. A private registry credential
+  # has the same metadata/state exposure as the IdP secret and DNS token.
+  - path: /root/.docker/config.json
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: ${registry_config}
+
   # Docker Compose configuration
   - path: /opt/broch/docker-compose.yml
     permissions: "0644"
