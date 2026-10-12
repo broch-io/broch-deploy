@@ -8,6 +8,39 @@ behavior you'll notice, and anything you need to do when upgrading. It is not a
 commit log — internal refactors and engineering changes that don't surface in
 deployment or use are deliberately omitted.
 
+## 1.36.0
+
+### Changed
+
+- **Clearer licensing and monthly active-user accounting.** The admin app describes manual-license expiry more accurately and can show optional update notifications. Refused or failed connection attempts no longer consume monthly seats.
+- **More complete identity-provider grants.** Authorization combines supported grants supplied across the ID and access tokens. Renew sign-in or refresh credentials after updating to receive these additional grants.
+
+### Fixed
+
+- **Share traffic waits for seat establishment.** A tunnel cannot forward traffic before its authoritative seat decision succeeds. Queued monthly-usage updates check that the connection is still live before counting it.
+- **More reliable forms and sign-in recovery.** Admin forms preserve input during opening animations. A bounded, process-local recovery window handles rotated refresh credentials while identity validation completes.
+- **More reliable Share and Access connections.** Fixes cover half-close replies, certificate chains, encoded paths, inspector request headers and replayed bodies, admin deep links and CLI diagnostics.
+
+### Deploy impact
+
+- Microsoft Entra ID (`AzureAd`) configurations using `Instance` and `TenantId` now derive the tenant's v2.0 authority automatically. Replace explicit v1 overrides with the tenant v2.0 authority or remove the override. Users must sign in again; the changed issuer creates separate seat and monthly-usage identities with no automatic migration. Review existing seats and capacity before upgrading.
+- Access in TLS terminate mode now rewrites a backend redirect to the Access name only when it names the backend's own host and port (no port when the backend is on its scheme's default port), and never turns an https redirect into http. A backend whose external URL leaves out a non-default port, or that sends https links through the plain-HTTP terminator, must set its external URL to match the address Access connects to, or use relative redirects.
+- Behind a chain of proxies (for example a CDN in front of the ingress in front of Broch), all sign-ins arriving through the same edge address share one rate limit of 60 requests per 5 minutes.
+- Behind an ingress not listed in Trusted proxy CIDRs (Azure Container Apps until its template seeds them), the 33rd and later distinct users signing in through one ingress replica within 5 minutes share one overflow limit of 60 requests. This is existing behaviour, stated here for the first time.
+- Sign-in now refuses id_tokens whose `azp` names another client, that carry several audiences without `azp`, or that are signed with an algorithm other than RS*, PS* or ES*. The supported IdPs’ defaults (Entra ID, Auth0, Okta, Google, Keycloak) are unaffected; no configuration change is required, and the switch ships in the image’s runtimeconfig.
+- A server with `CENTRALSERVER__VALIDATIONTIMEOUTSECONDS` outside 1–300, or `BROCHTOKEN__LIFETIMEMINUTES` outside 5–1440 (including 0, negative or non-numeric values), now fails at startup with a message naming the variable and its range, and `--check-config` reports it. Unset or in-range values, including the defaults 30 and 60, are unaffected.
+- A server whose `API__ACCESSDOMAINNAME` equals `API__WILDCARDHOSTNAME` (case-insensitive) now fails at startup before anything is stored, and `--check-config` reports it. A server whose `API__WILDCARDHOSTNAME` equals the access domain already stored in its database also fails at startup, with the SQL that clears the stored value. Either pair would make Share and Access routes collide.
+- A connection Broch refuses (terms not accepted, expired trial, a Share policy, a name in use, a setup failure, an Access refusal) no longer uses a monthly seat. A Share seat is used when the tunnel is set up, and an Access seat when Access opens a connection to a service, so the Seats page and the usage count can be lower than before for the same activity.
+- Broch CLIs older than 1.36.0 can no longer sign in to this server; their `broch auth login` fails with "Invalid input. Please check your command parameters." Upgrade with `npm install -g @broch/cli@~1.36.0`.
+- Web app users are signed out once by the upgrade and sign in again (the auth cookies are renamed with the `__Host-` prefix).
+- When proxying HTTP for Share or TLS-terminated Access, Broch removes `Forwarded`, `X-Real-IP`, `X-Original-For` and `X-Original-Proto` headers. For Share, `X-Forwarded-For` contains the client address Broch resolves, subject to its trusted-proxy configuration.
+- Apps behind Access in TLS terminate mode now receive their own hostname with its port as `Host` (for example `app.internal:8080`), with `Origin` and `Referer` to match. An app that checks `Host` against a list of names without ports may need its port added.
+- For TLS-terminated Access, `X-Forwarded-For` contains Broch's own bridge address, not the user's client address; a value the user sends is no longer passed to the app. TLS passthrough does not rewrite HTTP headers.
+- Broch now routes on the request's own Host header and ignores X-Forwarded-Host and X-Original-Host. If a proxy in front of Broch, such as Azure Front Door or Application Gateway, rewrites the Host header, configure it to forward the original Host.
+- Credential expiry closes the current Share tunnel (hourly by default), and reconnection evaluates the grants supplied by the identity provider. A removed role prevents reconnection only when the provider withdraws that grant from refreshed tokens; retained upstream SSO grants can permit reconnection, so immediate role withdrawal is not guaranteed. CLIs older than 1.21.0 stop instead of reconnecting: upgrade them.
+- The SharePolicyEvictionFailed audit event's details now carry a PolicyIds list, with the resource set to the changed item. Update any parser that reads the old shape.
+- Deploy the updated server and renew sign-in or refresh credentials to receive additional grants split across the two tokens. No configuration or policy migration is required.
+
 ## 1.35.0
 
 ### Added
