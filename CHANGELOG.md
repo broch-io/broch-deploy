@@ -23,7 +23,7 @@ deployment or use are deliberately omitted.
 
 ### Deploy impact
 
-- Instance/TenantId configurations derive v2.0 automatically. Replace explicit v1 overrides with the tenant v2.0 authority or remove the override. Users must sign in again; the changed issuer creates separate seat and monthly-usage identities with no automatic migration. Review existing seats and capacity before upgrading.
+- Microsoft Entra ID (`AzureAd`) configurations using `Instance` and `TenantId` now derive the tenant's v2.0 authority automatically. Replace explicit v1 overrides with the tenant v2.0 authority or remove the override. Users must sign in again; the changed issuer creates separate seat and monthly-usage identities with no automatic migration. Review existing seats and capacity before upgrading.
 - Access in TLS terminate mode now rewrites a backend redirect to the Access name only when it names the backend's own host and port (no port when the backend is on its scheme's default port), and never turns an https redirect into http. A backend whose external URL leaves out a non-default port, or that sends https links through the plain-HTTP terminator, must set its external URL to match the address Access connects to, or use relative redirects.
 - Behind a chain of proxies (for example a CDN in front of the ingress in front of Broch), all sign-ins arriving through the same edge address share one rate limit of 60 requests per 5 minutes.
 - Behind an ingress not listed in Trusted proxy CIDRs (Azure Container Apps until its template seeds them), the 33rd and later distinct users signing in through one ingress replica within 5 minutes share one overflow limit of 60 requests. This is existing behaviour, stated here for the first time.
