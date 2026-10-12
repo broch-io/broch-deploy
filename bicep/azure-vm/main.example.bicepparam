@@ -90,7 +90,7 @@ param authAudience = '<your-auth0-api-identifier>' // Auth0: required — the AP
 // --- Optional ---
 // param vmSize   = 'Standard_B2ps_v2' // ARM64; check family quota/availability in your region
 // param imageSku = 'server-arm64'     // required with an ARM64 vmSize
-// param brochVersion = '1.35.0'      // defaults to a concrete pinned version; used when the VM is created or
+// param brochVersion = '1.36.0'      // defaults to a concrete pinned version; used when the VM is created or
 //                                    // recreated. Upgrade a running VM in place (README "Pulling a new Broch image").
 // Private pre-release/beta image — server/username default to GHCR, so set only the token:
 // param brochImage = 'ghcr.io/broch-io/broch-beta'

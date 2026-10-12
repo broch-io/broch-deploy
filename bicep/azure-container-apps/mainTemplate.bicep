@@ -36,7 +36,7 @@ param masterKey string
 var checkedMasterKey = empty(trim(masterKey)) ? fail('masterKey must not be only spaces.') : masterKey
 
 @description('Container image to deploy. Defaults to a concrete pinned version (NOT :latest) so a revision restart never silently rolls the app across an EF-migration boundary; new releases of this template bump this default. Override with a newer tag to upgrade deliberately, or :latest to float.')
-param containerImage string = 'ghcr.io/broch-io/broch:1.35.0'
+param containerImage string = 'ghcr.io/broch-io/broch:1.36.0'
 
 // ============================================================================
 // Database Parameters
@@ -123,6 +123,8 @@ var checkedAuthAudience = authConfigured && toLower(trim(authProvider)) == 'auth
 var authProviderKey = toLower(trim(authProvider))
 var authAuthoritySet = !empty(trim(authAuthority))
 var authConfigured = !empty(authProvider) || !empty(authClientId) || !empty(authClientSecret) || !empty(authTenantId) || !empty(authDomain) || !empty(authInstance) || !empty(authAuthority) || !empty(authAudience) || !empty(authScopes)
+var entraAuthorityParts = parseUri(authProviderKey == 'azuread' && !empty(authAuthority) ? authAuthority : 'https://unset.invalid/v2.0')
+var authAuthorityV2 = toLower(entraAuthorityParts.scheme) == 'https' && !empty(entraAuthorityParts.host) && !contains(authAuthority, '?') && !contains(authAuthority, '#') && length(filter(split(entraAuthorityParts.path, '/'), part => !empty(part))) == 2 && last(concat([''], filter(split(entraAuthorityParts.path, '/'), part => !empty(part)))) == 'v2.0'
 var checkedAuthProvider = authConfigured && empty(authProviderKey)
   ? fail('authProvider is required when another sign-in value (authClientId, authClientSecret, authTenantId, authDomain, authInstance, authAuthority, authAudience or authScopes) is set: Broch refuses to start without it.')
   : authConfigured && empty(authClientId)
@@ -137,7 +139,9 @@ var checkedAuthProvider = authConfigured && empty(authProviderKey)
               ? fail('authTenantId is required when authProvider is AzureAd or EntraExternalId.')
               : authConfigured && authProviderKey == 'entraexternalid' && !authAuthoritySet && empty(trim(authInstance))
                   ? fail('authInstance is required when authProvider is EntraExternalId: set it to https://<tenant>.ciamlogin.com/.')
-                  : authProvider
+                  : authProviderKey == 'azuread' && !empty(authAuthority) && !authAuthorityV2
+                      ? fail('authAuthority for AzureAd must be an HTTPS Entra v2.0 authority ending in /v2.0, without a query or fragment. Leave it blank to derive it from authInstance and authTenantId.')
+                      : authProvider
 
 @description('Comma-separated OAuth2 scopes (e.g., openid,profile,email). When empty, provider-specific defaults are used.')
 param authScopes string = ''
@@ -211,7 +215,7 @@ param sslCertificatePassword string = ''
 param accessDomainName string = ''
 
 @secure()
-@description('Combined PEM bundle (CERTIFICATE + PRIVATE KEY) for *.{accessDomainName}, presented by the Access loopback terminator. Leave empty to run Access in passthrough-only mode.')
+@description('Combined PEM bundle for *.{accessDomainName}, presented by the Access loopback terminator: the certificate first, then its intermediate certificates (as in a CA\'s fullchain.pem), then the PRIVATE KEY. Leave empty to run Access in passthrough-only mode.')
 param accessCert string = ''
 
 // ============================================================================
@@ -726,6 +730,20 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
               {
                 name: 'API__WILDCARDHOSTNAME'
                 value: checkedWildcardHostname
+              }
+            ],
+            // Trusted-proxy CIDRs for X-Forwarded-For/-Proto: broch trusts only loopback by default
+            // (fail-closed), but the Container Apps ingress forwards to it from Azure's managed
+            // internal range (100.100.x.x, VNet-integrated environments included), so without this
+            // seed audit logs attribute every request to the ingress, Share Policy network rules
+            // fail closed and the checkout return URL falls back to http. 100.100.0.0/17 is the
+            // range Admin → Share Settings suggests for this ingress. Seeded into Share Settings at
+            // each start while its trusted-proxy list is empty; an admin-saved list takes precedence
+            // (an existing install with a saved list must add this range itself). See the README.
+            [
+              {
+                name: 'API__TRUSTEDPROXYCIDRS'
+                value: '100.100.0.0/17'
               }
             ],
             // [ACCESS] Access domain (always set; empty disables terminate) + terminator cert

@@ -201,7 +201,7 @@ def self_test():
     assert "EntraExternalId" in source
     # ACTIVE_RULE (rules each provider keeps, with the fields they assert) and variant_axes'
     # inactive_auth_rules (rules each variant drops) must describe the same split.
-    provider_rules = set().union(*ACTIVE_RULE.values())
+    provider_rules = set().union(*ACTIVE_RULE.values()) | {"AuthAzureAdUsesDerivedAuthority"}
     for auth in AUTH_BUCKETS:
         active, inactive = set(ACTIVE_RULE[auth]), inactive_auth_rules(auth)
         assert not active & inactive and active | inactive == provider_rules, \

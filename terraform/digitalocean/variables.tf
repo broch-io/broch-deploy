@@ -83,9 +83,32 @@ variable "image" {
 variable "image_tag" {
   description = "Docker image tag. Defaults to a concrete pinned version (NOT latest) so a droplet recreate never silently rolls the box across an EF-migration boundary; new releases of this template bump this default. Set a newer tag to upgrade deliberately, or \"latest\" to float (not recommended in production)."
   type        = string
-  default     = "1.35.0"
+  default     = "1.36.0"
 }
 
+
+variable "registry_server" {
+  description = "Container registry hostname for a private image (no scheme or path). Leave empty for public images."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.registry_server == "" || can(regex("^[A-Za-z0-9.-]+(:[0-9]+)?$", var.registry_server))
+    error_message = "registry_server must be a hostname with an optional port, without a scheme or path."
+  }
+}
+
+variable "registry_username" {
+  description = "Read-only registry username; required with registry_server and registry_password."
+  type        = string
+  default     = ""
+}
+
+variable "registry_password" {
+  description = "Read-only registry password/token. Stored in Terraform state, droplet user_data and root's Docker config; scope to image pulls and rotate when no longer needed."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
 
 variable "dns_provider" {
   description = "DNS provider for Caddy DNS-01 (digitalocean, cloudflare, or godaddy). Selects the canonical tls fragment docker-compose/caddy-tls/<provider>.caddy embedded at deploy time. DigitalOcean is the natural choice when your domain's DNS is hosted on DigitalOcean too."

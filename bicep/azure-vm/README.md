@@ -58,7 +58,7 @@ At **idle** (Local mode), the three containers total **~700 MB** resident — Ca
 - A database — **one of**: an existing **PostgreSQL 14+** reachable from the VM with a least-privilege role that owns its own database (`databaseMode=Existing`; see [Database setup](#database-setup)); let the template provision one (`databaseMode=Managed` — you set `postgresAdminPassword`); or run it **on the VM** with nothing to pre-arrange (`databaseMode=Local` — you manage backups; see [Local database](#local-database)).
 - For `certMode=Auto`, DNS for your wildcard hostname on a supported provider — Cloudflare, Azure DNS, Route 53, Google Cloud DNS (experimental) or DigitalOcean — and access to it (see [TLS](#tls--certificate--dns)). An Azure DNS zone must be in this subscription, and `dnsZoneResourceGroup` is required. With the VM's managed identity (`AzureDns`, no secret) the template **grants it *DNS Zone Contributor* on that resource group automatically**, which needs Owner/UAA there; with only Contributor, use a service principal (`AzureDnsServicePrincipal`). For `certMode=Byo`, a wildcard cert + key — no DNS provider needed.
 - An identity provider app (Auth0, Entra ID / Azure AD, Okta, or any OIDC) — Broch has no built-in local login, so the IdP is configured at boot. Register the callback `https://<shareSubdomain>.<dnsZone>/auth/callback`. See the [identity-provider guides](https://broch.io/docs/identity-providers/). Auth0 also needs an **API** (its Identifier is `authAudience`), with the Broch application authorized for **User Access** on the API's **Application Access** tab — an API that requires that grant rejects every sign-in without it.
-- **A master key** — generate with `openssl rand -base64 48` and store it in your own secret store. **Required** (≥32 chars); supply the same value on every (re)deploy. Broch never sees it. For an existing Broch database it must be that database's key.
+- **A master key** — **required** (≥32 chars), and you must **save it in your own secret store**: you supply the same value on every (re)deploy. Broch never sees it and cannot recover it, and the copy in the deployment's Key Vault is deleted with the resource group (soft-deleted, then purged after 7 days). On the **Azure Marketplace** wizard, a new installation gets a generated key: the wizard shows it and blocks Create until you paste it back and confirm you saved it. For a direct template deploy (CLI), generate it yourself with `openssl rand -base64 48`. For an existing Broch database it must be that database's key.
 - **A Let's Encrypt contact email** (`acmeEmail`). **Required** in every `certMode` (unused with `certMode=Byo`, but the deploy still needs it) — a blank value fails validation instead of deploying a VM whose Caddy can't start.
 - **No SSH key to prepare** — SSH is closed by default and the VM gets a generated break-glass password (`adminSshPublicKey` is an optional advanced override; the password lands in a Key Vault — see [Secrets & break-glass](#secrets--break-glass)).
 - A Broch license — activated in-app after first sign-in (Admin → License). Buy at [broch.io/pricing](https://broch.io/pricing).
@@ -146,7 +146,7 @@ az deployment group show -g broch-rg -n main \
   --query properties.outputs.publicIpAddress.value -o tsv
 ```
 
-> **The master key is yours to keep.** `brochMasterKey` is the at-rest encryption root — Broch, LLC never sees it. It is **required**: generate it with `openssl rand -base64 48`, store it in your own secret store, and supply the **same** value on every (re)deploy (the template requires ≥32 chars; the server rejects values under 32 bytes at boot). For an **Existing** database it must be that database's key — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). Rotating it invalidates anything DataProtection-wrapped in the database (refresh tokens, persisted license, usage blob).
+> **The master key is yours to keep — save it.** `brochMasterKey` is the at-rest encryption root — Broch, LLC never sees it and cannot recover it. It is **required**: generate it with `openssl rand -base64 48` (the Marketplace wizard generates it for you), store it in your own secret store, and supply the **same** value on every (re)deploy (the template requires ≥32 chars; the server rejects values under 32 bytes at boot). For an **Existing** database it must be that database's key — a different key cannot decrypt its Data Protection keyring (recoverable: users re-auth and the license re-activates, but disruptive). Rotating it invalidates anything DataProtection-wrapped in the database (refresh tokens, persisted license, usage blob).
 
 ## TLS — certificate & DNS
 
@@ -209,7 +209,7 @@ Sign in at `https://<shareSubdomain>.<dnsZone>` (e.g. `https://broch.example.com
 
 **Key Vault (app secrets).** The deployment **always** creates a Key Vault (**access-policy mode**, name in the `keyVaultName` output) holding the deploy-time **app** secrets, which the VM's **user-assigned managed identity** reads at boot (a `get`-only access policy) and writes into `/opt/broch/.env` — so the secret **values never enter the VM's `customData`** (which a subscription Reader can decode):
 
-- `broch-master-key` — the at-rest encryption root (customer-supplied; never generated). It is still born in your tenant and never transits Broch — Key Vault is just where the VM reads it from at boot.
+- `broch-master-key` — the at-rest encryption root (customer-supplied: generated by you or by the Marketplace wizard in your browser, never by the template). It is still born in your tenant and never transits Broch — Key Vault is just where the VM reads it from at boot.
 - `db-connection-string` (Existing/Managed) **or** `postgres-password` (Local) — the database credential
 - `auth-client-secret` — the IdP client secret (when set)
 - `cloudflare-api-token` / `azure-dns-client-secret` / `aws-access-key-id` / `aws-secret-access-key` / `do-auth-token` — Caddy's DNS-01 credential (only the one your provider needs)
@@ -246,6 +246,11 @@ A deployment that fails partway (quota, capacity, a permissions error on the DNS
 - **CLI** — the same `az deployment group create`, re-supplying `brochMasterKey` and the same exceptions.
 - If the attempt being retried was a **recovery deployment** (`softDeletedVaultNames` populated — see [Key Vault soft-delete under Teardown](#teardown)), the prefilled names are safe to leave as-is: the recover pre-pass is a no-op over the now-live vaults.
 
+**`SkuNotAvailable` on the Postgres server (`databaseMode=Managed`).** Some subscriptions and regions refuse the default burstable `Standard_B1ms` mid-deployment ("Specified SKU is not supported in this region"). `az postgres flexible-server list-skus -l <region>` lists the region's catalog but not subscription-level restrictions, so only a deployment confirms a SKU. Two routes:
+
+- **Same region:** retry into the **same resource group** with a different `postgresSkuName` (`Standard_D2ds_v5` is general purpose and costs more). It is the one non-secret value you may change on a retry, because it is not part of the VM's `customData`. The rules below still apply, including re-entering the master key.
+- **Another region:** treat it as a fresh first deployment. Delete the failed resource group (see [Key Vault soft-delete under Teardown](#teardown)) and deploy again in the new region. No data exists yet, so the master key can be a new one.
+
 Every resource re-PUTs idempotently, including the VM: the boot-fetch list baked into its `customData` derives from the **selections** (database mode, cert mode, DNS provider, auth provider), not from which params were supplied, so a retry produces byte-identical `customData` no matter which vault-backed secret fields were filled (the customData-delivered inputs below are the exception) — which matters because Azure **rejects** a `customData` change on an existing VM (`PropertyChangeNotAllowed`).
 
 Rules of the retry:
@@ -273,7 +278,7 @@ The recovery path brings back the version that deployment used:
 
 If you've upgraded in place since (see [Pulling a new Broch image](#pulling-a-new-broch-image)), change `brochVersion` to the version you're running: an in-place upgrade edits only the VM's `.env`, so the deployment record still holds the version you deployed.
 
-**Do not recover through a fresh marketplace wizard run.** The listing republishes with each Broch release, so a fresh wizard defaults `brochVersion` to the *latest* release — newer than your database if you have not upgraded since. If the wizard is your only option, overwrite the version default with the version you were running.
+**Do not recover through a fresh marketplace wizard run.** The listing republishes with each Broch release, so a fresh wizard defaults `brochVersion` to the *latest* release — newer than your database if you have not upgraded since. It also defaults to generating a new master key, which can't decrypt the secrets your existing database holds. If the wizard is your only option, overwrite the version default with the version you were running, and choose **Use my existing key** with the key you saved.
 
 Where to find the version you were running:
 

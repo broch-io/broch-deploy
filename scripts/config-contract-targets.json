@@ -82,6 +82,12 @@
       "secret_inputs": {},
       "stricter": [
         {
+          "kind": "refuses_pattern",
+          "pattern": "^(?![Hh][Tt][Tt][Pp][Ss]://[^?#]*/v2[.]0/*$)",
+          "error": "authAuthority for AzureAd must be an HTTPS Entra v2",
+          "why": "Require Entra v2.0 for signed refresh identity, including when the pinned older Broch image still accepts v1 at startup."
+        },
+        {
           "kind": "refuses_whitespace_only",
           "error": "\\b{input}\\b(?:[^.]*?\\b(?:is|are) required| must not be only spaces)",
           "why": "A value of only spaces is refused. Broch requires these to be non-empty only, so it would start and then fail at sign-in or on the first database call; the template catches the typo at preflight."
@@ -165,8 +171,8 @@
         {
           "kind": "refuses_constraint",
           "parameter": "BrochMasterKey",
-          "constraint": "MinLength",
-          "why": "CloudFormation counts characters, Broch counts UTF-8 bytes: a key of 32 bytes in fewer than 32 characters (non-ASCII) is refused. The key the template documents (openssl rand -base64 48) is ASCII."
+          "constraint": "AllowedPattern",
+          "why": "The pattern counts characters (32 or more, or empty to generate the key), Broch counts UTF-8 bytes: a key of 32 bytes in fewer than 32 characters (non-ASCII) is refused. The key the stack generates (64 letters and digits) is ASCII."
         }
       ]
     },
@@ -193,6 +199,12 @@
       },
       "fixed": ["Database:Provider"],
       "stricter": [
+        {
+          "kind": "refuses_pattern",
+          "pattern": "^(?!(?i:https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(/[^?#]*[^/?#][^?#]*)/v2[.]0/*$)",
+          "error": "auth_authority for AzureAd must be an HTTPS Entra v2",
+          "why": "Require Entra v2.0 for signed refresh identity, including when the pinned older Broch image still accepts v1 at startup. Explicit AzureAd authorities in Terraform additionally require a DNS hostname and the default HTTPS port; port overrides, bracketed IPv6 literals and userinfo are intentionally unsupported."
+        },
         {
           "kind": "refuses_first_run",
           "error": "\\bauth_client_id\\b",
@@ -324,6 +336,12 @@
       "stricter_extra": [
         {
           "kind": "refuses_rule_when_set",
+          "rule": "AuthAzureAdUsesDerivedAuthority",
+          "key": "Authentication:Authority",
+          "why": "CloudFormation Rules cannot conditionally match an authority URL. AzureAd uses AuthInstance and AuthTenantId to derive v2.0; AuthAuthority overrides are reserved for generic OIDC, as in the published per-provider templates."
+        },
+        {
+          "kind": "refuses_rule_when_set",
           "rule": "AuthAzureAdRequiresTenant",
           "key": "Authentication:Authority",
           "why": "This all-providers template asks Entra ID for its tenant and instance even when an authority is also set (Broch would use the authority instead). AuthAuthority is documented for OpenID Connect only, and the per-provider templates don't offer it to Entra ID at all."
@@ -399,6 +417,12 @@
       },
       "fixed": ["Database:Provider", "ConnectionStrings:BrochConnection"],
       "stricter": [
+        {
+          "kind": "refuses_pattern",
+          "pattern": "^(?!(?i:https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(/[^?#]*[^/?#][^?#]*)/v2[.]0/*$)",
+          "error": "auth_authority for AzureAd must be an HTTPS Entra v2",
+          "why": "Require Entra v2.0 for signed refresh identity, including when the pinned older Broch image still accepts v1 at startup. Explicit AzureAd authorities in Terraform additionally require a DNS hostname and the default HTTPS port; port overrides, bracketed IPv6 literals and userinfo are intentionally unsupported."
+        },
         {
           "kind": "refuses_first_run",
           "error": "\\bauth_client_id\\b",

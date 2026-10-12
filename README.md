@@ -36,12 +36,12 @@ ghcr.io/broch-io/broch:<version>
 The image is a public GHCR package — pull it directly, no authentication needed:
 
 ```sh
-docker pull ghcr.io/broch-io/broch:1.35.0
+docker pull ghcr.io/broch-io/broch:1.36.0
 ```
 
 Each release is tagged with its full version (`X.Y.Z`); `latest` points at the newest release. For production we recommend pinning to a specific version, as above, rather than `:latest` — every example here ships pinned.
 
-Broch publishes supported releases. Superseded versions are purged — pin to a current release and upgrade as new ones ship; the [changelog](CHANGELOG.md) records what changed in each release, including anything that affects an upgrade.
+From 1.36.0 on, every release's image stays published, so you can pin a version and roll back to it (after restoring your pre-upgrade backup, if the newer release migrated the database). The newest minor is supported: fixes, security fixes included, ship as patch releases on it, so upgrade to get them. The [changelog](CHANGELOG.md) records what changed in each release and lists anything that needs action when you upgrade. The [versioning policy](https://broch.io/docs/self-hosting/versioning/) explains what each kind of release may change and how to roll back.
 
 ## Picking an example
 
@@ -70,7 +70,7 @@ For other platforms (GCP, on-prem Kubernetes, Hetzner) the docker-compose exampl
 
 ## Version compatibility
 
-Examples in `main` track the **current stable** Broch server release, and Broch purges superseded images — so pinning to a current release and keeping up is the supported path. We don't duplicate examples per version; most things stay the same release-to-release, and when something deployment-affecting does change (a renamed env var, a new required resource), it's called out in the [changelog](CHANGELOG.md)'s **Deploy impact** section.
+Examples in `main` track the **current stable** Broch server release, which is the supported one: fixes ship as patch releases on it, so keeping up is the supported path. From 1.36.0 on, older release images stay published, so a pinned deployment can roll back, but they get no fixes. We don't duplicate examples per version: the templates take the Broch version as a setting and keep deploying every release since 1.36.0. Most things stay the same release-to-release, and when something deployment-affecting does change (a new setting worth knowing, a new resource), it's called out in the [changelog](CHANGELOG.md)'s **Deploy impact** section. The templates follow the same [versioning policy](https://broch.io/docs/self-hosting/versioning/) as the server: a template change only adds parameters, each with a default, and removing or renaming one waits for a major.
 
 ## Contributing
 

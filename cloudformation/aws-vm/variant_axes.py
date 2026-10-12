@@ -12,6 +12,7 @@ AUTH_BUCKETS = {
 def inactive_auth_rules(auth):
     rules = {
         "AuthAzureAdRequiresTenant",
+        "AuthAzureAdUsesDerivedAuthority",
         "AuthDomainProviderRequiresDomain",
         "AuthAuth0RequiresAudience",
         "AuthOidcRequiresAuthority",
